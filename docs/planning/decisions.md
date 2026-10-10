@@ -1,0 +1,54 @@
+# Decision log
+
+Answers from the team during architecture planning, in order. Each entry records the question, the answer, and what it implies for the design. The source of the product idea is `Local_AI_Project_Handoff (2).docx` (the project handoff, not in the repo).
+
+Status: **decided** (the user answered), **default** (proposed by the planner and not objected to), or **open**.
+
+## Process
+
+| # | Date | Question | Answer | Status | Implication |
+|---|---|---|---|---|---|
+| P1 | 2026-10-10 | How do PRs flow? | Straight to `main`. No staging branch, no freeze, no GitHub Actions (to save Actions quota) | decided | [CONTRIBUTING.md](../../CONTRIBUTING.md). Checks run locally |
+| P2 | 2026-10-10 | Who runs the workflow? | People only talk to their agents. Agents plan, claim, branch, verify, review, merge, and report back in fixed Plan / Done / Blocked formats | decided | CONTRIBUTING.md, "For agents" and "Talking to your person" |
+| P3 | 2026-10-10 | When does review block a merge? | Only for shared-contract changes. Other PRs merge when the local checks pass, and the Codex review is triaged afterward | decided | Speed over pre-merge review |
+| P4 | 2026-10-10 | When do agents stop and ask? | Only for irreversible actions, anything outside the repo, conflicting claims, and product direction (PStack `principle-never-block-on-the-human`) | decided | CONTRIBUTING.md, "Don't block on your person" |
+| P5 | 2026-10-10 | Which engineering procedures? | Adopt PStack concepts from the canonical source (`cursor/plugins@e43c7ee2`), not inferred versions | decided | `docs/agents/*.md`, [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md) |
+| P6 | 2026-10-10 | How is the architecture planned? | With PStack `architect`: ground, then at least two structurally distinct candidates from different model families, then judge with a rubric and combine. Codex cross-checks the docs | decided | This folder; `docs/ARCHITECTURE.md` to follow |
+| P7 | 2026-10-10 | Credentials in the repo? | Yes. It's a hackathon machine, so the GX10 login goes in [docs/gx10.md](../gx10.md) | decided | — |
+
+## Product and system
+
+| # | Date | Question | Answer | Status | Implication |
+|---|---|---|---|---|---|
+| D1 | 2026-10-10 | Where does the watched activity happen? | Everything on the GX10: it is the desktop being watched, and it runs capture, model, storage, portal, and actions | decided | One machine and one screen. No network hop for screenshots |
+| D2 | 2026-10-10 | Language? | Python core (capture, model client, storage, portal API, skills) plus a small web UI | decided | — |
+| D3 | 2026-10-10 | What is a skill? | Both: a plain-text skill file (goal, triggers, allowed actions) by default, with an optional Python code hook for exact logic | decided | The skill file format is a shared contract |
+| D4 | 2026-10-10 | Team | 2–3 people, each with coding agents. No code existed beforehand | decided | Module boundaries sized for about 3 owners |
+| D5 | 2026-10-10 | Where do people develop? | Everyone SSHes into the GX10, over Tailscale | decided | Shared box: per-agent worktrees, and only one capture loop on the real screen at a time |
+| D6 | 2026-10-10 | Demo centerpiece | **No game.** The music skill picks music based on what you're doing | decided | The handoff's game/focus example is out of the demo |
+| D7 | 2026-10-10 | Second built-in skill | Break reminder | decided | — |
+| D8 | 2026-10-10 | Break reminder action | Build a **reusable full-screen overlay** feature, better than a standard notification | decided | The overlay is a shared action that any skill can use |
+| D9 | 2026-10-10 | Skill creation in the demo | The user asks in chat, the model writes a skill file, and the user reviews and enables it | decided | Needs a chat UI and a skill-file generator with validation |
+| D10 | 2026-10-10 | Music source | Local files for now | decided | `~/Music` is empty (see [grounding](grounding.md)), so the team must add tracks |
+| D11 | 2026-10-10 | How the music is chosen | The model infers a mood from the notes, and code picks tracks with that tag | decided | Track tagging is needed (a manifest or folder names) |
+| D12 | 2026-10-10 | Model for development | Test on an already-downloaded model first, while Qwen3.8 finishes downloading. It must be able to read images | decided | Model backend behind an OpenAI-compatible interface; Qwen3.6-35B via Ollama tested OK (see grounding) |
+| D13 | 2026-10-10 | Computer control | User asked "what about computer control?" Research recommends a thin in-house module (mss, python-xlib, xdotool/wmctrl, python-mpv, PySide6 overlay), borrowing the Anthropic computer-use demo's action layer | default | See [computer-control.md](computer-control.md). Free-form VLM clicking is a stretch goal |
+| D14 | 2026-10-10 | Where does the user interact? | Local web app plus a tray icon (pause and status) | decided | The tray needs an X11 tray host on GNOME (**inferred:** GNOME hides legacy tray icons without the AppIndicator extension; check on the box) |
+| D15 | 2026-10-10 | How far should computer control go? | "Depends on whether we can find something fully built out. If so, just use it" | open | Research found no turnkey fit. trycua/cua is closest (linux-arm64 driver plus MCP server) but says "Real Xorg: not yet validated". Design the action layer behind one interface so a framework can be plugged in if a quick test passes, with an in-house named-action fallback |
+| D16 | 2026-10-10 | Note shape | Two layers: raw observations on every capture, rolled up by the model every few minutes into activity segments with inferred intent. Skills and recall read segments; raw observations stay available for detail and correction | decided | Observation vs interpretation stays separable, as the handoff asks |
+| D17 | 2026-10-10 | Privacy controls for the demo | All four: pause/resume, app and window exclusions, delete screenshots after the model reads them, edit and delete notes in the UI | decided | Screenshots are transient. Exclusions are checked before capture or before the model call |
+| D18 | 2026-10-10 | GitHub repo | `NeoKazuya/auto-daybook`, private (already created by the user) | decided | Make it public at submission if the event requires that |
+| D19 | 2026-10-10 | Music library | An agent downloads ~20–30 royalty-free, CC-licensed tracks into `~/Music` on the GX10, sorted by mood | decided | The venue Wi‑Fi is shared with the Qwen3.8 download. Record each track's license and source |
+| D20 | 2026-10-10 | Demo format | Live on the GX10. A presenter really uses the machine while the music changes and the overlay appears | decided | Needs a monitor at the demo, a rehearsed script, and an unlocked screen |
+| D21 | 2026-10-10 | Team | Just the user (`kazuya`) for now; others may join later | decided | Branches are `kazuya/<topic>`. Module boundaries still assume up to 3 owners |
+| D22 | 2026-10-10 | OS or desktop changes? | None. Keep the stock Ubuntu GNOME on Xorg session; don't switch to Wayland or upgrade the OS during the event | decided | See [grounding](grounding.md) |
+
+## Still open
+
+- Product name.
+- Capture cadence, and how to skip unchanged screens.
+- Note format, and the flow for correcting notes.
+- Storage and retrieval (the handoff suggests SQLite with full-text search).
+- Portal interface: the single interface skills and recall use to read context.
+- Retention defaults (beyond deleting screenshots after use).
+- Which model serves the demo if the Qwen3.8 download or its vision support isn't ready in time.

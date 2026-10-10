@@ -1,0 +1,1 @@
+Unmodified copies of PStack files (cursor/plugins@e43c7ee26e0038c6c1fa8380dd34ce86ff94cb2a, pstack/skills/architect/), MIT License, Copyright (c) 2026 Lauren Tan. Provided to arena runners as their working instructions. See THIRD_PARTY_NOTICES.md.

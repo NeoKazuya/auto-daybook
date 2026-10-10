@@ -1,0 +1,5 @@
+.neo/
+__pycache__/
+*.pyc
+.venv/
+.env

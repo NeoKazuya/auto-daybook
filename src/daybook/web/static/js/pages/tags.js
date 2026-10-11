@@ -51,15 +51,14 @@ async function render(root, params) {
       h('div.row-end', h('span.tag', x.kind ?? 'Unassigned'), x.segment_id && icon('chevron')));
   }
 
-  function chips(host, by, onPick) {
+  function chips(host, by) {
     return api.totals(by).then((rows) => {
       host.replaceChildren(rows.length
-        ? h('div.tagcloud', rows.map((r) => h('button.tag', { type: 'button', onclick: () => onPick(r.label) }, r.label, h('span', duration(r.active)))))
+        ? h('div.tagcloud', rows.map((r) => h('span.tag', r.label, h('span', duration(r.active)))))
         : emptyState('tag', 'Nothing indexed yet', 'Tags appear as Daybook writes notes.'));
-    }).catch((err) => host.replaceChildren(errorState(err, () => chips(host, by, onPick))));
+    }).catch((err) => host.replaceChildren(errorState(err, () => chips(host, by))));
   }
 
-  const pick = (key) => { input.value = key; find(); };
   const notYet = (what) => emptyState('tag', `${what} isn’t available yet`,
     'Daybook’s server doesn’t offer this yet. It arrives once Lane A adds it to the API.');
 
@@ -72,7 +71,7 @@ async function render(root, params) {
     apps.replaceChildren(notYet('Time by app'));
     return {};
   }
-  const refresh = () => Promise.all([chips(kinds, 'kind', pick), chips(apps, 'app', pick)]);
+  const refresh = () => Promise.all([chips(kinds, 'kind'), chips(apps, 'app')]);
   const off = onNotesChanged(() => {
     searchRevision++;
     results.replaceChildren();

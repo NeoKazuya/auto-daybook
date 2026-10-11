@@ -92,17 +92,17 @@ await show();
 setInterval(refreshStatus, 5000);
 
 // Live updates: events are batched for 250 ms, then the page gets the set of event
-// types that arrived and re-reads what it shows. The footer follows status changes.
+// types and payloads that arrived and re-reads what it shows. The footer follows status changes.
 const STATUS_EVENTS = new Set(['CaptureStateChanged', 'SkillsChanged', 'StatusChanged', 'MusicChanged', 'Reconnected']);
 let pending = null;
-let batch = new Set();
+let batch = [];
 subscribe((event) => {
   if (STATUS_EVENTS.has(event.type)) refreshStatus();
-  batch.add(event.type);
+  batch.push(event);
   clearTimeout(pending);
   pending = setTimeout(() => {
-    const types = batch;
-    batch = new Set();
-    current?.hooks.onEvent?.(types);
+    const events = batch;
+    batch = [];
+    current?.hooks.onEvent?.(new Set(events.map((e) => e.type)), events);
   }, 250);
 });

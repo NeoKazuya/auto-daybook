@@ -386,8 +386,10 @@ async function chat(message) {
   const recent = db.segments.slice(-3).map(segmentOut);
   return {
     type: 'answer',
-    text: `In the last hour you reviewed the stand-up skill draft for ${Math.round(recent[1].active / 60)} minutes, then moved on to debugging the event stream reconnect, which you're still on (${Math.round(recent[2].active / 60)} minutes so far). A short break overlay came up at 13:40.`,
-    cites: recent.slice(1).map((s) => s.id),
+    text: recent.length
+      ? 'Your recent notes include ' + recent.map((s) => s.title + ' (' + Math.round(s.active / 60) + ' minutes)').join('; ') + '.'
+      : "I don't have notes for that period.",
+    cites: recent.map((s) => s.id),
     window: { from: hourAgo.toISOString(), to: now.toISOString() },
   };
 }

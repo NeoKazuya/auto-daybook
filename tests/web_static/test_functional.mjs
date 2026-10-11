@@ -10,14 +10,40 @@ class Element {
   constructor(spec, attrs = {}, children = []) {
     this.spec = spec; this.attrs = attrs; Object.assign(this, attrs); this.children = children.flat(Infinity).filter(x => x != null && x !== false);
     if (spec.startsWith('textarea')) this.value = this.textContent;
+    if (spec.startsWith('input')) this.value ??= '';
+    if (spec.startsWith('select')) this.value ??= this.children.find(x => x instanceof Element && x.spec.startsWith('option'))?.value ?? '';
+    for (const child of this.children) if (child instanceof Element) child.parent = this;
   }
-  append(...x) { this.children.push(...x.flat(Infinity)); }
-  replaceChildren(...x) { this.children = x.flat(Infinity).filter(x => x != null && x !== false); }
+  append(...x) { for (const child of x.flat(Infinity)) { if (child instanceof Element) child.parent = this; this.children.push(child); } }
+  replaceChildren(...x) { this.children = []; this.append(...x.filter(x => x != null && x !== false)); }
   get textContent() { return this.children.map(x => x instanceof Element ? x.textContent : String(x)).join(' '); }
   set textContent(x) { this.children = [x]; }
-  focus() {}
+  focus() { let root = this; while (root.parent) root = root.parent; if (root.document) root.document.activeElement = this; }
+  getAttribute(name) { return this.attrs[name] ?? null; }
+  scrollIntoView() {}
+  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
+  contains(n) { return walk(this).includes(n); }
+  matches(selector) {
+    return selector.split(',').some(raw => {
+      const [_, tag, cls, attr, value] = raw.trim().match(/^([a-z]+)?(?:\.([\w-]+))?(?:\[([\w-]+)(?:="([^"]*)")?\])?$/) ?? [];
+      return Boolean(_) && (!tag || this.spec.split('.')[0] === tag)
+        && (!cls || this.spec.split('.').includes(cls))
+        && (!attr || (value == null ? this[attr] != null : this[attr] === value));
+    });
+  }
   addEventListener(name, fn) { this['on' + name] = fn; }
-  querySelector() { return null; }
+  closest(selector) { let n = this; while (n) { if (n.matches(selector)) return n; n = n.parent; } return null; }
+  querySelectorAll(selector) {
+    const parts = selector.split(' ');
+    return walk(this).slice(1).filter(n => {
+      if (!n.matches(parts.at(-1))) return false;
+      if (parts.length === 1) return true;
+      let parent = n.parent;
+      while (parent && parent !== this) { if (parent.matches(parts[0])) return true; parent = parent.parent; }
+      return false;
+    });
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
 }
 function h(spec, attrs, ...children) {
   if (!attrs || typeof attrs !== 'object' || attrs instanceof Element || Array.isArray(attrs)) return new Element(spec, {}, [attrs, ...children]);
@@ -35,7 +61,7 @@ async function setup({ developer = false } = {}) {
     URLSearchParams, Date, console, setTimeout, clearTimeout,
     document: { querySelector: () => ({content:'test-token'}), activeElement:null },
     location: {search:''}, history: {replaceState(){}},
-    fetch: async (path, options) => { calls.push([path, options]); const result = await request(path, options); return {ok:true,json:async()=>result}; },
+    fetch: async (path, options) => { calls.push([path, options]); const result = await request(path, options); return result instanceof Response ? result : {ok:true,json:async()=>result}; },
     EventSource: class { constructor() {this.listeners={}; streams.push(this);} addEventListener(n,f){this.listeners[n]=f;} close(){} },
     BroadcastChannel: class { constructor(){channels.push(this);} postMessage(x){this.sent=x;} close(){} },
   });
@@ -43,7 +69,7 @@ async function setup({ developer = false } = {}) {
   const helpers = { h, icon:n=>h('i',n), btn:(text,attrs={})=>h('button',attrs,text),
     ribbon:(p,x)=>h('header',x), panel:(title,icon,tools,...body)=>h('section',title,tools,body),
     split:(a,b)=>h('div',a,b), emptyState:(i,...x)=>h('div',x), errorState:e=>h('div',e.message),
-    skeletons:()=>h('div','loading'), clock:x=>x, duration:x=>String(x)+'s', folio:x=>x,
+    skeletons:()=>h('div','loading'), stat:(i,...x)=>h('div',x), longDay:()=>'', dayStamp:()=>'', clock:x=>x, duration:x=>String(x)+'s', folio:x=>x,
     busy:async(button,fn)=>fn(), confirmDialog:async()=>true, toast:()=>{} };
   async function load(path) {
     if(cache.has(path)) return cache.get(path);
@@ -60,7 +86,7 @@ async function setup({ developer = false } = {}) {
   const apiModule = await load(base+'/api.js'); await apiModule.evaluate();
   async function page(name, params='') {
     const m=await load(base+'/pages/'+name+'.js'); await m.evaluate();
-    const root=h('main'); const hooks=await m.namespace.default.render(root,new URLSearchParams(params));
+    const root=h('main'); root.document=context.document; const hooks=await m.namespace.default.render(root,new URLSearchParams(params));
     return {root,hooks,ask:async message=>{const input=walk(root).find(x=>x.spec.startsWith('input')); input.value=message; walk(root).find(x=>x.spec.startsWith('form')).onsubmit({preventDefault(){}}); await settle();}};
   }
   return {api:apiModule.namespace.api,subscribe:apiModule.namespace.subscribe,page,streams,channels,calls,setRequest:fn=>{request=fn;}};
@@ -217,4 +243,125 @@ test('unsaved skill edits cannot approve or enable the saved version; Save refre
     await current.onclick({currentTarget:current}); await settle();
     assert.deepEqual(JSON.parse(writes.find(([path])=>path.endsWith('/approve'))[1]),{hash:'new-hash'});
   }
+});
+
+test('failed skill Save keeps unsaved text and remains retryable',async()=>{
+  for (const failure of ['network','forbidden']) {
+    const x=await setup({developer:true}); let fail=true;
+    let skill={id:'stand',name:'Stand',goal:'Stand.',status:'needs_review',origin:'user',hash:'old',text:'saved version',signals:[],allow:[],rules:[],errors:[]};
+    x.setRequest((path,options)=>{
+      if(path==='/api/skills/stand'&&options.method==='PUT') {
+        if(fail) { if(failure==='network') throw Error('offline'); return new Response(JSON.stringify({detail:'forbidden'}),{status:403}); }
+        skill={...skill,text:JSON.parse(options.body).text,hash:'new'};
+      }
+      return path==='/api/skills'?{entries:[skill],catalog:[]}:{errors:[]};
+    });
+    const p=await x.page('skills','id=stand');
+    let editor=walk(p.root).find(n=>n.spec.startsWith('textarea'));
+    editor.value='unsaved work'; editor.oninput();
+    let save=walk(p.root).find(n=>n.textContent==='Save edits');
+    await save.onclick({currentTarget:save}); await settle();
+    editor=walk(p.root).find(n=>n.spec.startsWith('textarea'));
+    assert.equal(editor.value,'unsaved work',failure);
+    assert.equal(walk(p.root).find(n=>n.textContent==='Approve & enable').disabled,true);
+    fail=false; save=walk(p.root).find(n=>n.textContent==='Save edits');
+    await save.onclick({currentTarget:save}); await settle();
+    assert.equal(skill.text,'unsaved work'); assert.equal(skill.hash,'new');
+    assert.ok(!walk(p.root).find(n=>n.textContent==='Approve & enable').disabled);
+  }
+});
+test('Index totals are summaries, not full-text filters for app or kind labels',async()=>{
+  const x=await setup();
+  x.setRequest(path=>path.startsWith('/api/totals?by=app')?{totals:[{label:'Firefox',active:100}]}:path.startsWith('/api/totals')?{totals:[{label:'coding',active:50}]}:{hits:[]});
+  const p=await x.page('tags');
+  assert.match(p.root.textContent,/Firefox/); assert.match(p.root.textContent,/coding/);
+  const totals=walk(p.root).filter(n=>n.matches('.tag')&&/Firefox|coding/.test(n.textContent));
+  assert.equal(totals.length,2);
+  assert.ok(totals.every(n=>!n.onclick&&!n.spec.startsWith('button')&&!n.href));
+  assert.equal(x.calls.some(([path])=>path.startsWith('/api/search')),false);
+});
+test('demo recall works after deleting down to two, one and zero chapters',async()=>{
+  const context=vm.createContext({Date,URL,setInterval:()=>{},setTimeout:fn=>fn()});
+  const module=new vm.SourceTextModule(await readFile('src/daybook/web/static/js/demo.js','utf8'),{context});
+  await module.link(()=>{throw Error('unexpected import');}); await module.evaluate();
+  const call=module.namespace.handle;
+  const initial=(await call('GET','/api/timeline')).segments;
+  for(let count=2;count>=0;count--) {
+    const current=(await call('GET','/api/timeline')).segments;
+    for(const s of current.slice(count)) await call('DELETE','/api/segments/'+s.id);
+    const response=await call('POST','/api/chat',{message:'/ask What did I do?'});
+    assert.equal(response.type,'answer'); assert.equal(typeof response.text,'string');
+    const ids=new Set((await call('GET','/api/timeline')).segments.map(s=>s.id));
+    assert.ok(response.cites.every(id=>ids.has(id)));
+    assert.equal(response.cites.length,count);
+    if(!count) assert.match(response.text,/no notes|don't have notes/i);
+  }
+  assert.ok(initial.length>=3);
+  await call('POST','/api/forget-all',{});
+  assert.equal((await call('POST','/api/chat',{message:'/ask What did I do?'})).cites.length,0);
+});
+test('Contents shows privacy gaps even before the first chapter',async()=>{
+  for(const [state,label] of [['paused','Paused'],['locked','Screen locked'],['away','Away'],['withheld','Private window'],['overlay','Overlay on screen']]) {
+    const x=await setup();
+    x.setRequest(path=>path.startsWith('/api/timeline')?{segments:[],capture_spans:[{state,start:'2026-10-11T08:00:00Z',end:'2026-10-11T08:01:00Z'}]}:path==='/api/skills'?{entries:[]}:path==='/api/status'?{capture:state,gateway:{reachable:true,calls_per_minute:0}}:{totals:[]});
+    const p=await x.page('contents');
+    assert.match(p.root.textContent,new RegExp(label+' — no notes'));
+    assert.match(p.root.textContent,/60s/); assert.doesNotMatch(p.root.textContent,/No notes yet/);
+  }
+});
+test('live privacy event updates exclusions and keeps pending form text, match and focus',async()=>{
+  const x=await setup(); let privacy={paused:false,exclude_apps:[],exclude_titles:[],screenshots_stored:'none'};
+  x.setRequest(path=>path==='/api/privacy'?structuredClone(privacy):path==='/api/status'?{gateway:{},music:{},capture:'running'}:{totals:[]});
+  const p=await x.page('settings');
+  let form=walk(p.root).find(n=>n.spec==='form.excl-form');
+  form.querySelector('select').value='title';
+  let input=form.querySelector('input'); input.list={id:'apps-blocked'}; input.value='Budget [Q4]'; input.setSelectionRange(3,8); input.focus();
+  privacy={...privacy,exclude_apps:['KeePassXC']};
+  await p.hooks.onEvent(new Set(['StatusChanged']),[{type:'StatusChanged',component:'sense',status:'privacy_changed'}]); await settle();
+  assert.match(p.root.textContent,/KeePassXC/);
+  form=walk(p.root).find(n=>n.spec==='form.excl-form'); input=form.querySelector('input');
+  assert.equal(input.value,'Budget [Q4]'); assert.equal(form.querySelector('select').value,'title');
+  assert.equal(p.root.document.activeElement,input); assert.equal(input.selectionStart,3); assert.equal(input.selectionEnd,8);
+  const before=x.calls.length;
+  await p.hooks.onEvent(new Set(['StatusChanged']),[{type:'StatusChanged',component:'sense',status:'observed'}]); await settle();
+  assert.equal(x.calls.length,before,'ordinary capture polls do not refresh Settings');
+});
+test('queued privacy writes read the current resource when remote events are delayed',async()=>{
+  const x=await setup(); let privacy={paused:false,exclude_apps:[],exclude_titles:[],screenshots_stored:'none'}; const writes=[];
+  x.setRequest((path,options)=>{
+    if(path==='/api/privacy') { if(options.method==='PUT') {privacy=JSON.parse(options.body);writes.push(structuredClone(privacy));} return structuredClone(privacy); }
+    if(path==='/api/status')return {gateway:{},music:{},capture:'running'};
+    return {totals:[]};
+  });
+  const p=await x.page('settings');
+  privacy={...privacy,exclude_apps:['KeePassXC'],exclude_titles:['*secret*']};
+  const monitoring=walk(p.root).find(n=>n['aria-label']==='Monitoring'); monitoring.checked=false;
+  await monitoring.onchange(); await settle();
+  assert.equal(privacy.paused,true); assert.deepEqual(privacy.exclude_apps,['KeePassXC']); assert.deepEqual(privacy.exclude_titles,['*secret*']);
+  privacy={...privacy,exclude_apps:['KeePassXC','Firefox']};
+  const form=walk(p.root).find(n=>n.spec==='form.excl-form');
+  form.querySelector('input').value='Code'; form.onsubmit({preventDefault(){}}); await settle();
+  assert.deepEqual(privacy.exclude_apps,['KeePassXC','Firefox','Code']); assert.deepEqual(privacy.exclude_titles,['*secret*']);
+  assert.equal(writes.length,2);
+});
+
+test('clean stale approval still reloads the current skill and retries its reviewed hash',async()=>{
+  const x=await setup({developer:true}); let stale=true;
+  let skill={id:'stand',name:'Stand',goal:'Stand.',status:'needs_review',origin:'user',hash:'old',text:'old version',signals:[],allow:[],rules:[],errors:[]};
+  const hashes=[];
+  x.setRequest((path,options)=>{
+    if(path.endsWith('/approve')) {
+      hashes.push(JSON.parse(options.body).hash);
+      if(stale) { stale=false; skill={...skill,hash:'new',text:'new server version'}; return new Response(JSON.stringify({detail:'stale_approval'}),{status:409}); }
+      skill={...skill,status:'active'};
+    }
+    return path==='/api/skills'?{entries:[skill],catalog:[]}:{};
+  });
+  const p=await x.page('skills','id=stand');
+  let approve=walk(p.root).find(n=>n.textContent==='Approve & enable');
+  await approve.onclick({currentTarget:approve}); await settle();
+  assert.equal(walk(p.root).find(n=>n.spec.startsWith('textarea')).value,'new server version');
+  approve=walk(p.root).find(n=>n.textContent==='Approve & enable');
+  await approve.onclick({currentTarget:approve}); await settle();
+  assert.deepEqual(hashes,['old','new']); assert.equal(skill.status,'active');
 });

@@ -40,34 +40,57 @@ async function render(root) {
         api.status(),
         supports.totals ? api.totals('app').then((rows) => rows.map((r) => r.label)).catch(() => []) : [],
       ]);
-      draw();
+      draw(true);
     } catch (err) {
-      left.replaceChildren(errorState(err, refresh));
-      right.replaceChildren();
+      if (privacy) toast("Couldn't refresh settings: " + err.message, 'error');
+      else {
+        left.replaceChildren(errorState(err, refresh));
+        right.replaceChildren();
+      }
     }
   }
 
   // PUT /api/privacy replaces the whole resource, so saves run one at a time and each
-  // patch is computed from the latest saved state (pass a function of it), never from
-  // a copy taken when the control was clicked.
+  // patch is computed from a fresh GET (pass a function of it), never from a copy
+  // taken when the control was clicked. This also preserves changes from other tabs.
   let queue = Promise.resolve();
   function save(patch, message) {
     queue = queue.then(async () => {
+      let saved = false;
       try {
+        privacy = await api.privacy();
         const next = typeof patch === 'function' ? patch(privacy) : patch;
         privacy = await api.setPrivacy({ ...privacy, ...next });
+        saved = true;
         if (message) toast(message);
       } catch (err) {
         toast(`Couldn't save: ${err.message}`, 'error');
       }
-      draw();
+      draw(!saved);
     });
     return queue;
   }
 
-  function draw() {
+  function draw(keepForms = false) {
+    // Refresh the resource without turning a live exclusion draft into saved data.
+    const drafts = keepForms ? [...root.querySelectorAll('form.excl-form')].map((form) => {
+      const input = form.querySelector('input');
+      const match = form.querySelector('select');
+      return { list: input.getAttribute('list'), value: input.value, match: match?.value,
+        focused: document.activeElement === input ? 'input' : document.activeElement === match ? 'select' : null,
+        start: input.selectionStart, end: input.selectionEnd };
+    }) : [];
     left.replaceChildren(monitoringPanel(), hoursPanel(), appsPanel());
     right.replaceChildren(displayPanel(), notesPanel(), screenshotsPanel(), modelPanel(), developerPanel());
+    for (const draft of drafts) {
+      const input = root.querySelector('input[list="' + draft.list + '"]');
+      if (!input) continue;
+      const match = input.closest('form').querySelector('select');
+      input.value = draft.value;
+      if (match && draft.match != null) match.value = draft.match;
+      if (draft.focused) (draft.focused === 'input' ? input : match)?.focus({ preventScroll: true });
+      if (draft.start != null) input.setSelectionRange(draft.start, draft.end);
+    }
   }
 
   /* ---------- monitoring ---------- */
@@ -289,14 +312,16 @@ async function render(root) {
   }
 
   await refresh();
-  // Redraw only for events that change what this page shows. StatusChanged fires on
-  // every capture poll, so it's ignored here; the footer already tracks the model.
-  // Never redraw under someone typing or with unsaved text in a form.
+  // Ordinary capture polls do not refresh Settings. Privacy changes do, including
+  // another tab's exclusions; draw(true) keeps unfinished form text and focus.
   const WATCH = ['CaptureStateChanged', 'MusicChanged', 'Reconnected'];
   const editing = () =>
     root.contains(document.activeElement) && document.activeElement.matches('input, select, textarea')
     || [...root.querySelectorAll('form input')].some((i) => i.value.trim());
-  return { onEvent: (types) => { if (WATCH.some((t) => types.has(t)) && !editing()) refresh(); } };
+  return { onEvent: (types, events = []) => {
+    const privacyChanged = events.some((e) => e.type === 'StatusChanged' && e.component === 'sense' && e.status === 'privacy_changed');
+    if (privacyChanged || (WATCH.some((t) => types.has(t)) && !editing())) return refresh();
+  } };
 }
 
 function setting(title, text, control) {

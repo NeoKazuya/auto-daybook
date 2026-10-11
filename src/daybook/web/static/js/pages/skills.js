@@ -106,6 +106,10 @@ async function render(root, params) {
         notice = null;
       } catch (err) {
         if (err.status === 409) notice = err.message;
+        if (dirty()) {
+          editNotice.textContent = 'The action failed. Your unsaved edits are still here.';
+          return;
+        }
       }
       await refresh();
     };

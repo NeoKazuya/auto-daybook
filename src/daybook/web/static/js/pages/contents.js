@@ -45,7 +45,7 @@ function view(tl, kinds, skills, status) {
     stat('quill', 'Skills', review ? `${activeSkills} active · ${review} to review` : `${activeSkills} active`),
     stat('cpu', 'Model', status.gateway.reachable ? `${status.gateway.calls_per_minute} calls/min` : 'Offline'));
 
-  if (!tl.segments.length) {
+  if (!tl.segments.length && !tl.capture_spans.some((g) => g.state !== 'running')) {
     return [stats, emptyState('contents', 'No notes yet',
       status.capture === 'running'
         ? 'Daybook is watching. The first chapter appears a few seconds after you start working.'

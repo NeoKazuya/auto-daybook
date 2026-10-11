@@ -647,3 +647,53 @@ async def test_runtime_cleanup_finishes_before_external_cancellation_propagates(
         if process.returncode is None:
             process.kill()
             await process.wait()
+
+
+async def test_shell_reaping_finishes_after_repeated_cancellation(tmp_path: Path):
+    marker = tmp_path / "shell-ready"
+    pids: asyncio.Queue[int | None] = asyncio.Queue()
+    supervisor = app.ShellSupervisor(
+        (
+            sys.executable,
+            "-c",
+            "import signal,time; from pathlib import Path; "
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            f"Path({str(marker)!r}).write_text('ready'); time.sleep(60)",
+        ),
+        dict(os.environ),
+        pids.put_nowait,
+    )
+    task = asyncio.create_task(supervisor.run())
+    pid = None
+    try:
+        pid = await asyncio.wait_for(pids.get(), 2)
+        assert pid is not None
+        for _ in range(100):
+            if marker.exists():
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("owned shell did not install its TERM handler")
+        task.cancel()
+        assert await asyncio.wait_for(pids.get(), 2) is None
+        # TaskGroup cancellation can reach a shell already cancelled by the
+        # daemon's serving-finally path. Its two-second kill fallback must run.
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, 4)
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        if pid is not None:
+            with suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+            for _ in range(100):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                await asyncio.sleep(0.01)

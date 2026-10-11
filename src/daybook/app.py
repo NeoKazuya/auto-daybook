@@ -230,13 +230,17 @@ class ShellSupervisor:
             finally:
                 self.on_pid(None)
                 if process is not None and process.returncode is None:
-                    process.terminate()
-                    try:
-                        await asyncio.wait_for(process.wait(), 2)
-                    except TimeoutError:
-                        process.kill()
-                        await process.wait()
+                    await finish_cleanup(asyncio.create_task(self.reap(process)))
             await asyncio.sleep(self.retry_seconds)
+
+    @staticmethod
+    async def reap(process: asyncio.subprocess.Process) -> None:
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), 2)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
 
 
 class NoCaptureScreen:
@@ -400,12 +404,15 @@ async def runtime_stack():
     finally:
         # A stop arriving during normal teardown must not interrupt a child's
         # terminate/wait/kill sequence. Finish cleanup before propagating it.
-        cleanup = asyncio.create_task(stack.aclose())
-        try:
-            await asyncio.shield(cleanup)
-        except asyncio.CancelledError:
-            await cleanup
-            raise
+        await finish_cleanup(asyncio.create_task(stack.aclose()))
+
+
+async def finish_cleanup(cleanup: asyncio.Task[None]) -> None:
+    try:
+        await asyncio.shield(cleanup)
+    except asyncio.CancelledError:
+        await cleanup
+        raise
 
 
 class LifecycleServer(uvicorn.Server):

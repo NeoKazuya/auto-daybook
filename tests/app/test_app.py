@@ -133,7 +133,7 @@ async def test_development_modes_do_not_take_real_screen_lock_or_start_shell(
             assert json.loads((tmp_path / "runtime.json").read_text())["port"] == 8771
             assert stat.S_IMODE((tmp_path / "token").stat().st_mode) == 0o600
 
-    monkeypatch.setattr(app.uvicorn, "Server", Server)
+    monkeypatch.setattr(app, "LifecycleServer", Server)
     if mode != "mock_api":
         # Concrete owners are covered by the composition tests below; here the
         # daemon setup must be proven independent of real capture locking.
@@ -342,7 +342,7 @@ def test_cli_checks_and_error_exit_codes(tmp_path: Path, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out) == {"ok": True, "errors": []}
     skill = tmp_path / "test.skill.md"
     skill.write_text(
-        "---\nid: test\nname: Test\nsignals: {}\nrules: []\nallow: []\n---\nDo nothing."
+        "---\nid: test\nname: Test\nsignals:\n  focused:\n    ask: Is the user focused?\n    type: bool\nrules:\n  - when: focused becomes true\n    do:\n      - notify.send: {title: Focus, body: Keep going}\nallow: [notify.send]\n---\nNotify me when I focus."
     )
     monkeypatch.setattr(sys, "argv", ["daybook", "skill", "check", str(skill)])
     app.main()
@@ -448,3 +448,59 @@ async def test_tick_once_records_current_unassigned_notes_without_a_daemon(
         assert segment is not None and segment.title == "Implement example"
     finally:
         reopened.close()
+
+
+@pytest.mark.parametrize("sse", [False, True])
+async def test_real_cli_sigterm_cleans_up_even_with_connected_sse(
+    tmp_path: Path, sse: bool
+):
+    import socket
+
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "daybook.app",
+        "run",
+        "--mock-api",
+        "--port",
+        str(port),
+        env={**os.environ, "DAYBOOK_HOME": str(tmp_path)},
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    writer = None
+    try:
+        for _ in range(100):
+            if process.returncode is not None:
+                pytest.fail("daemon failed before accepting requests")
+            try:
+                reader, connection = await asyncio.open_connection("127.0.0.1", port)
+                break
+            except OSError:
+                await asyncio.sleep(0.02)
+        else:
+            pytest.fail("daemon never accepted requests")
+        if sse:
+            writer = connection
+            writer.write(b"GET /api/events HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            await writer.drain()
+            assert b"200" in await reader.readline()
+        else:
+            connection.close()
+            await connection.wait_closed()
+        process.terminate()
+        await asyncio.wait_for(process.wait(), 5)
+        assert not (tmp_path / "runtime.json").exists()
+        # The home lock is released, without killing an unrelated process.
+        with app.home_lock(tmp_path):
+            pass
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        if process.returncode is None:
+            process.kill()
+            await process.wait()

@@ -10,18 +10,21 @@ import logging
 import math
 import os
 import secrets
+import signal
 import sys
 import tempfile
+import threading
 import tomllib
 import urllib.error
 import urllib.request
-from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Literal, cast
+from typing import TYPE_CHECKING, Callable, Iterator, Literal, cast
 
 import uvicorn
+from fastapi import FastAPI
 
 from daybook.act import Overlay
 from daybook.model import ModelConfig
@@ -360,6 +363,38 @@ async def open_runtime(
         )
 
 
+class LifecycleServer(uvicorn.Server):
+    @contextmanager
+    def capture_signals(self) -> Iterator[None]:
+        # Uvicorn re-emits handled signals after serve(), before app-owned
+        # resources can close. App owns the process lifecycle and lets its
+        # surrounding finally blocks run instead.
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+        previous = {
+            sig: signal.signal(sig, self.handle_exit)
+            for sig in (signal.SIGINT, signal.SIGTERM)
+        }
+        try:
+            yield
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+
+
+def http_server(application: FastAPI, config: Config) -> LifecycleServer:
+    return LifecycleServer(
+        uvicorn.Config(
+            application,
+            host="127.0.0.1",
+            port=config.port,
+            access_log=False,
+            timeout_graceful_shutdown=2,
+        )
+    )
+
+
 async def run_daemon(config: Config, args: argparse.Namespace) -> None:
     from daybook.web import create_app
 
@@ -384,11 +419,7 @@ async def run_daemon(config: Config, args: argparse.Namespace) -> None:
             origin = f"http://127.0.0.1:{config.port}"
             if args.mock_api:
                 app = create_app(mock=True, token=token, origin=origin)
-                await uvicorn.Server(
-                    uvicorn.Config(
-                        app, host="127.0.0.1", port=config.port, access_log=False
-                    )
-                ).serve()
+                await http_server(app, config).serve()
                 return
             async with open_runtime(
                 config,
@@ -398,11 +429,7 @@ async def run_daemon(config: Config, args: argparse.Namespace) -> None:
             ) as runtime:
                 services = runtime.services
                 app = create_app(token=token, origin=origin, services=services)
-                server = uvicorn.Server(
-                    uvicorn.Config(
-                        app, host="127.0.0.1", port=config.port, access_log=False
-                    )
-                )
+                server = http_server(app, config)
                 async with asyncio.TaskGroup() as group:
                     tasks = [
                         group.create_task(services.sense.run()),

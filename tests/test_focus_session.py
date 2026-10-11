@@ -162,7 +162,7 @@ async def record_state(journal, book, base, minute, state):
     reading = SignalReading(
         SignalId("focus-session", "activity"), state, at, f"t{minute}"
     )
-    tick = Tick(at, journal.epoch, at, (), None, (reading,))
+    tick = Tick(at, journal.epoch, at, (), (), (reading,))
     assert journal.record_tick(tick)
     await book.react(tick)
     await book.react(tick)
@@ -193,7 +193,7 @@ async def test_reminders_fire_at_threshold_once_per_streak(
         assert "50 min" in calls[0]["body"]
 
 
-@pytest.mark.parametrize("capture", ["paused", "locked", "withheld", "away", "overlay"])
+@pytest.mark.parametrize("capture", ["paused", "locked", "withheld", "away"])
 @pytest.mark.parametrize(
     "state,threshold", [("off_task", 5), ("slowing", 10), ("working", 50)]
 )
@@ -204,7 +204,7 @@ async def test_short_capture_interruption_restarts_reminder_timer(
     base = datetime.now(timezone.utc) + timedelta(seconds=1)
     for minute in range(threshold):
         await record_state(journal, book, base, minute, state)
-    # Even a short, explicitly recorded interruption must break the streak.
+    # Even a short privacy or away interruption must break the streak.
     journal.set_capture_state(
         capture, base + timedelta(minutes=threshold - 1, seconds=10)
     )
@@ -220,6 +220,37 @@ async def test_short_capture_interruption_restarts_reminder_timer(
     assert len(calls) == 1
     if state == "working":
         assert "50 min" in calls[0]["body"]
+
+
+@pytest.mark.parametrize(
+    "state,threshold", [("off_task", 5), ("slowing", 10), ("working", 50)]
+)
+async def test_short_app_overlay_preserves_task_reminder_occurrence(
+    runtime, state, threshold
+):
+    journal, book, calls = runtime
+    base = datetime.now(timezone.utc) + timedelta(seconds=1)
+    for minute in range(threshold):
+        await record_state(journal, book, base, minute, state)
+    journal.set_capture_state(
+        "overlay", base + timedelta(minutes=threshold - 1, seconds=10)
+    )
+    journal.set_capture_state(
+        "running", base + timedelta(minutes=threshold - 1, seconds=50)
+    )
+    await record_state(journal, book, base, threshold, state)
+    assert len(calls) == 1
+    # Dismiss another short app reminder, then pass the skill's cooldown:
+    # the same activity still belongs to its original occurrence.
+    journal.set_capture_state(
+        "overlay", base + timedelta(minutes=threshold, seconds=10)
+    )
+    journal.set_capture_state(
+        "running", base + timedelta(minutes=threshold, seconds=50)
+    )
+    for minute in range(threshold + 1, 2 * threshold + 17):
+        await record_state(journal, book, base, minute, state)
+    assert len(calls) == 1
 
 
 async def test_capture_interruption_preserves_known_edge_for_becomes(runtime):

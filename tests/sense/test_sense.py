@@ -640,22 +640,42 @@ async def test_sense_resume_mind_cadence(
     observe_gateway = ScriptedGateway(
         ['{"seen":"code","visible_text":""}'] * len(expected_observations)
     )
-    tick_gateway = ScriptedGateway(
-        [
-            json.dumps(
-                {
-                    "segment": {
-                        "mode": "continue",
-                        "title": "Work",
-                        "kind": "coding",
-                        "intent": "Implementing",
-                    },
-                    "signals": {},
-                }
+
+    class TickGateway(ScriptedGateway):
+        async def call(self, priority, prompt):
+            # The real scheduler selects IDs at execution time; freshness polls
+            # may add an observation before that tick is admitted.
+            built = await prompt() if callable(prompt) else prompt
+            if built is None:
+                return None
+            ids = [
+                row.id
+                for row in journal.portal.observations(
+                    TimeRange(BASE, now[0] + timedelta(microseconds=1)),
+                    unassigned_only=True,
+                )
+            ]
+            self.replies.append(
+                json.dumps(
+                    {
+                        "segments": [
+                            {
+                                "observations": ids,
+                                "mode": "continue",
+                                "title": "Work",
+                                "kind": "coding",
+                                "intent": "Implementing",
+                            }
+                        ]
+                        if ids
+                        else [],
+                        "signals": {},
+                    }
+                )
             )
-        ]
-        * (2 if initial_tick else 1)
-    )
+            return await super().call(priority, built)
+
+    tick_gateway = TickGateway([])
     ticks = []
 
     async def sleep(seconds: float) -> None:

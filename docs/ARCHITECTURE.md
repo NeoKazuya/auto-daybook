@@ -45,14 +45,14 @@ These are fixed. The rest of the document is built on them.
 
 **Skills never call the model.** A skill declares *signals*: named, typed questions such as "Is the user doing sustained, focused work?" (`bool`) or "Which kind of music fits right now?" (`music.mood`). About every 90 seconds, one text-only model call, the **tick**, does two jobs:
 
-1. **Rollup.** It folds new observations into the current activity segment, or starts a new segment, with a title, a kind, and an inferred intent.
+1. **Rollup.** It groups new observations chronologically by activity, continuing the current segment or starting a segment at each task boundary, with a title, a kind, and an inferred intent.
 2. **Signals.** It answers every active skill's questions in one JSON object. The JSON schema is generated from those questions, so the answers come back typed.
 
 The answers are stored as readings. A **pure** evaluator then checks each skill's rules against the reading history. There are four trigger forms: *updates*, *becomes X*, *is X for duration*, and *every duration*. Matching rules run named actions from one catalog, limited to the actions that skill is allowed.
 
 Consequences:
 
-- **Fixed model load.** Background load is one observe call per screen change plus one tick per ~90 s, however many skills are enabled. A chat-made skill adds a few prompt tokens to the tick, not a model call.
+- **Fixed model load.** Background load is one observe call per admitted screen change or one-minute freshness refresh, plus one tick per ~90 s, however many skills are enabled. A chat-made skill adds a few prompt tokens to the tick, not a model call.
 - **Predictable triggers.** Given the same readings, the same rules fire. That makes the demo predictable and the evaluator unit-testable without a model.
 - **Expressive without core changes.** Any new question a user wants answered becomes a signal. The core schema never changes.
 
@@ -99,11 +99,12 @@ All notes live in one SQLite file, `$DAYBOOK_HOME/journal.db`, in WAL mode with 
 
 | Type | Fields | Rules |
 |---|---|---|
-| `Observation` | `id`, `started_at`, `last_seen_at`, `window: WindowInfo(app, title)`, `seen` (concise visible facts, ≤1000 chars), `visible_text` (≤300 chars), `segment` (or none) | **What was on screen.** `window` comes from X11, not the model. `seen` describes only what's visible and never guesses intent. While the screen and active evidence questions stay unchanged, sense moves `last_seen_at` forward without a model call. `active = last_seen_at − started_at`. A new observation's `started_at` is the poll at which it was triggered, and the previous observation is extended to that same poll, so consecutive observations meet exactly and nothing is counted twice. `segment is None` means it hasn't been rolled up yet |
+| `Observation` | `id`, `started_at`, `last_seen_at`, `window: WindowInfo(app, title)`, `seen` (concise visible facts, ≤1000 chars), `visible_text` (≤300 chars), `segment` (or none) | **What was on screen.** `window` comes from X11, not the model. `seen` describes only what's visible and never guesses intent. While the screen and active evidence questions stay unchanged, sense moves `last_seen_at` forward between one-minute freshness checks. `active = last_seen_at − started_at`. A new observation's `started_at` is the poll at which it was triggered, and the previous observation is extended to that same poll, so consecutive observations meet exactly and nothing is counted twice. `segment is None` means it hasn't been rolled up yet |
 | `Segment` | `id`, `title`, `kind: ActivityKind`, `intent`, `authored: model\|user`, `open`; derived: `started_at`, `ended_at`, `active`, `observations` | **The interpretation.** Times are derived from member observations at read time and never stored, so deleting an observation shrinks its segment. Once a user edits the text, `authored = user` and ticks never overwrite it |
 | `SignalReading` | `signal: SignalId(skill, name)`, `value: bool\|str\|float\|None`, `at`, `tick` | One row per signal per tick. `None` means the model couldn't tell or answered outside the type. "Held for 50 minutes" is computed from readings, so it survives a restart |
 | `CaptureSpan` | `state: running\|paused\|locked\|away\|withheld\|overlay`, `start`, `end` | Why capture was or wasn't happening. The timeline shows gaps honestly, and recall won't invent activity inside them |
-| `Tick` | `at`, `epoch`, `evidence_until`, `observations` (may be empty), `segment: Continue\|Start` (or none), `readings` | Applied in one transaction. Unique on `evidence_until`, the newest `last_seen_at` it read, so re-applying is a no-op. A tick with no new observations still writes readings, which is how streaks keep growing on a still screen. Rejected whole if `epoch` is older than the journal's forget epoch |
+| `SegmentAssignment` | `observations` (nonempty ordered IDs), `decision: Continue\|Start` | One contiguous group of observations assigned to an activity. A kind change starts a new segment even if the model asks to continue, preserving prior activity totals |
+| `Tick` | `at`, `epoch`, `evidence_until`, `observations` (may be empty), `segments: tuple[SegmentAssignment, ...]`, `readings` | Groups must cover the expected observation IDs exactly once, in order. An empty batch has no groups. Applied in one transaction. Unique on `evidence_until`, the assigned batch's evidence frontier (or the latest extension for an empty batch), so re-applying is a no-op. A tick with no new observations still writes readings, which is how streaks keep growing on a still screen. Rejected whole if `epoch` is older than the journal's forget epoch |
 | `SkillState` | `skill`, `enabled`, `approved_hash` (or none), `at` | Enablement and approval are stored separately. A skill is **active** only if `enabled` is true *and* its current hash is approved. Disabling keeps the approval, so re-enabling needs no new review; any edit changes the hash, so the skill needs review again |
 | `Firing` | `skill`, `rule`, `key`, `at`, `outcomes` | Unique on (skill, rule, key). This makes each rule fire at most once per occurrence |
 
@@ -177,7 +178,7 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 **`Journal`** (writes):
 
 - **sense:** `add_observation`, `extend_observation`, `trim_after(t)` (when going away or after a failed observe), `set_capture_state` (idempotent). `trim_after(t)` deletes every observation that started after `t` (with its FTS rows), cuts the one spanning `t` back to `t`, deletes signal readings and ticks after `t`, deletes segments left with no observations, and closes the open segment so resumed work starts a new one, all in one transaction. Firings are kept: they record effects that really happened, and a streak that restarts after the trim gets a new occurrence key.
-- **mind:** `record_tick` (one transaction; idempotent; rejected if started before the last forget) and `close_open_segment`.
+- **mind:** `record_tick` (one transaction for all ordered groups and readings; idempotent; rejects an invalid partition, stale or already assigned member, or a result started before the last forget) and `close_open_segment`.
 - **web, on user request:**
   - `edit_segment` (sets `authored=user`), `edit_observation`
   - `forget_observation`, `forget_segment` (also deletes its observations), `forget_range`, `forget_all`
@@ -191,7 +192,7 @@ Every commit publishes a domain event on the bus.
 **Done when:**
 
 - Unit tests on a temporary database cover each Portal read.
-- `record_tick` is shown idempotent: applying it twice gives one result, and observations deleted mid-tick are skipped.
+- `record_tick` is shown idempotent: applying it twice gives one result. Missing, duplicate, foreign, reordered, or already assigned observation IDs reject the whole tick without partial assignments or consuming its evidence frontier.
 - Deleting an observation shrinks its segment's derived times. Deleting a segment removes its observations and their FTS rows.
 - A user-authored segment survives a later `Continue`.
 - A tick or observation started before a `forget_range` is rejected after it, and nothing from the forgotten range reappears.
@@ -247,7 +248,7 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
 2. **Thumbnail.** Pass the admitted immutable `ScreenState` to `screen.thumbnail(expected)` for a 32×18 grayscale thumbnail. If it's black → `LOCKED`.
 3. **Keep time continuous, but never across a gap.** If the previous poll was also `RUNNING`, extend the latest observation (`extend_observation`) whether or not the screen changed, so totals don't lose the seconds between a change and the next model call. If the previous poll was in any other state, or the journal's forget epoch changed since the previous poll (a forget may have removed the latest observations), don't extend: the next observation starts fresh, and step 4 skips the cooldown. When `AWAY` begins, everything after the last input time is removed with `trim_after(last_input)`: later observations (for example, from a video that kept changing) and readings, so the idle minutes count as neither activity nor focus.
    **A failed observe also breaks continuity.** If an observe triggered by a change times out, fails validation, or is discarded, sense calls `trim_after(t)` with `t` = the poll where the change was first seen, then stops extending until a new observation is written. The time in between is a gap, not credit to the previous activity.
-4. **New observation** if the window changed, the thumbnail differs by 3% or more, capture just resumed after a gap, or the active evidence questions differ from the last successfully stored observation. At least 10 s must have passed since the last observe; an app switch or a resume skips that wait. Call the gateway with an OBSERVE builder. Question-only changes obey the same 10 s spacing and coalesce while an observe is queued or in flight; window, pixel, and resume triggers keep their existing behavior. Fresh skill approval also clears stale readings and bumps the shared journal epoch, so it retains the existing resume exemption; disable and re-enable with retained approval do not. The builder rechecks the gate, rereads the current questions, passes that admitted state to `screen.grab(expected)`, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it reruns the full gate** (lock, pause, overlay, away, and the stacking, geometry, and visibility check for exclusions) against the post-grab state. If any check fails, or the window set or stacking changed, it discards the frame.
+4. **New observation** if the window changed, the thumbnail differs by 3% or more, capture just resumed after a gap, the active evidence questions differ from the last successfully stored observation, or the last successfully stored frame was captured at least 60 seconds ago. At least 10 s must have passed since the last observe; an app switch or a resume skips that wait. Call the gateway with an OBSERVE builder. Question-only changes and freshness refreshes obey the same 10 s spacing and coalesce while an observe is queued or in flight; window, pixel, and resume triggers keep their existing behavior. Freshness uses the admitted frame's capture time, not request or completion time, and advances only after a successful journal write. The next eligible poll retries a failed or rejected refresh through the same privacy gate. Fresh skill approval also clears stale readings and bumps the shared journal epoch, so it retains the existing resume exemption; disable and re-enable with retained approval do not. The builder rechecks the gate, rereads the current questions, passes that admitted state to `screen.grab(expected)`, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it reruns the full gate** (lock, pause, overlay, away, and the stacking, geometry, and visibility check for exclusions) against the post-grab state. If any check fails, or the window set or stacking changed, it discards the frame.
 5. **Write the result.** `add_observation(draft, epoch)`, then `mind.nudge(app_switched)`. In the same transaction, the previous observation's `last_seen_at` is cut back to the new observation's `started_at`, so polls that extended it while the observe was pending don't overlap the new one. A result is discarded if the consent generation changed while it was in flight (see [§7](#7-privacy)), and the journal rejects it if a forget happened since the call started.
 
 **Observe prompt:** describe ordinary visible activity and concise facts relevant to active signal questions, within the existing 1000-character `seen` and 300-character `visible_text` limits. Questions select evidence; they are JSON context data in the user message, never instructions or requests to infer signal values. Preserve relevant text, numbers, controls, and status; describe absence only when the relevant area is sufficiently visible, and state uncertainty when clipped or unreadable. No guesses about intentions, feelings, or hidden state; interpretation remains the tick's job. The window app and title are given as facts. The observe output budget remains 400 tokens with no reasoning.
@@ -276,7 +277,7 @@ Our fullscreen overlay is recognized by `_NET_WM_PID` matching the shell process
 - `gate()` has a table test for every branch, including an unreadable lock state, idle input, an excluded window that's partly visible (withheld), and one that's fully covered (not withheld). The visibility calculation is a pure function with its own geometry tests.
 - After a pause, lock, or away span, the first running poll starts a new observation; the gap's time is attributed to nothing. Going away removes every observation and reading after the last input time, including several observations created by a changing screen. A failed observe after a change leaves a gap rather than extending the previous observation.
 - The black-frame check passes against the real locked-screen capture from grounding.
-- A replay run writes observations, and unchanged frames extend instead of calling the model. A changed frame inside the 10 s cooldown still extends the current observation, so `totals()` has no gap.
+- A replay run writes observations, and unchanged frames extend between one-minute freshness checks. Small changes below the thumbnail threshold are re-observed at the next eligible refresh; queued work cannot spawn duplicate refreshes. A changed frame inside the 10 s cooldown still extends the current observation, so `totals()` has no gap.
 - A frame whose metadata differs from the admitted state before the grab, or whose window set changes during the grab, is discarded; this applies to thumbnails too.
 - On the GX10, an unlocked screen yields a correct observation, and a locked screen yields `LOCKED` with no model call.
 - `privacy.json` round-trips, and changes apply within one poll.
@@ -296,19 +297,20 @@ Our fullscreen overlay is recognized by `_NET_WM_PID` matching the shell process
 
 **Tick prompt** (text only, ~1.5–3K tokens):
 
-- the rules for segments: prefer `Continue` unless the task clearly changed; state intent briefly, and hedge when unsure
+- the rules for segments: partition the supplied observation IDs into contiguous chronological activity groups; prefer `Continue` for the same task and start a group when the task or activity kind changes; state intent briefly, and hedge when unsure
 - `portal.context(last 30 min, detail="segments")` for continuity
 - the open segment and its last 3 observations
 - the new observations, with times and window facts, or, if there are none, a note that the screen has stayed the same since `<time>`
 - one line per active question, for example `break.focused (bool): Is the user doing sustained, focused work …?`. Enum lines list each value with its description
 
-The output model is built per tick from the active questions, so the JSON schema constrains each signal's type.
+The output model is built per tick from the active questions and admitted observation IDs. It contains `segments` (ordered groups with observation IDs, mode, title, kind, and intent) and `signals`. Each batch includes at most eight observations and 5,000 characters of new evidence, with a 4,096-token completion cap. Later observations stay unassigned for the next batch. The schema constrains each signal's type and allowed observation IDs; an exact ordered-partition validator uses the gateway's normal repair retry for omissions, duplicates, or reordering. Signals always answer the latest CURRENT evidence, including when the rollup is processing an older bounded batch.
 
 `parse_tick` is pure:
 
-- out-of-type answers become `None`
-- missing answers become `None`
-- extra keys are ignored
+- out-of-type signal answers become `None`
+- missing signal answers become `None`
+- extra signal keys are ignored
+- an invalid segment partition raises a validation error instead of silently consuming evidence
 
 Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
@@ -316,7 +318,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
 - `parse_tick` is table-tested: type coercion, missing and extra keys, and Continue vs Start when there's no open segment.
 - The schedule is tested with a fake clock: interval, debounce, spacing, and no tick without evidence.
-- With `ScriptedGateway`, a full tick writes a segment and readings and calls `react`.
+- With `ScriptedGateway`, a mixed-activity tick writes separate segments and one set of current readings atomically, calls `react` once, and preserves exact per-activity durations. A homogeneous batch can continue a single segment.
 - With the real model on the replay fixtures, signals match the expected labels on at least 80% of ticks. That's the quality gate; the fallback is effort `low` for ticks only.
 
 ### 6.6 `skills`: format, approval, triggers, and generator
@@ -331,7 +333,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
   - every referenced signal is declared
   - a skill has at most 4 signals
   - a hook step appears only when `source.origin` is `builtin`, and has a matching function in `<id>.hook.py`. Hooks in user or chat-made skills are parse errors, and `.hook.py` files outside `skills/builtin/` are never loaded
-- **`evaluate(rule, history, max_gap=5 min, now) -> Occurrence | None`.** Pure. It covers the four trigger forms and the keys that make firing idempotent.
+- **`evaluate(rule, history, max_gap=5 min, now) -> Occurrence | None`.** Pure. It covers the four trigger forms and the keys that make firing idempotent. For duration rules, SkillBook cuts history after explicit pause, lock, private, or away interruptions. A completed app overlay lasting at most five minutes preserves the original streak key when adjacent known readings remain within the evaluator's five-minute limit; dismissing a reminder cannot create another occurrence for the same continued activity. Longer overlay gaps reset continuity. Streak duration retains elapsed-time semantics.
 - **Approval and enablement** (stored separately, in `skill_state`).
   - A skill is active only if it is enabled *and* `sha256(skill file + hook file)` is approved.
   - `approve(id, hash)` approves that exact hash and enables the skill. Approving a *different* hash than before also deletes that skill's old signal readings and firings, so answers to the old version's questions can't form edges or streaks under the new one; `react` ignores readings from a tick that started before the approval. `disable(id)` and `enable(id)` flip only `enabled`. Enabling a skill whose current hash isn't approved is refused, so it has to be reviewed.

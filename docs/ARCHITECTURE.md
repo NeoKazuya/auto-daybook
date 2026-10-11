@@ -130,15 +130,15 @@ Every model call goes through `ModelGateway.call(priority, prompt)`. `ModelConfi
 
 | Call | Made by | Input | Effort | Latency | Rate cap |
 |---|---|---|---|---|---|
-| observe | sense | 1 image (1280 px JPEG, q80, ~950 tokens) + window facts, ~150 tokens | none | ~3 s | 6/min |
+| observe | sense | 1 image (1280 px JPEG, q80) + window facts and active evidence questions (up to 12) | none; 400-token completion cap | ~3 s target; measure with active questions | 6/min |
 | tick | mind | text, 1.5–3K tokens; output schema built from the active signals | none, or low if quality needs it | 2–4 s | 2/min |
 | route | chat | ~300 tokens | none | ~1 s | on demand |
 | recall | chat | up to 8K tokens of notes and totals | none | 4–10 s | on demand |
-| draft skill | chat | ~3K tokens (format guide, catalog, plan examples) | none | ~6 s in the Qwen3.8 caller smoke test | on demand |
+| draft skill | chat | format guide, catalog, and supported plan examples | low; 2000-token completion cap including reasoning | 12.8–25.4 s development; 9.2–32.0 s independent heldouts on the selected generator | on demand |
 
 **Background budget:** the normal cadence targets up to six observations and two ticks per minute. App switches and capture resumption can bypass sense's ten-second spacing; this is not a hard gateway rate limit. Raising concurrency changes admission capacity, not those scheduling rules. With the GX10 limit of two, one background request leaves capacity for chat; if interactive work fills every slot, new work waits for a slot and follows the fairness rule. The eight-background-calls-per-minute acceptance is measured during normal use, not inferred from the concurrency limit.
 
-**Backend configuration:** change `[model]` in `daybook.toml` (`base_url`, `model`, `api_key_file`, `dialect`, `max_concurrency`). The dialect (`ollama`, `vllm`, or `openai`) controls reasoning effort and JSON-schema request spelling. For vLLM, effort `none` sends `chat_template_kwargs.enable_thinking = false`; `low` enables thinking and sends top-level `reasoning_effort = low`. Completion caps include reasoning and output. Existing caps and effort `none` passed the Qwen3.8 transport and fixed activity checks. Those checks do not establish skill-planning correctness; the separate generator assessment is recorded in the adoption decision.
+**Backend configuration:** change `[model]` in `daybook.toml` (`base_url`, `model`, `api_key_file`, `dialect`, `max_concurrency`). The dialect (`ollama`, `vllm`, or `openai`) controls reasoning effort and JSON-schema request spelling. For vLLM, effort `none` sends `chat_template_kwargs.enable_thinking = false`; `low` enables thinking and sends top-level `reasoning_effort = low`. Completion caps include reasoning and output. The existing activity-call caps and effort `none` passed the Qwen3.8 transport and fixed activity checks. Skill drafting separately uses `low` with the unchanged 2000-token completion cap; its measured latency includes reasoning, and the earlier ~6 s no-reasoning caller smoke test is not representative of this planner. Those checks do not establish skill-planning correctness; the separate generator assessment is recorded in the adoption decision.
 
 The Qwen3.8 switch passed `~/gx10-model-plan/accept.py --vision` (14 checks) and matched the previous fixed-recording result: 12/13 joint signal sets and 13/13 activity kinds. See [the adoption decision](planning/decisions.md#qwen38-adoption-and-configurable-concurrency-2026-10-10) for the measured scope. Keep Ollama stopped; do not start a second large model beside vLLM.
 
@@ -345,9 +345,9 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
   A failing step is recorded and the rule continues with its next step. Hook steps time out after 10 s. Nothing reacts while paused.
 - **`draft_skill(request)`.**
-  - The prompt has the format guide, `catalog.describe_for_prompt()`, and validated declarative built-ins converted to structured plan examples. Invalid files and built-ins containing hooks are excluded from examples. The model returns a declarative plan; code renders the `.skill.md` file, with no hook.
+  - The prompt has the format guide, `catalog.describe_for_prompt()`, and validated declarative built-ins converted to structured plan examples. Invalid files and built-ins containing hooks are excluded from examples. The model returns either a supported declarative plan or a concrete explanation that an essential input or action is unavailable. Code renders supported plans as `.skill.md` files, with no hook. An unsupported outcome raises `UnsupportedSkill`; Chat shows its explanation without saving an artifact. Missing or ambiguous current screen evidence is a runtime unknown, not an unsupported capability.
   - If parsing fails, the generator retries once with the errors included. If it still fails, the draft is saved as invalid so the user can fix it.
-  - The result is written with `created_by: chat` and the original `request`, in "needs review" status, along with a one-line summary.
+  - A supported result is written with `created_by: chat` and the original `request`, in "needs review" status, along with a one-line summary.
 
 **Done when:**
 

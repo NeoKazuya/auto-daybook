@@ -197,6 +197,8 @@ def test_events_start_rather_than_fall_due():
         ("Quiz 4 · 2 days left", True),
         ("Project report due next week", True),
         ("Uploaded 3 days ago", False),
+        ("Quiz closes in 30 minutes", True),
+        ("15 min remaining", True),
     ],
 )
 def test_dated_gate_needs_a_date_not_just_a_clock_time(text, expected):
@@ -643,3 +645,34 @@ def test_mock_range_forget_removes_items_like_the_journal():
             client.post("/api/forget", json=window, headers=headers).status_code == 200
         )
         assert client.get("/api/upcoming").json()["items"] == []
+
+
+class DismissingGateway(ScriptedGateway):
+    """Dismiss an Upcoming item while the tick's model call is in flight."""
+
+    def __init__(self, replies, journal, item):
+        super().__init__(replies)
+        self.journal, self.item = journal, item
+
+    async def call(self, priority, prompt):
+        built = await prompt() if callable(prompt) else prompt
+        if built is None:
+            return None
+        self.journal.dismiss_upcoming(self.item)
+        return await super().call(priority, built)
+
+
+async def test_dismissal_during_a_tick_discards_its_upcoming_readings(journal):
+    journal.set_capture_state("running", NOW)
+    source = note(journal, "YouTube video playing", title="YouTube")
+    [item] = journal.add_upcoming(
+        [UpcomingDraft("CSE 130 Assignment 3", NOW + timedelta(hours=2))],
+        journal.epoch,
+        at=NOW,
+    )
+    reply = tick_reply({"nudge.drifting": True}).replace("$id", source.id)
+    book = Book((DRIFT,))
+    gateway = DismissingGateway([reply], journal, item.id)
+    mind = Mind(journal, gateway, cast(SkillBook, book), clock=lambda: NOW)
+    assert await mind.tick_now() is None
+    assert book.reacted == 0

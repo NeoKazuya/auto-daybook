@@ -179,6 +179,11 @@ class Runner:
             questions = tuple(signal.ask for signal in signals)
             observation_id = latest.id
 
+            # A tick that shows the Upcoming list is valid only for that list:
+            # a dismissal while the model answers must not fire on the old item.
+            reads_upcoming = any("upcoming" in signal.reads for signal in signals)
+            shown = portal.upcoming(at, limit=5) if reads_upcoming else []
+
             def ready() -> bool:
                 try:
                     if (
@@ -196,6 +201,11 @@ class Runner:
                     and current.observation is not None
                     and current.observation.id == observation_id
                     and self.capture_start(self.clock()) == capture_start
+                    and (
+                        not reads_upcoming
+                        or [i.id for i in portal.upcoming(at, limit=5)]
+                        == [i.id for i in shown]
+                    )
                 )
 
             if not ready():
@@ -249,8 +259,8 @@ class Runner:
             )
             # Only skills that opt in see the Upcoming list. It is present-tense
             # state with code-computed times, unlike the historical notes above.
-            if any("upcoming" in signal.reads for signal in signals):
-                items = portal.upcoming(at, limit=5)
+            if reads_upcoming:
+                items = shown
                 lines.append(
                     "Upcoming list kept by Daybook (current facts at this tick; due times computed by code):"
                 )

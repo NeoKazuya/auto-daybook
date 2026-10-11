@@ -212,7 +212,7 @@ function trigger(when) {
 function step({ action, arguments: args = {} }) {
   const v = (x) => (typeof x === 'string' && x.startsWith('$') ? `the current ${human(x.slice(1))}` : x);
   switch (action) {
-    case 'overlay.show': return `show a ${args.layout === 'bubble' ? 'bubble reminder' : 'full-screen overlay'} “${args.title}”${args.minutes ? ` for up to ${args.minutes} min` : ''}`;
+    case 'overlay.show': return `show a ${args.layout === 'bubble' ? 'bubble reminder' : 'full-screen overlay'} “${args.title}”${args.minutes ? ` for up to ${shown(args.minutes)}` : ''}`;
     case 'overlay.hide': return 'hide the overlay';
     case 'music.play_mood': return `play ${v(args.mood)} music`;
     case 'music.stop': return 'stop the music';
@@ -220,8 +220,18 @@ function step({ action, arguments: args = {} }) {
     case 'desktop.open_url': return `open ${args.url}`;
     case 'desktop.launch': return `start ${args.app}`;
     case 'desktop.focus': return `bring ${args.app} to the front`;
+    case 'desktop.close_tab': {
+      const name = String(args.title ?? '').replace(/[*?]/g, '').trim() || 'matching';
+      return `close the ${name} tab if it's still the active one`;
+    }
+    case 'wait': return `wait ${dur(String(args.for))}`;
     default: return action;
   }
+}
+
+// Overlay durations are in minutes; short ones read better in seconds.
+function shown(minutes) {
+  return minutes < 1 ? `${Math.round(minutes * 60)} seconds` : `${minutes} min`;
 }
 
 // Cooldowns arrive in seconds.

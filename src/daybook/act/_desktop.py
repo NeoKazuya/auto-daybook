@@ -68,3 +68,110 @@ async def focus(app: str) -> Outcome:
         return Outcome("desktop.focus", False, "window_not_found")
     except OSError:
         return Outcome("desktop.focus", False, "command_unavailable")
+
+
+async def output(*args: str) -> str | None:
+    """A command's stripped stdout, or None if it failed or couldn't run."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(process.communicate(), 8)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+            return None
+        if process.returncode != 0:
+            return None
+        return stdout.decode(errors="replace").strip()
+    except OSError:
+        return None
+
+
+# WM_CLASS globs (lowercased) of the browsers close_tab may act on.
+BROWSERS = (
+    "*firefox*",
+    "*chrome*",
+    "*chromium*",
+    "*brave*",
+    "*microsoft-edge*",
+    "*vivaldi*",
+    "*opera*",
+    "*librewolf*",
+)
+
+
+def browser(wm_class: str) -> bool:
+    """True for xprop WM_CLASS output naming a known browser."""
+    classes = re.findall(r'"([^"]*)"', wm_class)
+    return any(
+        fnmatch.fnmatchcase(name.lower(), glob) for name in classes for glob in BROWSERS
+    )
+
+
+def literals(pattern: str) -> str:
+    """The characters a glob matches literally, parsed the way fnmatch does:
+    * and ? are wildcards; a [...] class (with an optional leading ! and a
+    leading ] as a member) is one wildcard; an unterminated [ is literal."""
+    out, i, n = [], 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        i += 1
+        if c in "*?":
+            continue
+        if c == "[":
+            j = i
+            if j < n and pattern[j] == "!":
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 1
+            if j < n:
+                i = j + 1  # the whole class matches one arbitrary character
+                continue
+        out.append(c)
+    return "".join(out)
+
+
+def specific(pattern: str) -> bool:
+    """A title pattern must name something: at least 3 literal characters, so a
+    skill can never close whatever browser tab happens to be active."""
+    return len(literals(pattern).strip()) >= 3
+
+
+async def close_tab(title: str) -> Outcome:
+    """Press Ctrl+W in the active window, only if it's a known browser and its
+    title matches `title` (case-insensitive glob). The keystroke is bound to the
+    window that passed the check: one xdotool call re-activates that window ID
+    and sends the key, so a focus change can't redirect it to another window."""
+    if not specific(title):
+        return Outcome("desktop.close_tab", False, "pattern_too_broad")
+    window = await output("xdotool", "getactivewindow")
+    if not window or not window.isdigit():
+        return Outcome("desktop.close_tab", False, "window_unreadable")
+    name = await output("xdotool", "getwindowname", window)
+    if name is None:
+        return Outcome("desktop.close_tab", False, "window_unreadable")
+    if not fnmatch.fnmatchcase(name.lower(), title.lower()):
+        return Outcome("desktop.close_tab", False, "tab_not_active")
+    wm_class = await output("xprop", "-id", window, "WM_CLASS")
+    if wm_class is None:
+        return Outcome("desktop.close_tab", False, "window_unreadable")
+    if not browser(wm_class):
+        return Outcome("desktop.close_tab", False, "not_a_browser")
+    # Abort if focus moved while we were checking, so the activation below never
+    # brings back a window the user has left; it then only binds the key to it.
+    if await output("xdotool", "getactivewindow") != window:
+        return Outcome("desktop.close_tab", False, "tab_not_active")
+    return await command(
+        "desktop.close_tab",
+        "xdotool",
+        "windowactivate",
+        "--sync",
+        window,
+        "key",
+        "--clearmodifiers",
+        "ctrl+w",
+    )

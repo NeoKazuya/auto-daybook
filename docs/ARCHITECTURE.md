@@ -376,6 +376,8 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 | `desktop.open_url` | `url` | Through the `DesktopControl` backend |
 | `desktop.launch` | `app` (desktop file ID) | `gtk-launch` |
 | `desktop.focus` | `app` (WM_CLASS glob) | `wmctrl`/`xdotool`, or the cua backend |
+| `desktop.close_tab` | `title` (case-insensitive glob, such as `*Instagram*`) | Presses Ctrl+W in the active window only if all of these hold, otherwise does nothing and reports why: the same skill successfully showed an overlay or bubble in the last 30 s, and each warning authorizes one close (`no_warning_shown`); the window is a known browser by WM_CLASS (`not_a_browser`); its title matches (`tab_not_active`); and focus hasn't moved since the check. `title` needs 3 or more literal characters, with `[...]` classes counting as wildcards (`pattern_too_broad`) |
+| `wait` | `for` (`1s` to `10s`) | Sleeps before the next step. Because steps re-check that the skill may still act, pausing Daybook or disabling the skill during the wait stops the steps after it. For warn-then-act sequences such as `overlay.show`, `wait`, `desktop.close_tab` |
 
 **Catalog types:**
 
@@ -388,7 +390,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 - **`DesktopControl`.**
   - `XdoDesktop` is the default.
   - `CuaDesktop` wraps trycua/cua's driver, and is built only if a time-boxed trial on the real Xorg session passes. Config chooses between them.
-  - Skills reach it only through the three `desktop.*` actions.
+  - Skills reach it only through the `desktop.*` actions.
 
 `Actions` is a capability object. It holds one skill's allow list, raises `NotAllowed` for anything else, and never raises for an action that fails (it returns `ok=False`).
 

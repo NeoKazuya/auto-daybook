@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,14 @@ from typing import Awaitable, Callable, Literal, Mapping, Protocol, cast
 
 from daybook.events import Bus, OverlayHidden, OverlayShown
 from daybook.journal import Outcome
+
+# desktop.close_tab only acts within this many seconds of a successful
+# overlay.show by the same skill: a destructive step never happens unannounced.
+CLOSE_TAB_WARNING_WINDOW = 30
+
+# The `wait` step accepts these durations: at most 10 s, like a hook step, because
+# steps hold up the rest of the tick's reactions.
+WAITS = tuple(f"{n}s" for n in range(1, 11))
 
 
 @dataclass(frozen=True)
@@ -144,6 +153,19 @@ def build_catalog(
         ActionSpec("desktop.open_url", "Open a URL", {"url": text}),
         ActionSpec("desktop.launch", "Launch a desktop file ID", {"app": text}),
         ActionSpec("desktop.focus", "Focus an app by WM_CLASS glob", {"app": text}),
+        ActionSpec(
+            "desktop.close_tab",
+            "Close the active browser tab, only if its window title matches a glob "
+            "such as *Instagram* and this skill showed an overlay or bubble in the "
+            f"last {CLOSE_TAB_WARNING_WINDOW}s (warn first, then close)",
+            {"title": text},
+        ),
+        ActionSpec(
+            "wait",
+            "Pause before the next step (1s to 10s); the next step runs only if "
+            "the skill may still act (not paused, still enabled)",
+            {"for": Parameter("enum", values=WAITS)},
+        ),
     )
     return Catalog(specs, moods, handlers)
 
@@ -152,6 +174,7 @@ class DesktopControl(Protocol):
     async def open_url(self, url: str) -> Outcome: ...
     async def launch(self, app: str) -> Outcome: ...
     async def focus(self, app: str) -> Outcome: ...
+    async def close_tab(self, title: str) -> Outcome: ...
 
 
 class XdoDesktop:
@@ -169,6 +192,11 @@ class XdoDesktop:
         from ._desktop import focus
 
         return await focus(app)
+
+    async def close_tab(self, title: str) -> Outcome:
+        from ._desktop import close_tab
+
+        return await close_tab(title)
 
 
 class FakeDesktop:
@@ -188,6 +216,10 @@ class FakeDesktop:
     async def focus(self, app: str) -> Outcome:
         self.calls.append(("focus", app))
         return Outcome("desktop.focus", True, "fake")
+
+    async def close_tab(self, title: str) -> Outcome:
+        self.calls.append(("close_tab", title))
+        return Outcome("desktop.close_tab", True, "fake")
 
 
 class Overlay:
@@ -408,8 +440,10 @@ def bind_handlers(
     async def stop(skill: str, args: Mapping[str, object]) -> Outcome:
         return await music.stop(skill=skill)
 
+    warned: dict[str, float] = {}  # skill -> monotonic time of its last shown overlay
+
     async def show(skill: str, args: Mapping[str, object]) -> Outcome:
-        return await overlay.show(
+        outcome = await overlay.show(
             OverlayRequest(
                 str(args["title"]),
                 str(args["body"]),
@@ -420,6 +454,12 @@ def bind_handlers(
             ),
             skill,
         )
+        # Only the latest attempt counts: a failed warning withdraws an earlier one.
+        if outcome.ok:
+            warned[skill] = time.monotonic()
+        else:
+            warned.pop(skill, None)
+        return outcome
 
     async def hide(skill: str, args: Mapping[str, object]) -> Outcome:
         return await overlay.hide()
@@ -442,6 +482,18 @@ def bind_handlers(
     async def focus(skill: str, args: Mapping[str, object]) -> Outcome:
         return await desktop.focus(str(args["app"]))
 
+    async def close_tab(skill: str, args: Mapping[str, object]) -> Outcome:
+        shown = warned.pop(skill, None)  # one warning authorizes one close
+        if shown is None or time.monotonic() - shown > CLOSE_TAB_WARNING_WINDOW:
+            return Outcome("desktop.close_tab", False, "no_warning_shown")
+        return await desktop.close_tab(str(args["title"]))
+
+    async def wait(skill: str, args: Mapping[str, object]) -> Outcome:
+        # Only sleeps: SkillBook.react re-checks eligibility before the next step,
+        # so pausing Daybook or disabling the skill during the wait stops it.
+        await asyncio.sleep(duration(args["for"]))
+        return Outcome("wait", True)
+
     return {
         "music.play_mood": play,
         "music.stop": stop,
@@ -451,4 +503,6 @@ def bind_handlers(
         "desktop.open_url": open_url,
         "desktop.launch": launch,
         "desktop.focus": focus,
+        "desktop.close_tab": close_tab,
+        "wait": wait,
     }

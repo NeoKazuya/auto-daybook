@@ -527,3 +527,260 @@ async def test_overlay_layout_rejects_invalid_catalog_value(library, tmp_path):
     finally:
         await overlay.close()
         await player.close()
+
+
+async def test_wait_step_sleeps_and_close_tab_goes_through_the_desktop(
+    library, tmp_path, monkeypatch
+):
+    import daybook.act as act
+
+    waits = []
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(act.asyncio, "sleep", fake_sleep)
+    desktop = FakeDesktop()
+    overlay = Overlay(Bus())
+    player = MusicPlayer(library, tmp_path / "home", Bus(), overlay)
+    catalog = build_catalog(library.moods, bind_handlers(player, overlay, desktop))
+    actions = catalog.allowed(
+        ("overlay.show", "wait", "desktop.close_tab"), "instagram-nudge"
+    )
+
+    # Never closes unannounced: no warning from this skill yet.
+    unwarned = await actions.run("desktop.close_tab", title="*Instagram*")
+    assert not unwarned.ok and unwarned.detail == "no_warning_shown"
+    overlay.shell_connected(True)
+    shown = await actions.run(
+        "overlay.show", title="Instagram?", body="Bro.", minutes=0.0834, layout="bubble"
+    )
+    assert shown.ok
+    assert (await actions.run("wait", **{"for": "5s"})).ok and waits == [5]
+    assert (await actions.run("desktop.close_tab", title="*Instagram*")).ok
+    assert desktop.calls == [("close_tab", "*Instagram*")]
+    # One warning authorizes one close.
+    again = await actions.run("desktop.close_tab", title="*Instagram*")
+    assert again.detail == "no_warning_shown"
+    # A later warning that fails withdraws an earlier successful one.
+    assert (
+        await actions.run(
+            "overlay.show", title="Instagram?", body="Bro.", layout="bubble"
+        )
+    ).ok
+    overlay.shell_connected(False)
+    failed = await actions.run(
+        "overlay.show", title="Instagram?", body="Bro.", layout="bubble"
+    )
+    assert not failed.ok
+    stale = await actions.run("desktop.close_tab", title="*Instagram*")
+    assert stale.detail == "no_warning_shown"
+    assert desktop.calls == [("close_tab", "*Instagram*")]
+    overlay.shell_connected(True)
+    # Another skill's warning doesn't count.
+    other = catalog.allowed(("desktop.close_tab",), "other-skill")
+    assert (await other.run("desktop.close_tab", title="*Instagram*")).detail == (
+        "no_warning_shown"
+    )
+    await overlay.close()
+    # Waits are 1s to 10s; anything else is refused before it can run.
+    assert not (await actions.run("wait", **{"for": "11s"})).ok
+    assert not (await actions.run("wait", **{"for": "0s"})).ok
+    assert waits == [5]
+    assert "wait" in catalog.describe_for_prompt()
+
+
+async def test_pausing_during_the_wait_stops_the_close(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from daybook.journal import (
+        Outcome,
+        Portal,
+        SignalId,
+        SignalReading,
+        Situation,
+        Tick,
+    )
+    from daybook.skills import SkillBook
+
+    class Portal_(Portal):
+        def __init__(self):
+            self.capture = "running"
+            self.history = []
+
+        def now(self):
+            return Situation(self.capture, None, None, ())  # type: ignore[arg-type]
+
+        def capture_spans(self, range):
+            return []
+
+        def readings(self, signal, range):
+            return [r for r in self.history if r.signal == signal]
+
+    portal = Portal_()
+    closed = []
+
+    async def wait(skill, args):
+        portal.capture = "paused"  # the user pauses Daybook mid-wait
+        return Outcome("wait", True)
+
+    async def close(skill, args):
+        closed.append(args)
+        return Outcome("desktop.close_tab", True)
+
+    book = SkillBook(
+        tmp_path,
+        tmp_path / "builtin",
+        tmp_path / "journal.db",
+        portal,
+        build_catalog({"focus": "work"}, {"wait": wait, "desktop.close_tab": close}),
+        Bus(),
+        clear_readings=lambda skill: None,
+    )
+    saved = book.save(
+        "nudge",
+        """---
+id: nudge
+name: Nudge
+signals:
+  on_instagram:
+    ask: Is Instagram the active tab?
+    type: bool
+rules:
+  - when: on_instagram updates
+    do:
+      - wait: { for: 5s }
+      - desktop.close_tab: { title: "*Instagram*" }
+allow: [wait, desktop.close_tab]
+---
+Close Instagram.
+""",
+    )
+    assert saved.status == "needs_review", saved.errors
+    book.approve("nudge", saved.hash)
+    when = datetime.now(timezone.utc) + timedelta(seconds=1)
+    reading = SignalReading(SignalId("nudge", "on_instagram"), True, when, "t1")
+    portal.history.append(reading)
+    await book.react(Tick(when, 0, when, (), (), (reading,)))
+    assert portal.capture == "paused", "the rule fired and its wait step ran"
+    assert closed == []
+
+
+async def test_xdo_close_tab_targets_only_the_checked_window(monkeypatch):
+    from daybook.act import _desktop
+
+    ran = []
+    screen = {
+        "window": "4242",
+        "title": "(3) Instagram • Reels — Mozilla Firefox",
+        "class": 'WM_CLASS(STRING) = "Navigator", "firefox"',
+    }
+
+    async def output(*args):
+        if args == ("xdotool", "getactivewindow"):
+            return screen["window"]
+        if args == ("xdotool", "getwindowname", screen["window"]):
+            return screen["title"]
+        if args == ("xprop", "-id", screen["window"], "WM_CLASS"):
+            return screen["class"]
+        return None
+
+    async def command(action, *args):
+        ran.append(args)
+        return _desktop.Outcome(action, True)
+
+    monkeypatch.setattr(_desktop, "output", output)
+    monkeypatch.setattr(_desktop, "command", command)
+    desktop = XdoDesktop()
+
+    assert (await desktop.close_tab("*instagram*")).ok
+    assert ran == [
+        (
+            "xdotool",
+            "windowactivate",
+            "--sync",
+            "4242",
+            "key",
+            "--clearmodifiers",
+            "ctrl+w",
+        )
+    ]
+
+    screen["title"] = "auto-daybook — Visual Studio Code"
+    moved_on = await desktop.close_tab("*Instagram*")
+    assert not moved_on.ok and moved_on.detail == "tab_not_active"
+
+    # A matching title in a non-browser (an editor document) is never closed.
+    screen["title"] = "Instagram campaign.md — Visual Studio Code"
+    screen["class"] = 'WM_CLASS(STRING) = "code", "Code"'
+    assert (await desktop.close_tab("*Instagram*")).detail == "not_a_browser"
+    screen["class"] = 'WM_CLASS(STRING) = "google-chrome", "Google-chrome"'
+    screen["title"] = "Instagram - Google Chrome"
+    assert (await desktop.close_tab("*Instagram*")).ok
+    assert len(ran) == 2
+    ran.pop()
+
+    # Focus moves away between the checks and the keystroke: abort, don't reactivate.
+    calls = {"n": 0}
+
+    async def moving(*args):
+        if args == ("xdotool", "getactivewindow"):
+            calls["n"] += 1
+            return "4242" if calls["n"] == 1 else "9999"
+        return await output(*args)
+
+    monkeypatch.setattr(_desktop, "output", moving)
+    assert (await desktop.close_tab("*Instagram*")).detail == "tab_not_active"
+    assert len(ran) == 1
+    monkeypatch.setattr(_desktop, "output", output)
+
+    screen["window"] = ""
+    assert (await desktop.close_tab("*Instagram*")).detail == "window_unreadable"
+
+    for broad in (
+        "*",
+        "*?*",
+        "[a]*",
+        " * ",
+        "[a-z]*",
+        "[a-z][a-z][a-z]*",
+        "*[!x]*",
+        "[] -~a]*",
+        "[!]x]*",
+    ):
+        assert (await desktop.close_tab(broad)).detail == "pattern_too_broad"
+    assert len(ran) == 1
+
+
+def test_literals_follow_fnmatch_class_rules():
+    import fnmatch
+
+    from daybook.act._desktop import literals, specific
+
+    assert literals("*Instagram*") == "Instagram"
+    assert literals("*Insta[gG]ram*") == "Instaram"
+    assert literals("[] -~a]*") == ""
+    assert literals("[abc") == "[abc"  # unterminated: literal, as fnmatch reads it
+    assert fnmatch.fnmatchcase("anything", "[] -~a]*")  # why it must count as wildcard
+    assert specific("*Instagram*") and not specific("[] -~a]*")
+
+
+def test_instagram_nudge_builtin_parses_against_the_catalog(library):
+    from pathlib import Path
+
+    from daybook.skills import SkillSource, parse_skill
+
+    path = Path(__file__).parents[2] / "skills/builtin/instagram-nudge.skill.md"
+    catalog = build_catalog(library.moods)
+    skill = parse_skill(
+        path.read_text(),
+        source=SkillSource(path, "builtin"),
+        catalog=catalog,
+        hook_text=None,
+    )
+    assert not isinstance(skill, list), skill
+    assert [s.action for s in skill.rules[0].steps] == [
+        "overlay.show",
+        "wait",
+        "desktop.close_tab",
+    ]

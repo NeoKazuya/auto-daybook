@@ -100,12 +100,39 @@ One limit spans skills, so it's checked when a skill is approved or enabled rath
 - **Stale approvals are refused.** "Approve & enable" posts the hash the user reviewed. If the file changed since, the server refuses and shows the new text.
 - **Built-in exception.** Skills in `skills/builtin/` count as approved, because they're part of the repo and go through normal PRs. Built-ins other than `music` start disabled.
 
+## Chat requests and capability limits
+
+Chat can draft reminders from sampled screen notes: visible apps, windows, text,
+numeric values and UI elements, with supported inferences about the current task.
+Presence or absence can be evidence when the relevant area is sufficiently
+visible. Missing or ambiguous evidence produces an unknown signal reading;
+it does not make the capability unavailable.
+
+A warning before an action is a best-effort reminder while its visible condition
+is observed. Sampling cannot guarantee catching a quick action or block it.
+Daybook uses only the action catalog. It cannot hear calls, detect voice tone,
+read hidden app state, use private app APIs or keyboard hooks, intercept actions,
+or know feelings that have not been expressed.
+
+If an essential requested input or action is fundamentally unavailable, chat
+explains the limitation instead of saving a skill. `draft_skill` raises
+`UnsupportedSkill` with that explanation, and Chat returns a plain response.
+Supported drafts keep the usual review and exact-hash approval flow. Skill drafts
+use low reasoning effort to plan combined conditions; other model calls keep
+their existing effort settings.
+
 ## Writing good signals
 
 - Ask about the **present**: "Is the user in a video call right now?", not "Did the user have a meeting today?"
 - Make each question answerable from screen notes: apps, windows, and what's visible.
 - Prefer `bool` or a short enum, with a description for each value.
 - Let the trigger handle time ("is true for 50m"). Don't put time in the question.
+- A rule tests one value of one signal. Independent rules do not combine as AND.
+  Put combined requirements, exclusions and numeric comparisons in one present
+  boolean question, then trigger that condition becoming true or persisting.
+- Use `updates` only for an action intentionally refreshed on every known reading.
+  It does not filter values or compare a number to a threshold; reminders need a
+  transition, a held condition, or a timer.
 
 ## Built-in skills
 
@@ -222,3 +249,8 @@ source = "https://incompetech.com/"
 ```
 
 `daybook music check` fails if a folder and a mood disagree, or if a track is missing its license or source.
+
+
+Active signal questions also guide which visible facts the screenshot observer preserves. They are context for evidence selection, not extra model calls or instructions to decide a signal. The observer retains ordinary activity plus relevant short text, numbers, controls, or status; it only reports absence when the relevant area is sufficiently visible. Unreadable, clipped, or missing evidence remains uncertain for the tick.
+
+Approving a new or edited skill refreshes evidence through the existing journal-epoch resume behavior. Disabling or re-enabling an approved skill changes the observer's questions on a still screen at the normal ten-second observation limit. Queued observations read the latest approved questions at admission; changes during an in-flight observation refresh after it completes. Temporary skill-file reconciliation failures do not silently replace active questions with an empty list.

@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from daybook.journal import Journal, TimeRange, Total
 from daybook.model import ModelGateway, ModelUnavailable, Priority, Prompt
-from daybook.skills import SkillBook, SkillEntry, draft_skill
+from daybook.skills import SkillBook, SkillEntry, UnsupportedSkill, draft_skill
 
 
 @dataclass(frozen=True)
@@ -163,6 +163,8 @@ class Chat:
             return Plain(
                 "I can answer questions about your notes and draft activity-based reminders. Try /ask or /skill."
             )
+        except UnsupportedSkill as exc:
+            return Plain(exc.explanation)
         except ModelUnavailable:
             return Plain(
                 "The local model is unavailable. Your notes are still here; try again when it reconnects."

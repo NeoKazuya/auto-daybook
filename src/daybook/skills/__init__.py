@@ -110,6 +110,14 @@ class SignalLimit(Exception):
     pass
 
 
+class UnsupportedSkill(Exception):
+    """The request needs evidence or actions unavailable to a skill."""
+
+    def __init__(self, explanation: str) -> None:
+        self.explanation = explanation
+        super().__init__(explanation)
+
+
 def parse_skill(
     text: str, *, source: SkillSource, catalog: Catalog, hook_text: str | None = None
 ) -> Skill | list[SkillError]:
@@ -129,6 +137,7 @@ def evaluate(
 async def draft_skill(
     request: str, *, book: SkillBook, gateway: ModelGateway
 ) -> tuple[SkillEntry, str]:
+    """Save a reviewable draft, or raise UnsupportedSkill without saving one."""
     from ._draft import generate
 
     return await generate(request, book=book, gateway=gateway)

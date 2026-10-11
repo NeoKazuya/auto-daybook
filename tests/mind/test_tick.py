@@ -651,11 +651,13 @@ async def test_queued_tick_rejects_replaced_current_but_keeps_extensions(
             await asyncio.sleep(0)
         assert gateway.status().in_flight == "observe"
         release_observe.set()
-        await asyncio.wait_for(tick_started.wait(), 1)
         await observing
+        if not changed_id:
+            await asyncio.wait_for(tick_started.wait(), 1)
         release_tick.set()
-        tick = await ticking
+        tick = await asyncio.wait_for(ticking, 1)
         if changed_id:
+            assert not tick_started.is_set()  # Rejected before HTTP admission.
             assert tick is None
             assert not skills.fired
             assert not journal.portal.now().readings
@@ -667,3 +669,54 @@ async def test_queued_tick_rejects_replaced_current_but_keeps_extensions(
         release_observe.set()
         release_tick.set()
         await gateway.close()
+
+
+@pytest.mark.parametrize("owner", ["book", "callback"])
+async def test_evidence_readiness_failure_recovers_without_consuming_attempt(
+    runtime, monkeypatch, owner
+):
+    journal, clock, observation, skills = runtime
+    unavailable = [True]
+    original = skills.active_signals
+
+    def active_signals():
+        if unavailable[0] and owner == "book":
+            raise OSError("source temporarily unavailable")
+        return original()
+
+    def ready(observation_id, questions):
+        assert observation_id == observation.id
+        assert questions == tuple(signal.ask for signal in SIGNALS)
+        if unavailable[0] and owner == "callback":
+            raise OSError("source temporarily unavailable")
+        return True
+
+    monkeypatch.setattr(skills, "active_signals", active_signals)
+    gateway = ScriptedGateway([reply()])
+    mind = Mind(journal, gateway, skills, clock=clock, evidence_ready=ready)
+    assert await mind.tick_now() is None
+    assert not gateway.prompts and not skills.fired
+    unavailable[0] = False
+    assert await mind.tick_now() is not None  # Same clock; no wasted 30 s cooldown.
+    assert len(gateway.prompts) == 1
+
+
+@pytest.mark.parametrize("reconcile_call", [2, 3])
+async def test_evidence_callback_epoch_change_is_checked_after_callback(
+    runtime, reconcile_call
+):
+    journal, clock, _, skills = runtime
+    reads = [0]
+
+    def ready(_observation_id, _questions):
+        reads[0] += 1
+        if reads[0] == reconcile_call:
+            journal.clear_skill_readings("test")
+        return True
+
+    gateway = ScriptedGateway([reply()])
+    mind = Mind(journal, gateway, skills, clock=clock, evidence_ready=ready)
+    assert await mind.tick_now() is None
+    assert len(gateway.prompts) == (0 if reconcile_call == 2 else 1)
+    assert not skills.fired and not journal.portal.now().readings
+    assert journal.portal.latest_tick_evidence_until() is None

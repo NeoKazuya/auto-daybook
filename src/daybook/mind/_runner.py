@@ -24,11 +24,13 @@ class Runner:
         effort: Literal["none", "low"],
         clock: Callable[[], datetime],
         sleep: Callable[[float], Awaitable[None]],
+        evidence_ready: Callable[[str, tuple[str, ...]], bool],
     ) -> None:
         if tick_interval < 30:
             raise ValueError("tick interval must be at least 30 seconds")
         self.journal, self.gateway, self.skills = journal, gateway, skills
         self.effort: Literal["none", "low"] = effort
+        self.evidence_ready = evidence_ready
         self.interval, self.clock, self.sleep = (
             tick_interval,
             clock,
@@ -146,7 +148,35 @@ class Runner:
                 # A null segment still consumes its batch. Retry an old unassigned
                 # observation only after new evidence extends its visible span.
                 new = [o for o in new if o.last_seen_at > committed_until]
-            signals = self.skills.active_signals()
+            try:
+                signals = self.skills.active_signals()
+            except Exception:
+                # Source reconciliation can race with a file edit/deletion.
+                return None
+            questions = tuple(signal.ask for signal in signals)
+            observation_id = latest.id
+
+            def ready() -> bool:
+                try:
+                    if (
+                        self.skills.active_signals() != signals
+                        or not self.evidence_ready(observation_id, questions)
+                    ):
+                        return False
+                except Exception:
+                    return False
+                # Reconciliation in either read may invalidate the epoch.
+                current = portal.now()
+                return (
+                    epoch == self.journal.epoch
+                    and current.capture == "running"
+                    and current.observation is not None
+                    and current.observation.id == observation_id
+                    and self.capture_start(self.clock()) == capture_start
+                )
+
+            if not ready():
+                return None
             context = portal.context(range, 1300, detail="segments")
             lines = [
                 "Historical notes for continuity, not current activity:\n" + context
@@ -215,21 +245,19 @@ class Runner:
                 effort=self.effort,
                 max_tokens=1500,
             )
-            self.last_attempt = at
+
+            async def builder():
+                if not ready():
+                    return None
+                # A rejected queued prompt consumes no model attempt or cooldown.
+                self.last_attempt = at
+                return prompt
+
             try:
-                result = await self.gateway.call(Priority.TICK, prompt)
+                result = await self.gateway.call(Priority.TICK, builder)
             except ModelUnavailable:
                 return None
-            current = portal.now()
-            if (
-                result is None
-                or current.capture != "running"
-                or current.observation is None
-                # A queued OBSERVE can replace CURRENT while this tick awaits.
-                # Extensions of the same observation still represent valid evidence.
-                or current.observation.id != latest.id
-                or self.capture_start(self.clock()) != capture_start
-            ):
+            if result is None or not ready():
                 return None
             tick = parse(
                 result.model_dump(),

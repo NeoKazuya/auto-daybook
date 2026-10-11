@@ -726,3 +726,219 @@ async def test_overlay_resume_nudge_does_not_cross_privacy_gap(tmp_path, interru
     screen.facts = state()
     await poll(obj, 3)
     assert nudges == [False, False]
+
+
+def questions_in(prompt):
+    return json.loads(prompt.user.split("Evidence questions (context data):\n", 1)[1])
+
+
+def question_sense(tmp_path, provider, gateway=None, journal=None):
+    screen = FakeScreen()
+    journal = journal or FakeJournal()
+    gateway = gateway or ScriptedGateway(
+        ['{"seen":"Visible task evidence.","visible_text":""}'] * 12
+    )
+    obj = Sense(
+        screen,
+        journal,
+        gateway,
+        Bus(),
+        tmp_path,
+        lambda _: None,
+        question_provider=provider,
+    )
+    return obj, screen, journal, gateway
+
+
+async def test_question_change_refreshes_still_frame_at_existing_cap(tmp_path):
+    questions: list[tuple[str, ...]] = [("Is the result visible?",)]
+    obj, screen, journal, gw = question_sense(tmp_path, lambda: questions[0])
+    await poll(obj, 0)
+    questions[0] = ("Is the status complete?",)
+    for second in (1, 9):
+        await poll(obj, second)
+        assert screen.grabs == 1
+    await poll(obj, 10)
+    assert [questions_in(p) for p in gw.prompts] == [
+        ["Is the result visible?"],
+        ["Is the status complete?"],
+    ]
+    assert len(journal.rows) == 2
+    await poll(obj, 20)
+    assert screen.grabs == 2
+    questions[0] = ()
+    await poll(obj, 21)
+    assert questions_in(gw.prompts[-1]) == []
+    assert screen.grabs == 3
+
+
+class QuestionAdmissionGateway(ScriptedGateway):
+    def __init__(self):
+        super().__init__(['{"seen":"Visible evidence.","visible_text":""}'] * 4)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def call(self, priority, prompt):
+        self.entered.set()
+        await self.release.wait()
+        return await super().call(priority, prompt)
+
+
+async def test_queued_questions_are_read_at_admission_before_pixels(tmp_path):
+    questions = [("Old question?",)]
+    gw = QuestionAdmissionGateway()
+    obj, screen, journal, _ = question_sense(tmp_path, lambda: questions[0], gw)
+    await obj.poll(BASE)
+    await gw.entered.wait()
+    assert screen.grabs == 0
+    questions[0] = ("New question?",)
+    await obj.poll(BASE + timedelta(seconds=10))
+    assert len(obj._tasks) == 1 and screen.grabs == 0
+    gw.release.set()
+    await obj.wait_idle()
+    assert questions_in(gw.prompts[0]) == ["New question?"]
+    await poll(obj, 20)
+    assert len(journal.rows) == screen.grabs == 1
+
+
+async def test_inflight_question_change_refreshes_after_success_without_duplicates(
+    tmp_path,
+):
+    questions = [("Initial question?",)]
+    gw = HeldGateway()
+    obj, screen, journal, _ = question_sense(tmp_path, lambda: questions[0], gw)
+    await obj.poll(BASE)
+    await gw.entered.wait()
+    questions[0] = ("Later question?",)
+    await obj.poll(BASE + timedelta(seconds=10))
+    await obj.poll(BASE + timedelta(seconds=20))
+    assert len(obj._tasks) == screen.grabs == 1
+    gw.release.set()
+    await obj.wait_idle()
+    assert questions_in(gw.prompts[0]) == ["Initial question?"]
+    gw.replies.append('{"seen":"Later evidence.","visible_text":""}')
+    await poll(obj, 21)
+    assert questions_in(gw.prompts[-1]) == ["Later question?"]
+    assert len(journal.rows) == screen.grabs == 2
+    await poll(obj, 31)
+    assert screen.grabs == 2
+
+
+@pytest.mark.parametrize("stage", ["poll", "admission"])
+async def test_question_provider_failure_retries_without_pixels_or_empty_success(
+    tmp_path, stage
+):
+    questions = [("Initial question?",)]
+    failed = [False]
+
+    def provider():
+        if failed[0]:
+            raise OSError("source temporarily unavailable")
+        return questions[0]
+
+    obj, screen, journal, gw = question_sense(tmp_path, provider)
+    await poll(obj, 0)
+    questions[0] = ("Updated question?",)
+    failed[0] = stage == "poll"
+    if stage == "admission":
+        held = QuestionAdmissionGateway()
+        obj.gateway = held
+        await obj.poll(BASE + timedelta(seconds=10))
+        await held.entered.wait()
+        failed[0] = True
+        held.release.set()
+        await obj.wait_idle()
+        assert not held.prompts
+        obj.gateway = gw
+    else:
+        await poll(obj, 10)
+    assert screen.grabs == 1 and len(journal.rows) == 1
+    assert journal.states[-1][0] == "withheld"
+    failed[0] = False
+    await poll(obj, 20)
+    assert questions_in(gw.prompts[-1]) == ["Updated question?"]
+    assert screen.grabs == len(journal.rows) == 2
+
+
+@pytest.mark.parametrize("blocked", ["paused", "locked", "away", "withheld", "black"])
+async def test_question_provider_is_behind_privacy_and_black_frame_gate(
+    tmp_path, blocked
+):
+    def forbidden():
+        pytest.fail("privacy-blocked poll read skill questions")
+
+    obj, screen, _, gw = question_sense(tmp_path, forbidden)
+    if blocked == "paused":
+        obj.set_privacy(PrivacySettings(paused=True))
+    elif blocked == "locked":
+        screen.facts = state(locked=True)
+    elif blocked == "away":
+        screen.facts = state(idle_ms=300_000)
+    elif blocked == "withheld":
+        screen.facts = state(windows=(VisibleWindow("private", PASSWORD, RECT),))
+    else:
+        screen.pixels = bytes(576)
+    await poll(obj, 0)
+    assert screen.grabs == 0 and not gw.prompts
+
+
+async def test_question_refresh_keeps_pixel_change_scheduling_while_inflight(tmp_path):
+    questions = [("Initial?",)]
+    gw = HeldGateway()
+    obj, screen, _, _ = question_sense(tmp_path, lambda: questions[0], gw)
+    await obj.poll(BASE)
+    await gw.entered.wait()
+    questions[0] = ("Changed?",)
+    screen.pixels = bytes([200]) * 576
+    await obj.poll(BASE + timedelta(seconds=10))
+    await asyncio.sleep(0)
+    assert len(obj._tasks) == 2
+    gw.replies.append('{"seen":"Changed frame.","visible_text":""}')
+    gw.release.set()
+    await obj.wait_idle()
+
+
+async def test_questions_are_not_marked_fresh_after_rejected_write(tmp_path):
+    class RejectOnceJournal(FakeJournal):
+        reject = False
+
+        def add_observation(self, draft, epoch):
+            if self.reject:
+                self.reject = False
+                return None
+            return super().add_observation(draft, epoch)
+
+    questions = [("Initial?",)]
+    journal = RejectOnceJournal()
+    obj, screen, _, gw = question_sense(tmp_path, lambda: questions[0], journal=journal)
+    await poll(obj, 0)
+    questions[0] = ("Changed?",)
+    journal.reject = True
+    await poll(obj, 10)
+    assert len(journal.rows) == 1
+    await poll(obj, 20)
+    assert [questions_in(p) for p in gw.prompts] == [
+        ["Initial?"],
+        ["Changed?"],
+        ["Changed?"],
+    ]
+    assert len(journal.rows) == 2 and screen.grabs == 3
+
+
+async def test_admission_question_reconciliation_cannot_capture_old_epoch(tmp_path):
+    gw = QuestionAdmissionGateway()
+    journal = FakeJournal()
+    reconcile = [False]
+
+    def provider():
+        if reconcile[0]:
+            journal.epoch += 1
+        return ("Current question?",)
+
+    obj, screen, _, _ = question_sense(tmp_path, provider, gw, journal)
+    await obj.poll(BASE)
+    await gw.entered.wait()
+    reconcile[0] = True
+    gw.release.set()
+    await obj.wait_idle()
+    assert not gw.prompts and not journal.rows and screen.grabs == 0

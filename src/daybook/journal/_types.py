@@ -241,3 +241,4 @@ class RecallNotes:
     cites: tuple[str, ...]
     window: TimeRange | None
     truncated: bool
+    citation_windows: tuple[tuple[str, TimeRange], ...] = ()

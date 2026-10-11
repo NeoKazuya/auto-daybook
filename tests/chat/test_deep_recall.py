@@ -392,3 +392,52 @@ async def test_forget_while_waiting_for_model_admission_never_transmits_old_note
     finally:
         release.set()
         await gateway.close()
+
+
+@pytest.mark.asyncio
+async def test_immediate_followup_answer_is_regenerated_with_prior_window_totals(
+    journal,
+):
+    at = datetime.now(UTC) - timedelta(days=3)
+    observation, old = note(journal, at, "Old investigation", "Earlier work")
+    journal.extend_observation(observation, at + timedelta(minutes=5))
+    note(
+        journal,
+        datetime.now(UTC) - timedelta(minutes=10),
+        "Today's work",
+        "Unrelated work",
+    )
+    prior_window = TimeRange(at, at + timedelta(minutes=10))
+    turn = RecallTurn(
+        "What did I investigate then?", (old,), prior_window, journal.epoch
+    )
+    gateway = ScriptedGateway(
+        [
+            reply("1 min", [old], follow_up=True),
+            reply("5 min", [old], follow_up=True),
+        ]
+    )
+    answer = await chat(journal, gateway).respond("/ask How long was that?", (turn,))
+    assert isinstance(answer, Answer) and answer.text == "5 min"
+    payload = json.loads(gateway.prompts[1].user)
+    assert payload["window"] == {
+        "from": at.isoformat(),
+        "to": prior_window.end.isoformat(),
+    }
+    assert payload["totals_by_title"] == [
+        {"label": "Old investigation", "seconds": 300.0, "duration": "5 min"}
+    ]
+    assert "Today's work" not in payload["overview"]
+
+
+@pytest.mark.asyncio
+async def test_older_only_citation_window_does_not_include_unrelated_days(journal):
+    at = datetime.now(UTC) - timedelta(days=80)
+    _, old = note(journal, at, "Distant experiment", "Unique old result")
+    note(journal, datetime.now(UTC) - timedelta(minutes=10), "Today", "Unrelated")
+    gateway = ScriptedGateway([reply("Unique old result", [old])])
+    answer = await chat(journal, gateway).respond(
+        "/ask What was the distant experiment result?"
+    )
+    assert isinstance(answer, Answer)
+    assert answer.window == TimeRange(at, at + timedelta(minutes=1))

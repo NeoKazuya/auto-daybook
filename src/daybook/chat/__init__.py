@@ -384,7 +384,8 @@ class Chat:
             valid.update(row.id for row in segments[:80])
             parents = {h.id: h.segment for h in hits if h.segment}
             parents.update({o.id: o.segment for o in observations if o.segment})
-            windows = [window] + ([evidence.window] if evidence.window else [])
+            citation_windows = {row.id: window for row in segments[:80]}
+            citation_windows.update(dict(evidence.citation_windows))
             payload = {
                 "question": message,
                 "history": [
@@ -478,7 +479,42 @@ class Chat:
                     break
                 if reply is None:
                     raise ModelUnavailable
-                if (
+                rescope = (
+                    isinstance(reply, _RecallStep)
+                    and reply.follow_up
+                    and history
+                    and not explicit_window
+                    and window != history[-1].window
+                )
+                if rescope:
+                    # The model has resolved the reference. Its first answer was
+                    # based on today's totals, so require a scoped second pass.
+                    window = history[-1].window
+                    segments = portal.segments(window)
+                    payload["window"] = {
+                        "from": window.start.isoformat(),
+                        "to": window.end.isoformat(),
+                    }
+                    payload["overview"] = portal.context(
+                        window, 2000, detail="segments"
+                    )
+                    payload["segments"] = [
+                        {"id": row.id, "title": row.title[:300]}
+                        for row in segments[:80]
+                    ]
+                    valid = set(evidence.cites) | {row.id for row in segments[:80]}
+                    for row in segments[:80]:
+                        citation_windows.setdefault(row.id, window)
+                    payload["capture_gaps"] = [
+                        {
+                            "state": span.state,
+                            "from": span.start.isoformat(),
+                            "to": span.end.isoformat() if span.end else None,
+                        }
+                        for span in portal.capture_spans(window)
+                        if span.state != "running"
+                    ][:80]
+                if not rescope and (
                     not isinstance(reply, _RecallStep)
                     or not (
                         reply.queries or reply.read_ids or reply.neighbors != "none"
@@ -492,9 +528,6 @@ class Chat:
                 ):
                     if not reply.text.strip():
                         return Answer("I don't have notes for that.", (), window, epoch)
-                    answer_window = TimeRange(
-                        min(w.start for w in windows), max(w.end for w in windows)
-                    )
                     cites = tuple(
                         dict.fromkeys(
                             resolved
@@ -503,12 +536,17 @@ class Chat:
                             in valid
                         )
                     )
+                    windows = [
+                        citation_windows[c] for c in cites if c in citation_windows
+                    ] or [window]
+                    answer_window = TimeRange(
+                        min(w.start for w in windows), max(w.end for w in windows)
+                    )
                     if self._journal.epoch != epoch:
                         stale = True
                         break
                     return Answer(reply.text, cites, answer_window, epoch)
-                if reply.follow_up and history and not explicit_window:
-                    window = history[-1].window
+                assert isinstance(reply, _RecallStep)
                 read_range = window if explicit_window else None
                 search_range = (
                     None if reply.all_history and not explicit_window else window
@@ -537,8 +575,7 @@ class Chat:
                 if more.text:
                     payload["notes"] = more.text
                     valid.update(more.cites)
-                    if more.window:
-                        windows.append(more.window)
+                    citation_windows.update(dict(more.citation_windows))
                 payload["truncated"] = more.truncated
                 payload["search_hits"] = [
                     {"id": h.id, "kind": h.kind, "text": h.text, "segment": h.segment}

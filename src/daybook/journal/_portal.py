@@ -271,6 +271,7 @@ class Portal:
                         )
             lines: list[str] = []
             cites: list[str] = []
+            citation_windows: dict[str, TimeRange] = {}
             starts: list[datetime] = []
             ends: list[datetime] = []
             seen: set[str] = set()
@@ -302,12 +303,28 @@ class Portal:
                     continue
                 truncated |= len(note.seen) > 2400 or len(note.visible_text) > 4800
                 lines.append(line)
-                if note.segment is not None and note.segment not in cites:
-                    cites.append(note.segment)
+                if note.segment is not None:
+                    if note.segment not in cites:
+                        cites.append(note.segment)
+                    previous = citation_windows.get(note.segment)
+                    citation_windows[note.segment] = TimeRange(
+                        min(start, previous.start) if previous else start,
+                        max(
+                            end,
+                            start + timedelta(microseconds=1),
+                            previous.end if previous else end,
+                        ),
+                    )
                 starts.append(start)
                 ends.append(max(end, start + timedelta(microseconds=1)))
             window = TimeRange(min(starts), max(ends)) if starts else None
-            return RecallNotes("\n".join(lines), tuple(cites), window, truncated)
+            return RecallNotes(
+                "\n".join(lines),
+                tuple(cites),
+                window,
+                truncated,
+                tuple(citation_windows.items()),
+            )
 
     def totals(
         self, range: TimeRange, by: Literal["kind", "title", "app"] = "kind"

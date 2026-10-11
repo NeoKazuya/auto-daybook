@@ -118,11 +118,15 @@ class Runner:
             # Unassigned evidence may be older than the continuity context window.
             new = portal.observations(
                 TimeRange(
-                    datetime.min.replace(tzinfo=timezone.utc),
+                    committed_until or datetime.min.replace(tzinfo=timezone.utc),
                     evidence_until + timedelta(microseconds=1),
                 ),
                 unassigned_only=True,
             )
+            if committed_until is not None:
+                # A null segment still consumes its batch. Retry an old unassigned
+                # observation only after new evidence extends its visible span.
+                new = [o for o in new if o.last_seen_at > committed_until]
             signals = self.skills.active_signals()
             context = portal.context(range, 1300, detail="segments")
             lines = ["Recent notes:\n" + context]

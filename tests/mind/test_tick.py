@@ -364,3 +364,34 @@ async def test_restart_does_not_call_model_for_persisted_evidence_without_signal
     journal.extend_observation(observation.id, clock())
     assert await mind.tick_now()
     assert len(gateway.prompts) == 1
+
+
+async def test_null_segment_batch_does_not_block_later_backlog(runtime):
+    journal, clock, first, skills = runtime
+    for index in range(10):
+        clock.advance(10)
+        assert journal.add_observation(
+            ObservationDraft(clock(), WindowInfo("Code", f"task-{index}"), "x" * 1000),
+            journal.epoch,
+        )
+    gateway = ScriptedGateway([reply(None), reply()])
+    mind = Mind(journal, gateway, skills, clock=clock)
+    earlier = await mind.tick_now()
+    assert earlier and earlier.segment is None
+    clock.advance(30)
+    later = await mind.tick_now()
+    assert later and later.evidence_until > earlier.evidence_until
+    assert not set(later.observations).intersection(earlier.observations)
+
+
+async def test_null_segment_observation_can_be_retried_after_extension(runtime):
+    journal, clock, observation, skills = runtime
+    gateway = ScriptedGateway([reply(None), reply()])
+    mind = Mind(journal, gateway, skills, clock=clock)
+    earlier = await mind.tick_now()
+    assert earlier and earlier.segment is None
+    clock.advance(30)
+    journal.extend_observation(observation.id, clock())
+    later = await mind.tick_now()
+    assert later and later.observations == (observation.id,)
+    assert journal.portal.now().segment

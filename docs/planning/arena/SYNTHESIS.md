@@ -71,7 +71,7 @@ All taken from `codex` and folded into the Opus shape by hand:
 ## Rejected
 
 - **Codex: grabbing the X server during capture.** Freezing the whole display, even briefly, risks visible stutter during a live demo. A post-grab recheck gets most of the benefit.
-- **Codex: memory epochs and evidence tokens.** Opus's idempotent `record_tick` (it skips observations deleted mid-tick), at-most-once firing claims, and derived segment times already cover the races that matter here. Epochs add a concurrency protocol every module has to respect.
+- **Codex: evidence tokens.** At-most-once firing claims and derived segment times already cover the races that matter for actions. *Revised after the PR #2 review:* a single journal **forget epoch** was adopted, because the review showed an in-flight observe or tick could write back just-forgotten content. Only sense and mind carry it, not every module.
 - **Codex: model-interpreted trigger prose and a joint decision call.** Less predictable, and it costs a second background call stream.
 - **Codex: a separate `skills.sqlite`.** One database file with tables owned per module is simpler to back up and forget from.
 - **Codex: always restarting paused.** Pause state is persisted in `privacy.json` and restored as it was.

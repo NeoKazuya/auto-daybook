@@ -1,0 +1,34 @@
+[
+  {
+    "at": 5,
+    "kind": null,
+    "mood": null,
+    "focused": null,
+    "in_meeting": null,
+    "capture": "locked"
+  },
+  {
+    "at": 20,
+    "kind": "coding",
+    "mood": "focus",
+    "focused": true,
+    "in_meeting": false,
+    "capture": "running"
+  },
+  {
+    "at": 35,
+    "kind": null,
+    "mood": null,
+    "focused": null,
+    "in_meeting": null,
+    "capture": "withheld"
+  },
+  {
+    "at": 50,
+    "kind": "coding",
+    "mood": "focus",
+    "focused": true,
+    "in_meeting": false,
+    "capture": "running"
+  }
+]

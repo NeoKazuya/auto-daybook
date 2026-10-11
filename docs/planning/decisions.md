@@ -42,13 +42,18 @@ Status: **decided** (the user answered), **default** (proposed by the planner an
 | D20 | 2026-10-10 | Demo format | Live on the GX10. A presenter really uses the machine while the music changes and the overlay appears | decided | Needs a monitor at the demo, a rehearsed script, and an unlocked screen |
 | D21 | 2026-10-10 | Team | Just the user (`kazuya`) for now; others may join later | decided | Branches are `kazuya/<topic>`. Module boundaries still assume up to 3 owners |
 | D22 | 2026-10-10 | OS or desktop changes? | None. Keep the stock Ubuntu GNOME on Xorg session; don't switch to Wayland or upgrade the OS during the event | decided | See [grounding](grounding.md) |
+| P8 | 2026-10-10 | Who orchestrates the build? | Codex orchestrates the parallel build work. The architecture just needs to be modular from the start so that's doable; it doesn't plan who builds what | decided | Module boundaries and contracts matter; people-ownership and parallel schedules don't |
+| D23 | 2026-10-10 | Architecture | The Opus candidate is the base: skills declare typed signals, one tick per ~90 s does rollup and answers every signal, and a pure 4-form trigger grammar decides. Privacy hardening is grafted from the Codex candidate | default | [ARCHITECTURE.md](../ARCHITECTURE.md), [arena/SYNTHESIS.md](arena/SYNTHESIS.md) |
+| D24 | 2026-10-10 | Overlay rendering | Qt Quick (QML) in the shell process, not QtWebEngine | default | Avoids embedded Chromium on aarch64 and the 64 MB PySide6-Addons download |
+| D25 | 2026-10-10 | Can chat-made skills include Python hooks? | No. Chat writes declarative skills only; hooks are developer-written and reviewed in the repo | default | [skills.md](../skills.md) |
+| D26 | 2026-10-10 | Break timing in the live demo | A separately approved `break-demo` skill (2 min). The real `break` keeps 50 min; nothing is edited on stage | default | [demo.md](../demo.md) |
+| D27 | 2026-10-10 | Does pause stop the music? | No. Pause stops capture and skill reactions and hides the overlay. Music keeps playing until the user stops it | default | [ARCHITECTURE.md §7](../ARCHITECTURE.md#7-privacy) |
+| D28 | 2026-10-10 | Note retention | Notes are kept until the user deletes them, with "forget last 15 minutes" and "forget everything" on the privacy page | default | — |
+| D29 | 2026-10-10 | Tray on GNOME | Requires enabling the AppIndicator extension (only `user-theme` was enabled) | default | [setup.md](../setup.md) step 2 |
 
 ## Still open
 
-- Product name.
-- Capture cadence, and how to skip unchanged screens.
-- Note format, and the flow for correcting notes.
-- Storage and retrieval (the handoff suggests SQLite with full-text search).
-- Portal interface: the single interface skills and recall use to read context.
-- Retention defaults (beyond deleting screenshots after use).
-- Which model serves the demo if the Qwen3.8 download or its vision support isn't ready in time.
+- Product name (`daybook` is the working name).
+- Whether withheld (excluded-app) time shows as a "private" gap on the timeline (current design) or not at all.
+- Whether to switch to Qwen3.8 once it downloads (gated on `accept.py --vision` and the replay fixtures).
+- The cua trial result (D15).

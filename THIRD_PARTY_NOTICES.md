@@ -8,6 +8,7 @@ Parts of `docs/agents/` and `CONTRIBUTING.md` are adapted from PStack (https://g
 - `docs/agents/review-triage.md`: `skills/interrogate/references/lead-judgment.md`, `skills/interrogate/references/rubric.md`
 - `CONTRIBUTING.md`, section "Don't block on your person": `skills/principle-never-block-on-the-human/SKILL.md`
 - `docs/agents/design-red-flags.md`: `skills/architect/SKILL.md`, `skills/architect/references/design-red-flags.md`
+- `docs/planning/arena/_pstack/`: unmodified copies of `skills/architect/SKILL.md` and its `references/` files, given to the architecture runners
 
 ```
 MIT License

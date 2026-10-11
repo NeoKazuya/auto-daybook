@@ -1,0 +1,18 @@
+# ~/Music/daybook/library.toml — owned by the music library (daybook.act). The only list of moods.
+# Folder per mood: ~/Music/daybook/<mood>/*.mp3|ogg|flac. `daybook music check` fails if a folder and a [moods.*] entry disagree.
+
+[moods.focus]
+describe = "concentrated work: coding, debugging, writing"
+[moods.calm]
+describe = "reading, research, slow browsing"
+[moods.energetic]
+describe = "light admin: email, tidying files, quick chores"
+[moods.break]
+describe = "not working: videos, social media, idle, on a break"
+
+[[tracks]]
+file = "focus/kevin-macleod-cipher.mp3"
+title = "Cipher"
+artist = "Kevin MacLeod"
+license = "CC BY 4.0"
+source = "https://incompetech.com/"

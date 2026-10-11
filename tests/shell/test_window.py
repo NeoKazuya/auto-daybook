@@ -7,7 +7,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 qt_gui = pytest.importorskip("PySide6.QtGui")
-from PySide6.QtCore import QObject  # noqa: E402
+from PySide6.QtCore import QObject, QPointF  # noqa: E402
 
 from daybook.shell._app import FONTS, OverlayBridge, build, load_fonts  # noqa: E402
 from daybook.shell._controller import OverlayController  # noqa: E402
@@ -90,3 +90,32 @@ def test_window_shows_hides_and_dismisses(app):
 def test_bundled_fonts_load(app):
     serif, mono = load_fonts()
     assert (serif, mono) == ("Literata", "JetBrains Mono")
+
+
+def item_rect(window, name: str) -> tuple[float, float, float, float]:
+    item = window.findChild(QObject, name)
+    assert item is not None, name
+    corner = item.mapToScene(QPointF(0, 0))
+    return corner.x(), corner.y(), corner.x() + item.width(), corner.y() + item.height()
+
+
+def test_long_text_keeps_the_dismiss_controls_on_screen(app):
+    # Chat-made skills can write any length; the countdown and button must stay
+    # reachable and the message must not run off the top of the screen.
+    bridge = OverlayBridge(OverlayController(), FakeBackend(), *load_fonts())  # type: ignore[arg-type]
+    engine, window = build(bridge)
+    long = status()
+    long["overlay"]["request"]["title"] = "Stand up and stretch " * 40
+    long["overlay"]["request"]["body"] = "Look away from the screen for a while. " * 200
+    long["overlay"]["request"]["dismiss"] = "I'm back " * 30
+    bridge.incoming.emit("status", long)
+    app.processEvents()
+    assert window.isVisible()
+    window.grabWindow()  # lay out and render once, as on a real screen
+    for name in ("title", "body", "countdown", "dismissButton"):
+        left, top, right, bottom = item_rect(window, name)
+        on_screen = 0 <= left and right <= window.width() and 0 <= top
+        assert on_screen and bottom <= window.height(), (name, left, top, right, bottom)
+    bridge.dismiss()
+    app.processEvents()
+    del engine

@@ -23,6 +23,9 @@ Window {
     readonly property bool isAlert: overlay.alert
     // Sizes follow the screen height so 1080p lands near the agreed 64 px title.
     readonly property real unit: Math.max(height, 600) / 1080
+    // Skill text has no length limit, so the message gets whatever height is left
+    // after the controls; the countdown and button always stay on screen.
+    readonly property real margin: height * 0.08
 
     Rectangle {
         id: backdrop
@@ -45,8 +48,11 @@ Window {
             anchors.leftMargin: parent.width * 0.09
             width: Math.min(parent.width * 0.62, 1200 * win.unit)
             spacing: 22 * win.unit
+            readonly property real bodyRoom: win.height - 2 * win.margin - labelText.height
+                - titleText.height - controls.height - 3 * spacing
 
             Text {
+                id: labelText
                 objectName: "label"
                 text: overlay.label
                 textFormat: Text.PlainText
@@ -59,11 +65,14 @@ Window {
             }
 
             Text {
+                id: titleText
                 objectName: "title"
                 width: parent.width
                 text: overlay.title
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
+                maximumLineCount: 3
+                elide: Text.ElideRight
                 font.family: overlay.serifFamily
                 font.pixelSize: 64 * win.unit
                 font.weight: Font.Medium
@@ -72,11 +81,14 @@ Window {
             }
 
             Text {
+                id: bodyText
                 objectName: "body"
                 width: parent.width
                 text: overlay.body
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
+                maximumLineCount: Math.max(1, Math.floor(content.bodyRoom / (bodyMetrics.height * lineHeight)))
+                elide: Text.ElideRight
                 font.family: overlay.serifFamily
                 font.pixelSize: 28 * win.unit
                 lineHeight: 1.5
@@ -84,7 +96,13 @@ Window {
                 visible: text.length > 0
             }
 
+            FontMetrics {
+                id: bodyMetrics
+                font: bodyText.font
+            }
+
             Row {
+                id: controls
                 spacing: 32 * win.unit
                 topPadding: 12 * win.unit
 
@@ -102,7 +120,7 @@ Window {
                     id: button
                     objectName: "dismissButton"
                     anchors.verticalCenter: parent.verticalCenter
-                    width: buttonText.implicitWidth + 48 * win.unit
+                    width: buttonText.width + 48 * win.unit
                     height: buttonText.implicitHeight + 28 * win.unit
                     radius: 4 * win.unit
                     color: win.isAlert ? (mouse.containsMouse ? "#c5684a" : win.ember)
@@ -116,6 +134,8 @@ Window {
                     Text {
                         id: buttonText
                         anchors.centerIn: parent
+                        width: Math.min(implicitWidth, content.width * 0.45)
+                        elide: Text.ElideRight
                         text: overlay.dismissLabel
                         textFormat: Text.PlainText
                         font.family: overlay.monoFamily

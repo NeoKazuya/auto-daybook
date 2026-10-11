@@ -6,7 +6,7 @@ This is a hackathon repo. Several people work on it at the same time, and each p
 
 ## Tracker
 
-The pinned **Tracker** issue is the shared task list. Agents write to it only through comments, so two agents never overwrite each other:
+The pinned **Tracker** issue ([#1](https://github.com/NeoKazuya/auto-daybook/issues/1)) is the shared task list. Agents write to it only through comments, so two agents never overwrite each other:
 
 ```text
 Task: <short description> (<person>)
@@ -15,7 +15,7 @@ Done: <task> (#<pr>)
 Dropped: <task> — <reason>
 ```
 
-Read the current state with `gh issue view <tracker> --comments`. A task is open if it has a `Task:` line and no `Done:` or `Dropped:` line.
+Read the current state with `gh issue view 1 --comments`. A task is open if it has a `Task:` line and no `Done:` or `Dropped:` line.
 
 ## For agents: the loop
 
@@ -60,7 +60,7 @@ Read [docs/agents/verification.md](docs/agents/verification.md). Then, before op
 - Run the local checks:
 
   ```sh
-  # TODO: fill in once the stack is chosen (lint + typecheck + build)
+  scripts/check.sh   # ruff, ruff format --check, pyright, pytest, import-boundary check (see docs/ARCHITECTURE.md §10)
   ```
 
 - Keep the local checks fast (a couple of minutes at most). Lint, typecheck, and build, plus only the tests near your change.
@@ -79,7 +79,7 @@ gh pr comment <number> --body "@codex review"
 Use this PR body format. Under "Proof", write only what you actually ran.
 
 ```md
-Part of #<tracker>
+Part of #1
 
 **What changed**
 -
@@ -205,6 +205,8 @@ Meanwhile: <what you're doing instead, or "idle">
 
 ## Reference docs
 
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the system design and the full build plan. Shared contracts are defined there and in [docs/skills.md](docs/skills.md)
+- [docs/setup.md](docs/setup.md): bringing the GX10 to a working state
 - [docs/agents/verification.md](docs/agents/verification.md): proving a change works, bug-fix tests, what goes in the Proof section
 - [docs/agents/review-triage.md](docs/agents/review-triage.md): sorting and answering review findings
 - [docs/agents/design-red-flags.md](docs/agents/design-red-flags.md): shared-contract and architecture changes

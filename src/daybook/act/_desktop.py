@@ -68,3 +68,47 @@ async def focus(app: str) -> Outcome:
         return Outcome("desktop.focus", False, "window_not_found")
     except OSError:
         return Outcome("desktop.focus", False, "command_unavailable")
+
+
+async def active_title() -> str | None:
+    """The active window's title, or None when it can't be read."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "xdotool",
+            "getactivewindow",
+            "getwindowname",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(process.communicate(), 8)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+            return None
+        if process.returncode != 0:
+            return None
+        return stdout.decode(errors="replace").strip()
+    except OSError:
+        return None
+
+
+def specific(pattern: str) -> bool:
+    """A title pattern must name something: at least 3 non-wildcard characters,
+    so a skill can never close whatever tab happens to be active."""
+    return len(re.sub(r"[*?\[\]]", "", pattern).strip()) >= 3
+
+
+async def close_tab(title: str) -> Outcome:
+    """Press Ctrl+W, but only if the active window's title still matches `title`
+    (case-insensitive glob), so a tab the user already left is never closed."""
+    if not specific(title):
+        return Outcome("desktop.close_tab", False, "pattern_too_broad")
+    current = await active_title()
+    if current is None:
+        return Outcome("desktop.close_tab", False, "window_unreadable")
+    if not fnmatch.fnmatchcase(current.lower(), title.lower()):
+        return Outcome("desktop.close_tab", False, "tab_not_active")
+    return await command(
+        "desktop.close_tab", "xdotool", "key", "--clearmodifiers", "ctrl+w"
+    )

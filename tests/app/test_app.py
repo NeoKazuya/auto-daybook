@@ -330,6 +330,7 @@ async def test_concrete_replay_composes_owners_and_never_starts_real_effects(
             "music",
             "break",
             "break-demo",
+            "instagram-nudge",
         }
         await services.sense.poll()
         await services.sense.wait_idle()

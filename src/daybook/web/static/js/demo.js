@@ -26,6 +26,7 @@ const CATALOG = {
   'desktop.open_url': 'Open a web page',
   'desktop.launch': 'Start an app',
   'desktop.focus': 'Bring an app to the front',
+  'desktop.close_tab': 'Close the active browser tab if its title still matches',
 };
 
 const db = {

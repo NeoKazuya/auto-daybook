@@ -28,7 +28,8 @@ def test_builtins_parse():
             path.read_text(), source=SkillSource(path, "builtin"), catalog=catalog
         )
         assert isinstance(parsed, Skill), parsed
-    assert len(catalog.specs) == 8
+    assert len(catalog.specs) == 9
+    assert "desktop.close_tab" in catalog.specs
     assert all(name in catalog.describe_for_prompt() for name in catalog.specs)
 
 

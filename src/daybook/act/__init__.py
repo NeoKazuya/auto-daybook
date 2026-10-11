@@ -14,6 +14,9 @@ from typing import Awaitable, Callable, Literal, Mapping, Protocol, cast
 from daybook.events import Bus, OverlayHidden, OverlayShown
 from daybook.journal import Outcome
 
+# desktop.close_tab may wait at most this long (seconds), like a hook's 10 s limit.
+CLOSE_TAB_MAX_WAIT = 10
+
 
 @dataclass(frozen=True)
 class OverlayRequest:
@@ -144,6 +147,13 @@ def build_catalog(
         ActionSpec("desktop.open_url", "Open a URL", {"url": text}),
         ActionSpec("desktop.launch", "Launch a desktop file ID", {"app": text}),
         ActionSpec("desktop.focus", "Focus an app by WM_CLASS glob", {"app": text}),
+        ActionSpec(
+            "desktop.close_tab",
+            "Close the active browser tab, after an optional wait of at most "
+            f"{CLOSE_TAB_MAX_WAIT}s, only if its window title still matches a "
+            "glob such as *Instagram*",
+            {"title": text, "after": Parameter("duration", False, "0s")},
+        ),
     )
     return Catalog(specs, moods, handlers)
 
@@ -152,6 +162,7 @@ class DesktopControl(Protocol):
     async def open_url(self, url: str) -> Outcome: ...
     async def launch(self, app: str) -> Outcome: ...
     async def focus(self, app: str) -> Outcome: ...
+    async def close_tab(self, title: str) -> Outcome: ...
 
 
 class XdoDesktop:
@@ -169,6 +180,11 @@ class XdoDesktop:
         from ._desktop import focus
 
         return await focus(app)
+
+    async def close_tab(self, title: str) -> Outcome:
+        from ._desktop import close_tab
+
+        return await close_tab(title)
 
 
 class FakeDesktop:
@@ -188,6 +204,10 @@ class FakeDesktop:
     async def focus(self, app: str) -> Outcome:
         self.calls.append(("focus", app))
         return Outcome("desktop.focus", True, "fake")
+
+    async def close_tab(self, title: str) -> Outcome:
+        self.calls.append(("close_tab", title))
+        return Outcome("desktop.close_tab", True, "fake")
 
 
 class Overlay:
@@ -442,6 +462,15 @@ def bind_handlers(
     async def focus(skill: str, args: Mapping[str, object]) -> Outcome:
         return await desktop.focus(str(args["app"]))
 
+    async def close_tab(skill: str, args: Mapping[str, object]) -> Outcome:
+        # The wait runs inside the step, like a hook, so the outcome records what
+        # really happened; it's capped because steps hold up the tick's reactions.
+        wait = duration(args.get("after", "0s"))
+        if wait > CLOSE_TAB_MAX_WAIT:
+            return Outcome("desktop.close_tab", False, "wait_too_long")
+        await asyncio.sleep(wait)
+        return await desktop.close_tab(str(args["title"]))
+
     return {
         "music.play_mood": play,
         "music.stop": stop,
@@ -451,4 +480,5 @@ def bind_handlers(
         "desktop.open_url": open_url,
         "desktop.launch": launch,
         "desktop.focus": focus,
+        "desktop.close_tab": close_tab,
     }

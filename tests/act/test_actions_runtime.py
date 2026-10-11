@@ -527,3 +527,84 @@ async def test_overlay_layout_rejects_invalid_catalog_value(library, tmp_path):
     finally:
         await overlay.close()
         await player.close()
+
+
+async def test_close_tab_waits_then_closes_through_the_desktop(
+    library, tmp_path, monkeypatch
+):
+    import daybook.act as act
+
+    waits = []
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(act.asyncio, "sleep", fake_sleep)
+    desktop = FakeDesktop()
+    overlay = Overlay(Bus())
+    player = MusicPlayer(library, tmp_path / "home", Bus(), overlay)
+    catalog = build_catalog(library.moods, bind_handlers(player, overlay, desktop))
+    actions = catalog.allowed(("desktop.close_tab",), "instagram-nudge")
+
+    outcome = await actions.run("desktop.close_tab", title="*Instagram*", after="5s")
+    assert outcome.ok and waits == [5]
+    assert desktop.calls == [("close_tab", "*Instagram*")]
+
+    too_long = await actions.run("desktop.close_tab", title="*Instagram*", after="11s")
+    assert not too_long.ok and too_long.detail == "wait_too_long"
+    assert len(desktop.calls) == 1
+    assert "desktop.close_tab" in catalog.describe_for_prompt()
+
+
+async def test_xdo_close_tab_only_closes_a_matching_active_tab(monkeypatch):
+    from daybook.act import _desktop
+
+    pressed = []
+
+    async def command(action, *args):
+        pressed.append(args)
+        return _desktop.Outcome(action, True)
+
+    monkeypatch.setattr(_desktop, "command", command)
+    desktop = XdoDesktop()
+
+    async def title(value):
+        async def active():
+            return value
+
+        monkeypatch.setattr(_desktop, "active_title", active)
+
+    await title("(3) Instagram • Reels — Mozilla Firefox")
+    assert (await desktop.close_tab("*instagram*")).ok
+    assert pressed == [("xdotool", "key", "--clearmodifiers", "ctrl+w")]
+
+    await title("auto-daybook — Visual Studio Code")
+    moved_on = await desktop.close_tab("*Instagram*")
+    assert not moved_on.ok and moved_on.detail == "tab_not_active"
+
+    await title(None)
+    assert (await desktop.close_tab("*Instagram*")).detail == "window_unreadable"
+
+    for broad in ("*", "*?*", "[a]*", " * "):
+        assert (await desktop.close_tab(broad)).detail == "pattern_too_broad"
+    assert len(pressed) == 1
+
+
+def test_instagram_nudge_builtin_parses_against_the_catalog(library):
+    from pathlib import Path
+
+    from daybook.skills import SkillSource, parse_skill
+
+    path = Path(__file__).parents[2] / "skills/builtin/instagram-nudge.skill.md"
+    catalog = build_catalog(library.moods)
+    skill = parse_skill(
+        path.read_text(),
+        source=SkillSource(path, "builtin"),
+        catalog=catalog,
+        hook_text=None,
+    )
+    assert not isinstance(skill, list), skill
+    assert [s.action for s in skill.rules[0].steps] == [
+        "overlay.show",
+        "desktop.close_tab",
+    ]

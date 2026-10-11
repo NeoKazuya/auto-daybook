@@ -68,7 +68,7 @@ A short completed fullscreen app overlay preserves a duration rule's original oc
 - `$<signal>.for`: the current streak length, rendered like "52 min"
 - `$upcoming.next` (text parameters of a skill with `reads: [upcoming]`): the soonest Upcoming item, rendered like "CSE 130 Assignment 3 (due in 2 h 10 min)", or "nothing due"
 
-**Steps** run in order. An ordinary failing step is recorded, and the rule continues with its next step. When capture is paused, the skill is disabled, or its approved file changes, eligibility denial stops subsequent steps and hooks. Desktop effects re-check immediately before each helper starts, including all stages of opening a new tab. A helper already started may finish; Daybook suppresses later effects rather than undoing them. The claimed occurrence is not retried.
+**Steps** run in order. An ordinary failing step is recorded, and the rule continues with its next step. When capture is paused, the skill is disabled, or its approved file changes, eligibility denial stops subsequent steps and hooks. Desktop effects re-check immediately before each helper starts, including all stages of opening a new tab. A helper already started may finish; Daybook suppresses later effects rather than undoing them. Pause/resume and disable/re-enable cannot revive that pending sequence, even when both changes occur between checks. A fresh tick may act normally; the claimed occurrence is not retried.
 
 ### Actions
 

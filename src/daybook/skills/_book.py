@@ -52,6 +52,7 @@ class Book:
         self.portal, self.catalog, self.bus = portal, catalog, bus
         self.ledger = Ledger(database)
         self.clear_readings = clear_readings
+        self._revisions: dict[str, int] = {}
 
     def sources(self) -> dict[str, SkillSource]:
         sources = {}
@@ -184,6 +185,7 @@ class Book:
             raise SignalLimit("at most 12 active signals")
 
     def replace_approval(self, id: str, hash: str, *, enabled: bool) -> None:
+        self._revisions[id] = self._revisions.get(id, 0) + 1
         self.ledger.set_state(
             id, enabled=False, approved_hash=None, approved_at=None, observed_hash=hash
         )
@@ -210,6 +212,8 @@ class Book:
         return self.entry(id)
 
     def toggle(self, id: str, enabled: bool) -> None:
+        if not enabled:
+            self._revisions[id] = self._revisions.get(id, 0) + 1
         state = self.ledger.state(id)
         assert state is not None
         self.ledger.set_state(
@@ -246,8 +250,18 @@ class Book:
         self.ledger.clear(id, state=True)
         self.bus.publish(SkillsChanged(id))
 
-    def eligible(self, entry: SkillEntry, tick: Tick) -> bool:
+    def eligible(
+        self, entry: SkillEntry, tick: Tick, *, revision: int | None = None
+    ) -> bool:
+        if revision is not None and revision != self._revisions.get(entry.id, 0):
+            return False
         if self.portal.now().capture not in ("running", "overlay"):
+            return False
+        now = datetime.now(timezone.utc)
+        if now > tick.at and any(
+            span.state not in ("running", "overlay")
+            for span in self.portal.capture_spans(TimeRange(tick.at, now))
+        ):
             return False
         try:
             latest = self.entry(entry.id)
@@ -308,7 +322,14 @@ class Book:
                 else history
             )
             actions = self.catalog.allowed(
-                skill.allow, skill.id, can_act=partial(self.eligible, entry, tick)
+                skill.allow,
+                skill.id,
+                can_act=partial(
+                    self.eligible,
+                    entry,
+                    tick,
+                    revision=self._revisions.get(skill.id, 0),
+                ),
             )
             upcoming = None
             if "upcoming" in skill.reads:

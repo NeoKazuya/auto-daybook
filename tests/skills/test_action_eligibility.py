@@ -1,7 +1,7 @@
 import asyncio
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -16,6 +16,7 @@ from daybook.act import (
 from daybook.events import Bus
 from daybook.journal import (
     CaptureState,
+    Journal,
     Portal,
     SignalId,
     SignalReading,
@@ -26,7 +27,8 @@ from daybook.skills import SkillBook
 
 
 class MemoryPortal(Portal):
-    def __init__(self):
+    def __init__(self, journal):
+        self.journal = journal
         self.capture: CaptureState = "running"
         self.history = []
         self.entered, self.release = asyncio.Event(), asyncio.Event()
@@ -37,7 +39,7 @@ class MemoryPortal(Portal):
         return Situation(self.capture, None, None, ())
 
     def capture_spans(self, range):
-        return []
+        return self.journal.portal.capture_spans(range)
 
     def readings(self, signal, range):
         return [
@@ -49,7 +51,8 @@ class MemoryPortal(Portal):
 
 @pytest.fixture
 async def runtime(tmp_path, monkeypatch):
-    portal = MemoryPortal()
+    journal = Journal(tmp_path / "capture.sqlite", Bus())
+    portal = MemoryPortal(journal)
 
     class Process:
         returncode = 0
@@ -123,7 +126,7 @@ async def runtime(tmp_path, monkeypatch):
             "async def delayed(ctx):\n    ctx.portal.entered.set()\n    await ctx.portal.release.wait()\n    ctx.portal.hook_results.append(await ctx.actions.run('desktop.open_url', url='https://example.com'))\n\nasync def later(ctx):\n    ctx.portal.later_hooks.append('ran')\n"
         )
         assert book.entries()[0].status == "active", book.entries()[0].errors
-        at = datetime.now(timezone.utc) + timedelta(seconds=1)
+        at = datetime.now(timezone.utc)
         reading = SignalReading(SignalId("music", "ready"), True, at, "one")
         portal.history = [reading]
         return Tick(at, 0, at, (), (), (reading,))
@@ -131,6 +134,7 @@ async def runtime(tmp_path, monkeypatch):
     yield book, portal, install, tmp_path / "db"
     await player.close()
     await overlay.close()
+    journal.close()
 
 
 def revoke(book, portal, reason):
@@ -194,3 +198,36 @@ async def test_new_tab_paused_mid_action_suppresses_typing_and_later_hook(
     assert outcomes(database) == [
         {"action": "desktop.open_tab", "ok": False, "detail": "skill_inactive"}
     ]
+
+
+@pytest.mark.parametrize("reason", ["pause_resume", "disable_enable"])
+async def test_complete_revocation_pulse_still_cancels_pending_rule(runtime, reason):
+    book, portal, install, database = runtime
+    tick = install(
+        "      - hook: delayed\n      - desktop.open_url: {url: 'https://later.example'}\n      - hook: later\n"
+    )
+    task = asyncio.create_task(book.react(tick))
+    try:
+        await asyncio.wait_for(portal.entered.wait(), 1)
+        if reason == "pause_resume":
+            portal.journal.set_capture_state("paused", datetime.now(timezone.utc))
+            portal.journal.set_capture_state("running", datetime.now(timezone.utc))
+            assert portal.journal.portal.now().capture == "running"
+        else:
+            book.disable("music")
+            assert book.enable("music").status == "active"
+        # Both changes complete before the blocked hook resumes or checks.
+    finally:
+        portal.release.set()
+    await asyncio.wait_for(task, 1)
+    assert portal.effects == [] and portal.later_hooks == []
+    assert portal.hook_results[0].detail == "skill_inactive"
+    assert outcomes(database) == [
+        {"action": "hook", "ok": False, "detail": "skill_inactive"}
+    ]
+    at = datetime.now(timezone.utc)
+    reading = SignalReading(SignalId("music", "ready"), True, at, "two")
+    portal.history.append(reading)
+    await book.react(Tick(at, 0, at, (), (), (reading,)))
+    assert portal.effects == ["open_url", "open_url"]
+    assert portal.later_hooks == ["ran"]

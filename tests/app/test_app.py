@@ -405,11 +405,12 @@ async def test_observe_once_printable_result_does_not_save_to_home(
     assert not (tmp_path / "journal.db-wal").exists()
 
 
-@pytest.mark.parametrize("stale_runtime", [False, True])
-async def test_tick_once_records_current_unassigned_notes_without_a_daemon(
-    tmp_path: Path, monkeypatch, stale_runtime: bool
+@pytest.mark.parametrize("state", ["stopped", "paused", "stale"])
+def test_tick_once_requires_running_daemon_without_inference_or_history_writes(
+    tmp_path: Path, monkeypatch, capsys, state: str
 ):
-    from datetime import UTC, datetime
+    import hashlib
+    from datetime import UTC, datetime, timedelta
 
     import daybook.model
     from daybook.events import Bus
@@ -417,58 +418,108 @@ async def test_tick_once_records_current_unassigned_notes_without_a_daemon(
     from daybook.model import ScriptedGateway
 
     config = library_config(tmp_path)
-    if stale_runtime:
-        import socket
-
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1", 0))
-            stale_port = listener.getsockname()[1]
-        app.launch_token(tmp_path)
-        # A reused/live PID is not evidence that this home has a daemon owner.
-        (tmp_path / "runtime.json").write_text(
-            json.dumps({"port": stale_port, "pid": os.getpid()})
-        )
+    (tmp_path / "daybook.toml").write_text(f'music_dir="{config.music_dir}"\n')
     journal = Journal(config.home / "journal.db", Bus())
-    now = datetime.now(UTC)
-    journal.add_observation(
-        ObservationDraft(now, WindowInfo("Code", "example.py"), "Editing code.", ""),
+    at = datetime.now(UTC) - timedelta(seconds=5)
+    journal.set_capture_state("running", at)
+    note = journal.add_observation(
+        ObservationDraft(at, WindowInfo("Code", "example.py"), "Editing code.", ""),
         epoch=journal.epoch,
     )
+    assert note is not None
+    journal.extend_observation(note.id, at + timedelta(seconds=1))
+    if state != "stale":
+        journal.set_capture_state("paused", at + timedelta(seconds=1))
     journal.close()
+    if state == "paused":
+        (tmp_path / "privacy.json").write_text('{"paused":true}')
+    if state == "stale":
+        (tmp_path / "runtime.json").write_text(
+            json.dumps({"port": 8765, "pid": os.getpid()})
+        )
+    before = hashlib.sha256((tmp_path / "journal.db").read_bytes()).hexdigest()
     gateway = ScriptedGateway(
         [
-            json.dumps(
-                {
-                    "segment": {
-                        "mode": "start",
-                        "title": "Implement example",
-                        "kind": "coding",
-                        "intent": "Likely writing code.",
-                    },
-                    "signals": {"music.mood": None},
-                }
-            )
+            '{"segment":{"mode":"start","title":"Code","kind":"coding","intent":"Likely coding."},"signals":{"music.mood":null}}'
         ]
     )
+    constructed: list[bool] = []
 
-    def offline_gateway(_):
-        with pytest.raises(RuntimeError, match="DAYBOOK_HOME"):
-            with app.home_lock(tmp_path):
-                pytest.fail("offline tick did not own its home lock")
+    def model(_):
+        constructed.append(True)
         return gateway
 
-    monkeypatch.setattr(daybook.model, "ModelGateway", offline_gateway)
-    result = await app.tick_once(config)
-    if stale_runtime:
-        assert not (tmp_path / "runtime.json").exists()
-    assert isinstance(result, list) and result
-    assert all(reading["tick"].startswith("tick:") for reading in result)
-    reopened = Journal(config.home / "journal.db", Bus())
+    monkeypatch.setattr(daybook.model, "ModelGateway", model)
+    monkeypatch.setenv("DAYBOOK_HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["daybook", "tick-once"])
+    with pytest.raises(SystemExit) as error:
+        app.main()
+    assert error.value.code == 1
+    printed = capsys.readouterr()
+    assert "running daemon" in printed.err and "daybook run" in printed.err
+    assert not printed.out
+    assert constructed == [] and gateway.priorities == []
+    assert hashlib.sha256((tmp_path / "journal.db").read_bytes()).hexdigest() == before
+    assert not (tmp_path / "runtime.json").exists()
+    with app.home_lock(tmp_path):
+        pass
+
+
+def test_tick_cli_posts_to_running_daemon_and_prints_current_readings(
+    tmp_path: Path, monkeypatch, capsys
+):
+    config = app.load_config(tmp_path)
+    token = app.launch_token(tmp_path)
+    requested: list[tuple[str, str]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def response(self, value):
+            assert self.headers["X-Daybook-Token"] == token
+            assert self.headers["Origin"] == origin
+            requested.append((self.command, self.path))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(value).encode())
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            self.response({"tick": "tick:current", "recorded": True})
+
+        def do_GET(self):
+            self.response(
+                {
+                    "readings": [
+                        {"tick": "tick:current", "value": True},
+                        {"tick": "old", "value": False},
+                    ]
+                }
+            )
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    origin = f"http://127.0.0.1:{server.server_port}"
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    (tmp_path / "runtime.json").write_text(
+        json.dumps({"port": server.server_port, "pid": os.getpid()})
+    )
+    monkeypatch.setenv("DAYBOOK_HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["daybook", "tick-once"])
     try:
-        segment = reopened.portal.now().segment
-        assert segment is not None and segment.title == "Implement example"
+        with app.home_lock(config.home):
+            app.main()
+        printed = capsys.readouterr()
+        assert not printed.err
+        assert json.loads(printed.out) == [{"tick": "tick:current", "value": True}]
+        assert requested == [("POST", "/api/tick"), ("GET", "/api/now")]
+        assert (tmp_path / "runtime.json").exists()
     finally:
-        reopened.close()
+        server.shutdown()
+        server.server_close()
+        worker.join()
 
 
 @pytest.mark.parametrize("sse", [False, True])

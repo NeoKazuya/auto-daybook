@@ -646,9 +646,9 @@ async def tick_once(config: Config) -> object:
             # An exclusive home lock proves no supported daemon owns this home,
             # even when a crash left a descriptor with a subsequently reused PID.
             (config.home / "runtime.json").unlink(missing_ok=True)
-            async with open_runtime(config, no_capture=True) as runtime:
-                tick = await runtime.services.mind.tick_now()
-                return [asdict(reading) for reading in tick.readings] if tick else []
+            raise RuntimeError(
+                "tick-once requires a running daemon; start daybook run to process current capture evidence."
+            )
     result = cast(dict, await asyncio.to_thread(daemon_request, config, "/api/tick"))
     now = cast(
         dict,

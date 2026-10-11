@@ -389,7 +389,15 @@ async def open_runtime(
             x11 = X11Screen(config.display)
             raw = x11
         sense = Sense(
-            OverlayScreen(raw, overlay), journal, gateway, bus, config.home, mind.nudge
+            OverlayScreen(raw, overlay),
+            journal,
+            gateway,
+            bus,
+            config.home,
+            mind.nudge,
+            question_provider=lambda: tuple(
+                signal.ask for signal in skills.active_signals()
+            ),
         )
         stack.push_async_callback(sense.close)
         yield Runtime(

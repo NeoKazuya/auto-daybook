@@ -249,3 +249,8 @@ source = "https://incompetech.com/"
 ```
 
 `daybook music check` fails if a folder and a mood disagree, or if a track is missing its license or source.
+
+
+Active signal questions also guide which visible facts the screenshot observer preserves. They are context for evidence selection, not extra model calls or instructions to decide a signal. The observer retains ordinary activity plus relevant short text, numbers, controls, or status; it only reports absence when the relevant area is sufficiently visible. Unreadable, clipped, or missing evidence remains uncertain for the tick.
+
+Approving a new or edited skill refreshes evidence through the existing journal-epoch resume behavior. Disabling or re-enabling an approved skill changes the observer's questions on a still screen at the normal ten-second observation limit. Queued observations read the latest approved questions at admission; changes during an in-flight observation refresh after it completes. Temporary skill-file reconciliation failures do not silently replace active questions with an empty list.

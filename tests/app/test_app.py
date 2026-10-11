@@ -1068,3 +1068,101 @@ async def test_catalog_overlay_layout_controls_composed_capture(
             assert observation.window.app == "Code"
         assert len(gateway.prompts) == int(permits_capture)
         assert not list(tmp_path.glob("*.png")) and not list(tmp_path.glob("*.jpg"))
+
+
+async def test_public_skill_approval_refreshes_still_frame_evidence(
+    tmp_path, monkeypatch
+):
+    from datetime import UTC, datetime, timedelta
+
+    import httpx
+
+    import daybook.model
+    from daybook.model import ScriptedGateway
+    from daybook.web import create_app
+
+    gateway = ScriptedGateway(['{"seen":"Editing code.","visible_text":""}'] * 8)
+    monkeypatch.setattr(daybook.model, "ModelGateway", lambda _: gateway)
+    config = library_config(tmp_path)
+    fixture = Path(__file__).resolve().parents[2] / "fixtures/replay/example"
+    started = datetime.now(UTC)
+    question = "Is the current result marked complete?"
+    text = (
+        "---\nid: result-check\nname: Result check\nsignals:\n"
+        f"  complete:\n    ask: {question}\n    type: bool\n"
+        "rules:\n  - when: complete becomes true\n    do:\n"
+        "      - notify.send: {title: Result, body: Review the result}\n"
+        "allow: [notify.send]\n---\nReview completed results.\n"
+    )
+    async with app.open_runtime(config, replay=fixture) as runtime:
+        services = runtime.services
+        assert isinstance(services.sense.screen, app.OverlayScreen)
+        raw = services.sense.screen.screen
+        facts = raw.state()
+        monkeypatch.setattr(raw, "state", lambda: facts)
+
+        async def poll_at(seconds):
+            await services.sense.poll(started + timedelta(seconds=seconds))
+            await services.sense.wait_idle()
+
+        await poll_at(0)
+        baseline = tuple(s.ask for s in services.skills.active_signals())
+        api = create_app(token="test-token", origin="http://test", services=services)
+        headers = {"Origin": "http://test", "X-Daybook-Token": "test-token"}
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api),
+            base_url="http://test",
+            headers=headers,
+        ) as client:
+            parsed = await client.post(
+                "/api/skills/parse", json={"id": "result-check", "text": text}
+            )
+            assert parsed.status_code == 200 and parsed.json()["valid"]
+            saved = await client.put("/api/skills/result-check", json={"text": text})
+            assert saved.status_code == 200
+            await poll_at(10)
+            assert len(gateway.prompts) == 1
+            assert tuple(s.ask for s in services.skills.active_signals()) == baseline
+            approved = await client.post(
+                "/api/skills/result-check/approve", json={"hash": saved.json()["hash"]}
+            )
+            assert approved.status_code == 200
+            await poll_at(11)
+            assert len(gateway.prompts) == 2
+            assert question in gateway.prompts[-1].user
+            await client.post("/api/skills/result-check/disable")
+            for seconds in (12, 20):
+                await poll_at(seconds)
+                assert len(gateway.prompts) == 2
+            await poll_at(21)
+            assert len(gateway.prompts) == 3
+            assert question not in gateway.prompts[-1].user
+            enabled = await client.post("/api/skills/result-check/enable")
+            assert enabled.status_code == 200
+            for seconds in (22, 30):
+                await poll_at(seconds)
+                assert len(gateway.prompts) == 3
+            await poll_at(31)
+            assert len(gateway.prompts) == 4
+            assert question in gateway.prompts[-1].user
+            replacement = "Is the current result awaiting review?"
+            edited = await client.put(
+                "/api/skills/result-check",
+                json={"text": text.replace(question, replacement)},
+            )
+            assert edited.status_code == 200
+            await poll_at(32)
+            assert len(gateway.prompts) == 4
+            await poll_at(41)
+            assert len(gateway.prompts) == 5
+            assert question not in gateway.prompts[-1].user
+            assert replacement not in gateway.prompts[-1].user
+            # Fresh approval clears stale readings and changes the journal epoch:
+            # retain the existing resume exemption.
+            await client.post(
+                "/api/skills/result-check/approve", json={"hash": edited.json()["hash"]}
+            )
+            await poll_at(42)
+            assert len(gateway.prompts) == 6
+            assert replacement in gateway.prompts[-1].user
+            assert question not in gateway.prompts[-1].user

@@ -169,23 +169,30 @@ class MockAPI:
 
     def edit_segment(self, id: str, patch: w.SegmentPatch) -> w.Segment:
         segment = self.segment(id)
+        before = segment.model_dump()
         for field, value in patch.model_dump(exclude_none=True).items():
             setattr(segment, field, value)
         segment.authored = "user"
         self.bus.publish(events.SegmentChanged(id))
+        if segment.model_dump() != before:
+            self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return segment
 
     def edit_observation(self, id: str, patch: w.ObservationPatch) -> w.Observation:
         observation = self.observation(id)
+        before = observation.model_dump()
         for field, value in patch.model_dump(exclude_none=True).items():
             setattr(observation, field, value)
         self.bus.publish(events.SegmentChanged(observation.segment or ""))
+        if observation.model_dump() != before:
+            self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return observation
 
     def forget_segment(self, id: str) -> w.MutationResponse:
         self.segment(id)
         self.timeline.segments = [s for s in self.timeline.segments if s.id != id]
         self.bus.publish(events.SegmentChanged(id))
+        self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return w.MutationResponse()
 
     def forget_observation(self, id: str) -> w.MutationResponse:
@@ -194,6 +201,7 @@ class MockAPI:
             segment = self.segment(observation.segment)
             segment.observations = [o for o in segment.observations if o.id != id]
             self._shrink(segment)
+        self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return w.MutationResponse()
 
     def _shrink(self, segment: w.Segment) -> None:
@@ -210,6 +218,7 @@ class MockAPI:
         self.bus.publish(events.SegmentChanged(segment.id))
 
     def forget(self, window: w.TimeWindow | None) -> w.MutationResponse:
+        changed = False
         for segment in list(self.timeline.segments):
             before = len(segment.observations)
             segment.observations = [
@@ -219,7 +228,10 @@ class MockAPI:
                 and not (o.started_at < window.end and o.last_seen_at >= window.start)
             ]
             if before != len(segment.observations):
+                changed = True
                 self._shrink(segment)
+        if changed:
+            self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return w.MutationResponse()
 
     def skills(self) -> w.SkillsResponse:

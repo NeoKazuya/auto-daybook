@@ -346,3 +346,93 @@ def test_mock_index_contract_follows_edits_forget_and_time_windows():
             "/api/search", params={"q": "searchable", **window}
         ).json() == {"hits": []}
         assert client.get("/api/totals", params=window).json() == {"totals": []}
+
+
+async def test_actual_sse_stream_separates_new_notes_from_invalidated_evidence(
+    tmp_path,
+):
+    from contextlib import aclosing
+    from typing import AsyncGenerator
+
+    from fastapi import Request
+    from fastapi.routing import APIRoute
+
+    journal_bus = Bus()
+    journal = Journal(tmp_path / "sse.db", journal_bus)
+    services = cast(Services, SimpleNamespace(journal=journal, bus=journal_bus))
+    application = create_app(
+        services=services, token="test-token", origin="http://testserver"
+    )
+
+    async def connected():
+        return False
+
+    endpoint = next(
+        route.endpoint
+        for route in application.routes
+        if isinstance(route, APIRoute) and route.path == "/api/events"
+    )
+    response = await endpoint(cast(Request, SimpleNamespace(is_disconnected=connected)))
+    try:
+        async with aclosing(
+            cast(AsyncGenerator[str, None], response.body_iterator)
+        ) as stream:
+            assert await anext(stream) == ": connected\n\n"
+            note = journal.add_observation(
+                ObservationDraft(
+                    datetime.now(UTC), WindowInfo("Code", "tests.py"), "Initial note"
+                ),
+                journal.epoch,
+            )
+            assert note is not None
+            observe_frames = [await anext(stream), await anext(stream)]
+            assert "event: ObservationAdded\n" in observe_frames[0]
+            assert '"status":"notes_changed"' in observe_frames[1]
+            assert all("notes_invalidated" not in frame for frame in observe_frames)
+            journal.edit_observation(note.id, seen="Corrected note")
+            first_edit_frame = await anext(stream)
+            assert first_edit_frame == (
+                'event: StatusChanged\ndata: {"component":"journal","status":"notes_invalidated"}\n\n'
+            )
+            assert '"status":"notes_changed"' in await anext(stream)
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "segment_edit",
+        "observation_edit",
+        "segment_forget",
+        "observation_forget",
+        "range_forget",
+        "all_forget",
+    ],
+)
+def test_mock_evidence_changes_emit_the_same_narrow_invalidation(mutation):
+    from daybook.events import StatusChanged
+    from daybook.web._mock import MockAPI
+
+    bus = Bus()
+    mock = MockAPI(bus)
+    segment = mock.timeline.segments[0]
+    note = segment.observations[0]
+    operations = {
+        "segment_edit": lambda: mock.edit_segment(
+            segment.id, w.SegmentPatch(title="Corrected summary")
+        ),
+        "observation_edit": lambda: mock.edit_observation(
+            note.id, w.ObservationPatch(seen="Corrected evidence")
+        ),
+        "segment_forget": lambda: mock.forget_segment(segment.id),
+        "observation_forget": lambda: mock.forget_observation(note.id),
+        "range_forget": lambda: mock.forget(
+            w.TimeWindow(start=note.started_at, end=note.last_seen_at)
+        ),
+        "all_forget": lambda: mock.forget(None),
+    }
+    with bus.subscribe() as queue:
+        operations[mutation]()
+        events = [queue.get_nowait() for _ in range(queue.qsize())]
+    assert events.count(StatusChanged("journal", "notes_invalidated")) == 1

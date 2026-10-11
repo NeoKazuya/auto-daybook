@@ -127,3 +127,42 @@ def test_responses_and_openapi(client):
     assert client.get("/api/status").json()["capture"] == "paused"
     assert not client.post("/api/tick", headers=HEADERS).json()["recorded"]
     assert client.get("/api/timeline?from=2026-10-10T09:00:00").status_code == 422
+
+
+@pytest.mark.parametrize(
+    "description", ["bad", ["bad"], 42, {"work": 42}, {"unknown": "label"}]
+)
+def test_malformed_enum_descriptions_return_parse_errors(description):
+    import yaml
+
+    data = {
+        "id": "sample",
+        "name": "Sample",
+        "signals": {
+            "activity": {
+                "ask": "What is on screen?",
+                "type": {"enum": ["work", "rest"]},
+                "describe": description,
+            }
+        },
+        "rules": [
+            {
+                "when": "activity updates",
+                "do": [{"overlay.show": {"title": "Break", "body": "Rest"}}],
+            }
+        ],
+        "allow": ["overlay.show"],
+    }
+    text = "---\n" + yaml.safe_dump(data) + "---\nA goal.\n"
+    with TestClient(
+        create_app(mock=True, token="test", origin="http://testserver"),
+        raise_server_exceptions=False,
+    ) as client:
+        response = client.post(
+            "/api/skills/parse", json={"id": "sample", "text": text}, headers=HEADERS
+        )
+    assert response.status_code == 200
+    assert not response.json()["valid"]
+    assert any(
+        e["location"] == "signals.activity.describe" for e in response.json()["errors"]
+    )

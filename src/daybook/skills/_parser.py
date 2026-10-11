@@ -78,6 +78,23 @@ def parse(
         if raw.keys() - {"ask", "type", "describe"}:
             error(loc, "unknown signal field")
         type_ = raw.get("type")
+        if "describe" in raw:
+            descriptions = raw["describe"]
+            if (
+                not isinstance(descriptions, dict)
+                or not all(
+                    isinstance(k, str) and isinstance(v, str)
+                    for k, v in descriptions.items()
+                )
+                or not isinstance(type_, dict)
+                or not isinstance(type_.get("enum"), list)
+                or any(k not in type_["enum"] for k in descriptions)
+            ):
+                error(
+                    loc + ".describe",
+                    "expected a mapping from declared enum values to text",
+                )
+                continue
         sid = SignalId(str(id), name)
         if type_ == "bool":
             signals.append(Signal(sid, raw["ask"], "bool"))

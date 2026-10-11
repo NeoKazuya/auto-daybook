@@ -84,11 +84,19 @@ class Runner:
         segment = self.journal.portal.now().segment
         if segment is None or segment.ended_at is None:
             return
-        if any(
-            segment.ended_at <= start
-            for start, _ in self.capture_gaps(segment.ended_at, now)
-        ):
-            self.journal.close_open_segment()
+        for start, _ in self.capture_gaps(segment.ended_at, now):
+            if segment.ended_at > start:
+                continue
+            # Bounded batches can leave the rest of this continuous activity
+            # unassigned before an already-completed gap. Close only after that
+            # side of the boundary drains; the next batch still starts after it.
+            pending = self.journal.portal.observations(
+                TimeRange(segment.ended_at, start + timedelta(microseconds=1)),
+                unassigned_only=True,
+            )
+            if not pending:
+                self.journal.close_open_segment()
+            return
 
     async def run(self) -> None:
         while True:

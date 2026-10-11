@@ -755,3 +755,64 @@ async def test_many_small_observations_bound_response_groups_and_drain_backlog(r
     # Historical bounded groups do not substitute for the newest signal facts.
     assert "CURRENT evidence;" in gateway.prompts[0].user
     assert "App / 16: Task" in gateway.prompts[0].user
+
+
+@pytest.mark.parametrize("drive", ["tick", "run"])
+async def test_bounded_pre_gap_backlog_keeps_one_segment_until_drained(runtime, drive):
+    journal, clock, first, skills = runtime
+    before_ids = [first.id]
+    for index in range(8):
+        clock.advance(10)
+        journal.extend_observation(before_ids[-1], clock())
+        note = journal.add_observation(
+            ObservationDraft(
+                clock(), WindowInfo("Code", "same-task.py"), f"Step {index}"
+            ),
+            journal.epoch,
+        )
+        assert note
+        before_ids.append(note.id)
+    clock.advance(10)
+    journal.extend_observation(before_ids[-1], clock())
+    journal.set_capture_state("paused", clock())
+    clock.advance(301)
+    journal.set_capture_state("running", clock())
+    after = journal.add_observation(
+        ObservationDraft(clock(), WindowInfo("Code", "same-task.py"), "Resumed task"),
+        journal.epoch,
+    )
+    assert after
+    clock.advance(10)
+    journal.extend_observation(after.id, clock())
+    gateway = BatchGateway([reply(), reply(), reply()])
+
+    async def sleep(seconds):
+        clock.advance(seconds)
+        if len(skills.fired) >= 3:
+            raise asyncio.CancelledError
+
+    mind = Mind(journal, gateway, skills, tick_interval=30, clock=clock, sleep=sleep)
+    if drive == "run":
+        with pytest.raises(asyncio.CancelledError):
+            await mind.run()
+    else:
+        for _ in range(3):
+            assert await mind.tick_now()
+            clock.advance(30)
+
+    assert [len(tick.observations) for tick in skills.fired] == [8, 1, 1]
+    assert [id for tick in skills.fired for id in tick.observations] == before_ids + [
+        after.id
+    ]
+    segments = journal.portal.segments(TimeRange(NOW, clock() + timedelta(seconds=1)))
+    assert [
+        tuple(note.id for note in segment.observations) for segment in segments
+    ] == [
+        tuple(before_ids),
+        (after.id,),
+    ]
+    assert [segment.active for segment in segments] == [90, 10]
+    assert [segment.open for segment in segments] == [False, True]
+    assert not journal.portal.observations(
+        TimeRange(NOW, clock() + timedelta(seconds=1)), unassigned_only=True
+    )

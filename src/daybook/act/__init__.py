@@ -22,6 +22,7 @@ CLOSE_TAB_WARNING_WINDOW = 30
 # The `wait` step accepts these durations: at most 10 s, like a hook step, because
 # steps hold up the rest of the tick's reactions.
 WAITS = tuple(f"{n}s" for n in range(1, 11))
+TAB_TARGETS = ("next", "previous", *(str(n) for n in range(1, 9)), "last")
 
 
 @dataclass(frozen=True)
@@ -151,8 +152,35 @@ def build_catalog(
             "notify.send", "Show a desktop notification", {"title": text, "body": text}
         ),
         ActionSpec("desktop.open_url", "Open a URL", {"url": text}),
-        ActionSpec("desktop.launch", "Launch a desktop file ID", {"app": text}),
-        ActionSpec("desktop.focus", "Focus an app by WM_CLASS glob", {"app": text}),
+        ActionSpec(
+            "desktop.launch",
+            "Open an installed app by name or desktop file ID",
+            {"app": text},
+        ),
+        ActionSpec(
+            "desktop.focus",
+            "Switch to an app by installed name or WM_CLASS glob; optional title "
+            "is a case-insensitive window-title glob. Ambiguous windows are refused",
+            {"app": text, "title": Parameter("str", False, "*")},
+        ),
+        ActionSpec(
+            "desktop.open_tab",
+            "Open an http/https URL in a NEW tab in the active browser, or focus "
+            "the browser named by app (installed name or WM_CLASS glob). Supports "
+            "Firefox/LibreWolf and Chrome/Chromium/Brave/Edge; requires a running window",
+            {"url": text, "app": Parameter("str", False, "active")},
+        ),
+        ActionSpec(
+            "desktop.switch_tab",
+            "Switch browser tabs by next, previous, position 1–8, or last. "
+            "No hidden-tab title lookup. app targets the active browser by default, "
+            "or an installed name/WM_CLASS glob. Supports Firefox/LibreWolf and "
+            "Chrome/Chromium/Brave/Edge; requires a running window",
+            {
+                "tab": Parameter("enum", values=TAB_TARGETS),
+                "app": Parameter("str", False, "active"),
+            },
+        ),
         ActionSpec(
             "desktop.close_tab",
             "Close the active browser tab, only if its window title matches a glob "
@@ -173,7 +201,9 @@ def build_catalog(
 class DesktopControl(Protocol):
     async def open_url(self, url: str) -> Outcome: ...
     async def launch(self, app: str) -> Outcome: ...
-    async def focus(self, app: str) -> Outcome: ...
+    async def focus(self, app: str, title: str = "*") -> Outcome: ...
+    async def open_tab(self, url: str, app: str = "active") -> Outcome: ...
+    async def switch_tab(self, tab: str, app: str = "active") -> Outcome: ...
     async def close_tab(self, title: str) -> Outcome: ...
 
 
@@ -188,10 +218,20 @@ class XdoDesktop:
 
         return await launch(app)
 
-    async def focus(self, app: str) -> Outcome:
+    async def focus(self, app: str, title: str = "*") -> Outcome:
         from ._desktop import focus
 
-        return await focus(app)
+        return await focus(app, title)
+
+    async def open_tab(self, url: str, app: str = "active") -> Outcome:
+        from ._desktop import open_tab
+
+        return await open_tab(url, app)
+
+    async def switch_tab(self, tab: str, app: str = "active") -> Outcome:
+        from ._desktop import switch_tab
+
+        return await switch_tab(tab, app)
 
     async def close_tab(self, title: str) -> Outcome:
         from ._desktop import close_tab
@@ -203,7 +243,7 @@ class FakeDesktop:
     """Development desktop; records requests without launching anything."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, ...]] = []
 
     async def open_url(self, url: str) -> Outcome:
         self.calls.append(("open_url", url))
@@ -213,9 +253,17 @@ class FakeDesktop:
         self.calls.append(("launch", app))
         return Outcome("desktop.launch", True, "fake")
 
-    async def focus(self, app: str) -> Outcome:
-        self.calls.append(("focus", app))
+    async def focus(self, app: str, title: str = "*") -> Outcome:
+        self.calls.append(("focus", app, title))
         return Outcome("desktop.focus", True, "fake")
+
+    async def open_tab(self, url: str, app: str = "active") -> Outcome:
+        self.calls.append(("open_tab", url, app))
+        return Outcome("desktop.open_tab", True, "fake")
+
+    async def switch_tab(self, tab: str, app: str = "active") -> Outcome:
+        self.calls.append(("switch_tab", tab, app))
+        return Outcome("desktop.switch_tab", True, "fake")
 
     async def close_tab(self, title: str) -> Outcome:
         self.calls.append(("close_tab", title))
@@ -480,7 +528,13 @@ def bind_handlers(
         return await desktop.launch(str(args["app"]))
 
     async def focus(skill: str, args: Mapping[str, object]) -> Outcome:
-        return await desktop.focus(str(args["app"]))
+        return await desktop.focus(str(args["app"]), str(args["title"]))
+
+    async def open_tab(skill: str, args: Mapping[str, object]) -> Outcome:
+        return await desktop.open_tab(str(args["url"]), str(args["app"]))
+
+    async def switch_tab(skill: str, args: Mapping[str, object]) -> Outcome:
+        return await desktop.switch_tab(str(args["tab"]), str(args["app"]))
 
     async def close_tab(skill: str, args: Mapping[str, object]) -> Outcome:
         shown = warned.pop(skill, None)  # one warning authorizes one close
@@ -503,6 +557,8 @@ def bind_handlers(
         "desktop.open_url": open_url,
         "desktop.launch": launch,
         "desktop.focus": focus,
+        "desktop.open_tab": open_tab,
+        "desktop.switch_tab": switch_tab,
         "desktop.close_tab": close_tab,
         "wait": wait,
     }

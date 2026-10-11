@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import configparser
 import fnmatch
+import os
 import re
+from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 
 from daybook.journal import Outcome
+
+from . import TAB_TARGETS
 
 
 async def command(action: str, *args: str) -> Outcome:
@@ -37,37 +43,130 @@ async def open_url(url: str) -> Outcome:
     return await command("desktop.open_url", "xdg-open", url)
 
 
+@dataclass(frozen=True)
+class Application:
+    id: str
+    name: str
+    wm_class: str
+
+
+def applications() -> tuple[Application, ...]:
+    """Read installed names and classes without executing desktop-file commands."""
+    roots = [Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))]
+    roots.extend(
+        Path(root)
+        for root in os.environ.get(
+            "XDG_DATA_DIRS", "/usr/local/share:/usr/share"
+        ).split(":")
+        if root
+    )
+    # These are desktop-file exports, including on SSH sessions without XDG vars.
+    roots.extend(
+        [Path("/var/lib/snapd/desktop"), Path("/var/lib/flatpak/exports/share")]
+    )
+    found, seen = [], set()
+    for root in roots:
+        directory = root / "applications"
+        for path in sorted(directory.rglob("*.desktop")):
+            id = "-".join(path.relative_to(directory).parts)
+            if id in seen:
+                continue
+            seen.add(id)  # A user's Hidden entry also masks the system entry.
+            entry = configparser.ConfigParser(interpolation=None, strict=False)
+            try:
+                entry.read_string(path.read_text())
+                section = entry["Desktop Entry"]
+                if (
+                    section.get("Type") != "Application"
+                    or section.get("Hidden") == "true"
+                ):
+                    continue
+                found.append(
+                    Application(
+                        id, section.get("Name", ""), section.get("StartupWMClass", "")
+                    )
+                )
+            except (OSError, UnicodeError, configparser.Error, KeyError):
+                continue
+    return tuple(found)
+
+
+def normalized(value: str) -> str:
+    return "".join(c for c in value.casefold() if c.isalnum())
+
+
+def resolve(app: str) -> tuple[Application | None, str]:
+    installed = applications()
+    exact = [
+        a
+        for a in installed
+        if a.id.casefold().removesuffix(".desktop")
+        == app.casefold().removesuffix(".desktop")
+    ]
+    matches = exact or [
+        a
+        for a in installed
+        if normalized(app) in (normalized(a.name), normalized(a.wm_class))
+    ]
+    if len(matches) > 1:
+        return None, "ambiguous_app"
+    return (matches[0], "") if matches else (None, "")
+
+
 async def launch(app: str) -> Outcome:
-    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", app):
+    if not app.strip() or any(ord(c) < 32 or ord(c) == 127 for c in app):
         return Outcome("desktop.launch", False, "invalid_app")
+    installed, error = resolve(app)
+    if error:
+        return Outcome("desktop.launch", False, error)
+    if installed is not None:
+        app = installed.id
+    elif not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", app):
+        return Outcome("desktop.launch", False, "app_not_found")
     return await command("desktop.launch", "gtk-launch", app)
 
 
-async def focus(app: str) -> Outcome:
-    try:
-        process = await asyncio.create_subprocess_exec(
-            "wmctrl",
-            "-lx",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+async def find_window(app: str, title: str = "*") -> tuple[str | None, str]:
+    if not app.strip():
+        return None, "invalid_app"
+    installed, error = resolve(app) if not any(c in app for c in "*?[") else (None, "")
+    if error:
+        return None, error
+    aliases = {normalized(app)}
+    if installed is not None:
+        aliases.update(normalized(v) for v in (installed.name, installed.wm_class) if v)
+    listing = await output("wmctrl", "-lx")
+    if listing is None:
+        return None, "window_unreadable"
+    matches = []
+    for line in listing.splitlines():
+        columns = line.split(None, 4)
+        if len(columns) < 5 or not re.fullmatch(r"0x[0-9a-fA-F]+", columns[0]):
+            continue
+        wm_class = columns[2]
+        named = any(
+            normalized(part) in aliases for part in (wm_class, *wm_class.split("."))
         )
-        try:
-            stdout, _ = await asyncio.wait_for(process.communicate(), 8)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            return Outcome("desktop.focus", False, "timeout")
-        for line in stdout.decode(errors="replace").splitlines():
-            columns = line.split(None, 4)
-            if len(columns) >= 4 and fnmatch.fnmatchcase(
-                columns[2].lower(), app.lower()
-            ):
-                return await command(
-                    "desktop.focus", "xdotool", "windowactivate", "--sync", columns[0]
-                )
-        return Outcome("desktop.focus", False, "window_not_found")
-    except OSError:
-        return Outcome("desktop.focus", False, "command_unavailable")
+        if (
+            fnmatch.fnmatchcase(wm_class.lower(), app.lower()) or named
+        ) and fnmatch.fnmatchcase(columns[4].lower(), title.lower()):
+            matches.append(str(int(columns[0], 16)))
+    if not matches:
+        return None, "window_not_found"
+    # Prefer the current matching window; multiple others need a title selector.
+    active = await output("xdotool", "getactivewindow")
+    if active in matches:
+        return active, ""
+    if len(matches) > 1:
+        return None, "ambiguous_window"
+    return matches[0], ""
+
+
+async def focus(app: str, title: str = "*") -> Outcome:
+    window, error = await find_window(app, title)
+    if window is None:
+        return Outcome("desktop.focus", False, error)
+    return await command("desktop.focus", "xdotool", "windowactivate", "--sync", window)
 
 
 async def output(*args: str) -> str | None:
@@ -89,25 +188,116 @@ async def output(*args: str) -> str | None:
         return None
 
 
-# WM_CLASS globs (lowercased) of the browsers close_tab may act on.
-BROWSERS = (
-    "*firefox*",
-    "*chrome*",
-    "*chromium*",
-    "*brave*",
-    "*microsoft-edge*",
-    "*vivaldi*",
-    "*opera*",
-    "*librewolf*",
-)
+# Known browsers and their Linux tab shortcut family. None means close_tab
+# recognizes the browser, but tab navigation doesn't claim shortcut support.
+BROWSERS = {
+    "*firefox*": "firefox",
+    "*chrome*": "chromium",
+    "*chromium*": "chromium",
+    "*brave*": "chromium",
+    "*microsoft-edge*": "chromium",
+    "*vivaldi*": None,
+    "*opera*": None,
+    "*librewolf*": "firefox",
+}
+
+
+def browser_classes(wm_class: str) -> tuple[str, ...]:
+    return tuple(re.findall(r'"([^"]*)"', wm_class))
 
 
 def browser(wm_class: str) -> bool:
     """True for xprop WM_CLASS output naming a known browser."""
-    classes = re.findall(r'"([^"]*)"', wm_class)
     return any(
-        fnmatch.fnmatchcase(name.lower(), glob) for name in classes for glob in BROWSERS
+        fnmatch.fnmatchcase(name.lower(), glob)
+        for name in browser_classes(wm_class)
+        for glob in BROWSERS
     )
+
+
+def tab_family(wm_class: str) -> str | None:
+    for name in browser_classes(wm_class):
+        for glob, family in BROWSERS.items():
+            if fnmatch.fnmatchcase(name.lower(), glob):
+                return family
+    return None
+
+
+async def tab_window(action: str, app: str) -> tuple[str, str] | Outcome:
+    if app.casefold() == "active":
+        window = await output("xdotool", "getactivewindow")
+        if not window or not window.isdigit():
+            return Outcome(action, False, "window_unreadable")
+    else:
+        window, error = await find_window(app)
+        if window is None:
+            return Outcome(action, False, error)
+    wm_class = await output("xprop", "-id", window, "WM_CLASS")
+    if wm_class is None:
+        return Outcome(action, False, "window_unreadable")
+    if not browser(wm_class):
+        return Outcome(action, False, "not_a_browser")
+    family = tab_family(wm_class)
+    if family is None:
+        return Outcome(action, False, "unsupported_browser")
+    if app.casefold() != "active":
+        activated = await command(action, "xdotool", "windowactivate", "--sync", window)
+        if not activated.ok:
+            return activated
+    if await output("xdotool", "getactivewindow") != window:
+        return Outcome(action, False, "window_not_active")
+    return window, family
+
+
+async def tab_command(action: str, window: str, *args: str) -> Outcome:
+    # Abort if the user left the checked window; activate its ID before input.
+    # These sequential X11 operations still have a small focus-change race.
+    if await output("xdotool", "getactivewindow") != window:
+        return Outcome(action, False, "window_not_active")
+    return await command(action, "xdotool", "windowactivate", "--sync", window, *args)
+
+
+async def open_tab(url: str, app: str = "active") -> Outcome:
+    action = "desktop.open_tab"
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return Outcome(action, False, "invalid_url")
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.netloc
+        or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url)
+    ):
+        return Outcome(action, False, "invalid_url")
+    target = await tab_window(action, app)
+    if isinstance(target, Outcome):
+        return target
+    window, _ = target
+    # Creating the tab is separate from typing: never replace the active tab's URL.
+    for args in (
+        ("key", "--clearmodifiers", "ctrl+t"),
+        ("type", "--clearmodifiers", "--delay", "0", "--", url),
+        ("key", "--clearmodifiers", "Return"),
+    ):
+        result = await tab_command(action, window, *args)
+        if not result.ok:
+            return result
+    return result
+
+
+async def switch_tab(tab: str, app: str = "active") -> Outcome:
+    action = "desktop.switch_tab"
+    if tab not in TAB_TARGETS:
+        return Outcome(action, False, "invalid_tab")
+    target = await tab_window(action, app)
+    if isinstance(target, Outcome):
+        return target
+    window, family = target
+    key = {"next": "ctrl+Page_Down", "previous": "ctrl+Page_Up"}.get(tab)
+    if key is None:
+        # Firefox uses Alt+digits on Linux; Chromium uses Ctrl+digits.
+        key = f"{'alt' if family == 'firefox' else 'ctrl'}+{'9' if tab == 'last' else tab}"
+    return await tab_command(action, window, "key", "--clearmodifiers", key)
 
 
 def literals(pattern: str) -> str:

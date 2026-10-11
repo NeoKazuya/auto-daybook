@@ -283,8 +283,9 @@ def main():
         )
         config = Path.home() / ".config/daybook-gx10/app-dir"
         config.write_text(str(checkout) + "\n")
+        # A never-started unit may not be loaded; restart below checks startup.
         subprocess.run(
-            ["systemctl", "--user", "reset-failed", "daybook.service"], check=True
+            ["systemctl", "--user", "reset-failed", "daybook.service"], check=False
         )
         subprocess.run(
             ["systemctl", "--user", "restart", "daybook.service"], check=True

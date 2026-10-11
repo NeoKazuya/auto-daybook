@@ -21,6 +21,7 @@ def main() -> int:
     # "daybook-shell" (and our PID) to report the overlay capture state.
     sys.argv[0] = "daybook-shell"
     # QApplication rather than QGuiApplication: the tray menu is a widget.
+    from PySide6.QtQuick import QQuickWindow
     from PySide6.QtWidgets import QApplication
 
     from ._app import OverlayBridge, build, load_fonts
@@ -28,6 +29,9 @@ def main() -> int:
     from ._controller import OverlayController
     from ._tray import Tray
 
+    # These 2D overlays need no GPU features. Raster rendering avoids driver
+    # crashes when switching between the bubble and full-screen GLX surfaces.
+    QQuickWindow.setSceneGraphBackend("software")
     app = QApplication(sys.argv)
     app.setApplicationName("daybook-shell")
     app.setDesktopFileName("daybook-shell")

@@ -375,6 +375,15 @@ class MockAPI:
         )
 
     def add_upcoming(self, body: w.UpcomingPost) -> w.UpcomingItem:
+        # Same identity as the journal: case and spacing variants are one item.
+        def key(title: str) -> str:
+            return " ".join(re.findall(r"\w+", title.casefold()))
+
+        if any(
+            key(i.title) == key(body.title) and i.due_at == body.due_at
+            for i in self.upcoming_items.values()
+        ):
+            raise HTTPException(409, "already_listed")
         item = w.UpcomingItem(
             id=uuid.uuid4().hex,
             title=body.title,
@@ -396,12 +405,18 @@ class MockAPI:
         self, message: str
     ) -> w.AnswerResponse | w.DraftResponse | w.PlainResponse:
         if message.startswith("/remember") or "remember" in message.lower():
-            item = self.add_upcoming(
-                w.UpcomingPost(
-                    title="CSE 130 Assignment 3",
-                    due_at=datetime.now(timezone.utc) + timedelta(hours=6),
+            try:
+                item = self.add_upcoming(
+                    w.UpcomingPost(
+                        title="CSE 130 Assignment 3",
+                        due_at=datetime.now(timezone.utc).replace(
+                            second=0, microsecond=0
+                        )
+                        + timedelta(hours=6),
+                    )
                 )
-            )
+            except HTTPException:
+                return w.PlainResponse(text="That's already on your Upcoming list.")
             return w.PlainResponse(
                 text=f"Added to Upcoming: {item.title} (due in 6 h)."
             )

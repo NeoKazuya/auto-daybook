@@ -19,8 +19,8 @@ DATED = re.compile(
     r"\b(?:january|february|march|april|june|july|august|september|october"
     r"|november|december|monday|tuesday|wednesday|thursday|friday|saturday"
     r"|sunday|today|tonight|tomorrow|next\s+week"
-    r"|(?:in|due)\s+\d+\s+(?:days?|weeks?|hours?|minutes?|mins?)\b"
-    r"|\d+\s+(?:days?|weeks?|hours?|minutes?|mins?)\s+(?:left|remaining)\b"
+    r"|(?:in|due)\s+\d+\s+(?:months?|weeks?|days?|hours?|minutes?|mins?)\b"
+    r"|\d+\s+(?:months?|weeks?|days?|hours?|minutes?|mins?)\s+(?:left|remaining)\b"
     r"|(?:jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)\.?\s+\d{1,2}\b"
     r"|\d{1,2}/\d{1,2}(?:/\d{2,4})?|\d{4}-\d{2}-\d{2})",
     re.IGNORECASE,

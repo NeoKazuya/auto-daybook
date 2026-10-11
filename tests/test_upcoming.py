@@ -199,6 +199,7 @@ def test_events_start_rather_than_fall_due():
         ("Uploaded 3 days ago", False),
         ("Quiz closes in 30 minutes", True),
         ("15 min remaining", True),
+        ("Project due in 1 month", True),
     ],
 )
 def test_dated_gate_needs_a_date_not_just_a_clock_time(text, expected):
@@ -605,6 +606,12 @@ def test_live_and_mock_upcoming_routes(journal):
             assert added.status_code == 200, added.text
             item = w.UpcomingItem.model_validate(added.json())
             assert item.source is None
+            duplicate = client.post(
+                "/api/upcoming",
+                json={"title": "quiz  2", "due_at": due},
+                headers=headers,
+            )
+            assert duplicate.status_code == 409
             listed = client.get("/api/upcoming").json()["items"]
             assert len(listed) == len(before) + 1
             assert (

@@ -46,8 +46,10 @@ The unattended setup was installed and merged in PR #3:
 - Automatic Xorg login and desktop startup are configured.
 - xdotool, wmctrl, mpv, gh, uv, and native desktop test tools are installed.
 - `~/.local/bin/gx10 smoke` tests focus, typing, clicking, fullscreen, capture, and Escape.
-- `~/.local/bin/gx10 smoke --vision` also tests the local Ollama `qwen3.6:35b` model
-  reading a code from a real screenshot.
+- The legacy `~/.local/bin/gx10 smoke --vision` default tested Ollama reading
+  a code from a screenshot at setup time. **Do not run that default now:**
+  Qwen3.8 is serving and Ollama must stay stopped. Use the current model check
+  in [setup §6](../setup.md#6-the-model).
 
 Both smoke tests passed on 2026-10-10. Reboot/autologin has not been exercised.
 See [gx10-unattended.md](../gx10-unattended.md) for commands and verification scope.
@@ -63,9 +65,11 @@ source ~/.local/share/daybook-gx10/desktop-env.sh
 - Coding and ordinary tests can run concurrently. Only one real-screen capture or
   desktop test runs at a time; the smoke runner uses `/tmp/daybook-capture.lock`.
 - Use replay/no-capture instances when developing without the physical desktop.
-- Only one large model should be loaded at a time. Check existing processes and
-  `ollama ps` before loading one. The Qwen3.8 download was still running at setup;
-  check its current state rather than restarting another agent's job.
+- Qwen3.8 Flash Next is serving through vLLM at localhost:18300. Ollama is
+  deliberately stopped; never load another large model beside vLLM. Check
+  `cd ~/gx10-model-plan && ./gx10.sh status` and follow the model runbook.
+  Existing Daybook configs are not automatically migrated; [setup §6](../setup.md#6-the-model)
+  explains selecting the profile and checking it without exposing the API key.
 - This is a dedicated hackathon machine. Keep setup practical; no temporary power
   profiles or settings-restoration machinery is needed.
 

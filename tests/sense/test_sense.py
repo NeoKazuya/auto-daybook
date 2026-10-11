@@ -4,13 +4,14 @@ import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Awaitable, Callable, cast
 
 import pytest
 from PIL import Image
 
 from daybook.events import Bus
 from daybook.journal import Journal, Observation, WindowInfo
-from daybook.model import ModelUnavailable, ScriptedGateway
+from daybook.model import ModelUnavailable, Prompt, ScriptedGateway
 from daybook.sense import (
     PrivacySettings,
     Rect,
@@ -345,7 +346,11 @@ class HeldGateway(ScriptedGateway):
         self.release = asyncio.Event()
 
     async def call(self, priority, prompt):
-        built = await prompt() if callable(prompt) else prompt
+        built = (
+            await cast(Callable[[], Awaitable[Prompt | None]], prompt)()
+            if callable(prompt)
+            else prompt
+        )
         if built is None:
             return None
         self.entered.set()
@@ -433,3 +438,87 @@ async def test_wait_idle_and_close_only_own_tasks(tmp_path):
     await obj.close()
     assert not obj._tasks
     assert len(journal.rows) == 1
+
+
+def test_x11_server_title_bar_is_part_of_visibility(monkeypatch):
+    from types import SimpleNamespace
+
+    from Xlib import X
+
+    from daybook.sense import X11Screen
+
+    class Window:
+        def get_attributes(self):
+            return SimpleNamespace(map_state=X.IsViewable)
+
+        def get_geometry(self):
+            return SimpleNamespace(width=100, height=100)
+
+        def get_wm_class(self):
+            return ("keepassxc", "KeePassXC")
+
+        def get_wm_name(self):
+            return "private"
+
+    root = SimpleNamespace(
+        get_geometry=lambda: SimpleNamespace(width=200, height=200),
+        translate_coords=lambda *_: SimpleNamespace(x=0, y=30),
+        screensaver_query_info=lambda: SimpleNamespace(idle=0),
+    )
+    screen = X11Screen.__new__(X11Screen)
+    screen._root = root
+    monkeypatch.setattr(
+        screen,
+        "_display",
+        SimpleNamespace(create_resource_object=lambda *_: Window()),
+        raising=False,
+    )
+    screen._shell_pid = None
+
+    def prop(window, name):
+        return {
+            "_NET_ACTIVE_WINDOW": [1],
+            "_NET_CLIENT_LIST_STACKING": [1],
+            "_NET_FRAME_EXTENTS": [0, 0, 30, 0],
+        }.get(name)
+
+    monkeypatch.setattr(screen, "_property", prop)
+    monkeypatch.setattr(screen, "_locked", lambda: False)
+    monkeypatch.setattr("daybook.sense._screen._command", lambda *_: "")
+    facts = screen.state()
+    assert facts.windows[0].rect == Rect(0, 0, 100, 130)
+    covered_client = replace(
+        facts,
+        windows=(*facts.windows, VisibleWindow("cover", CODE, Rect(0, 30, 100, 100))),
+    )
+    assert gate(covered_client, PrivacySettings()) == "withheld"
+
+
+async def test_older_active_observe_failure_trims_original_change(tmp_path):
+    class FailingGateway(HeldGateway):
+        async def call(self, priority, prompt):
+            built = (
+                await cast(Callable[[], Awaitable[Prompt | None]], prompt)()
+                if callable(prompt)
+                else prompt
+            )
+            self.entered.set()
+            await self.release.wait()
+            if built:
+                raise ModelUnavailable("timeout")
+            return None
+
+    obj, screen, journal, _, _ = sense(tmp_path)
+    await poll(obj, 0)
+    failing = FailingGateway()
+    obj.gateway = failing
+    screen.pixels = bytes([150]) * 576
+    await obj.poll(BASE + timedelta(seconds=10))
+    await failing.entered.wait()
+    screen.pixels = bytes([200]) * 576
+    await obj.poll(BASE + timedelta(seconds=20))
+    await asyncio.sleep(0)
+    failing.release.set()
+    await obj.wait_idle()
+    assert journal.rows[0].last_seen_at == BASE + timedelta(seconds=10)
+    assert journal.trims[0] == BASE + timedelta(seconds=10)

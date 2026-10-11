@@ -106,8 +106,20 @@ class X11Screen:
                         continue
                     rect = window.get_geometry()
                     coords = self._root.translate_coords(window, 0, 0)
+                    extents = self._property(window, "_NET_FRAME_EXTENTS")
+                    left, right, top, bottom = (
+                        tuple(int(v) for v in extents)
+                        if extents is not None and len(extents) == 4
+                        else (0, 0, 0, 0)
+                    )
                     clipped = intersection(
-                        Rect(coords.x, coords.y, rect.width, rect.height), bounds
+                        Rect(
+                            coords.x - left,
+                            coords.y - top,
+                            rect.width + left + right,
+                            rect.height + top + bottom,
+                        ),
+                        bounds,
                     )
                     if not clipped.width or not clipped.height:
                         continue

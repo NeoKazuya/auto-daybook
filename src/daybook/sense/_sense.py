@@ -118,17 +118,22 @@ class Sense:
         self._last_window = None
         self._state(state, at)
 
-    def _failed(self, at: datetime, sequence: int, status: str) -> None:
+    def _failed(
+        self, at: datetime, sequence: int, status: str, *, captured: bool = False
+    ) -> None:
         self.bus.publish(StatusChanged("sense", status))
         # A replaced builder had no pixels and a newer trigger supersedes it.
-        if sequence != self._sequence or self._last_state != "running":
+        if not captured and (
+            sequence != self._sequence or self._last_state != "running"
+        ):
             return
         self.journal.trim_after(at)
         self._epoch = self.journal.epoch
         self._continuity += 1
         self._observation = None
         self._last_thumb = None
-        self._state("withheld", at)
+        if self._last_state == "running":
+            self._state("withheld", at)
 
     async def poll(self, at: datetime | None = None) -> None:
         if self._closed:
@@ -205,9 +210,10 @@ class Sense:
         epoch = self.journal.epoch
         window = trigger.active
         built = False
+        admitted = False
 
         async def builder() -> Prompt[_Observed] | None:
-            nonlocal epoch, window, built
+            nonlocal epoch, window, built, admitted
             before = self.screen.state()
             if (
                 consent != self._generation
@@ -215,6 +221,7 @@ class Sense:
                 or gate(before, self._privacy) != "running"
             ):
                 return None
+            admitted = True
             epoch = self.journal.epoch
             window = before.active
             image = self.screen.grab()
@@ -241,13 +248,13 @@ class Sense:
             self._failed(at, sequence, "observe_replaced")
             return
         except Exception:
-            self._failed(at, sequence, "observe_failed")
+            self._failed(at, sequence, "observe_failed", captured=admitted)
             return
         if consent != self._generation or continuity != self._continuity:
-            self.bus.publish(StatusChanged("sense", "discarded_after_consent"))
+            self._failed(at, sequence, "discarded_after_consent", captured=admitted)
             return
         if result is None or not built or window is None:
-            self._failed(at, sequence, "frame_discarded")
+            self._failed(at, sequence, "frame_discarded", captured=admitted)
             return
         current = self.screen.state()
         state = gate(current, self._privacy)
@@ -259,7 +266,7 @@ class Sense:
             ObservationDraft(at, window, result.seen, result.visible_text), epoch
         )
         if observation is None:
-            self._failed(at, sequence, "discarded_after_forget")
+            self._failed(at, sequence, "discarded_after_forget", captured=admitted)
             return
         self._observation = observation
         self._epoch = self.journal.epoch

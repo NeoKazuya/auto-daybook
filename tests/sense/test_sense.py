@@ -140,18 +140,18 @@ class FakeScreen:
 
 class FakeJournal(Journal):
     def __init__(self):
-        self._epoch = 0
+        self._test_epoch = 0
         self.rows = []
         self.states = []
         self.trims = []
 
     @property
     def epoch(self):
-        return self._epoch
+        return self._test_epoch
 
     @epoch.setter
     def epoch(self, value):
-        self._epoch = value
+        self._test_epoch = value
 
     def add_observation(self, draft, epoch):
         if epoch != self.epoch:

@@ -41,14 +41,14 @@ async function render(root, params) {
 
   function draw() {
     count.textContent = `${data.segments.length} segments`;
-    if (!data.segments.length && !data.spans.length) {
+    if (!data.segments.length && !data.capture_spans.length) {
       list.replaceChildren(emptyState('calendar', 'No notes yet',
         'Work as usual. Daybook writes a note a few seconds after the screen changes, and groups them into segments here.'));
       return;
     }
     const items = [
       ...data.segments.map((s, i) => ({ at: s.started_at, el: () => segmentEntry(s, i + 1) })),
-      ...data.spans.filter((g) => GAP[g.state]).map((g) => ({ at: g.start, el: () => gapEntry(g) })),
+      ...data.capture_spans.filter((g) => GAP[g.state]).map((g) => ({ at: g.start, el: () => gapEntry(g) })),
     ].sort((a, b) => new Date(a.at) - new Date(b.at));
     list.replaceChildren(h('div.leaf', items.map((x) => x.el())));
   }
@@ -57,7 +57,7 @@ async function render(root, params) {
     const [ic, name, text] = GAP[g.state];
     return h('div.entry.gap',
       h('span.stamp', clock(g.start)),
-      h('div.gap-entry', icon(ic), h('b', name), `${clock(g.start)}–${clock(g.end)}`, h('span', '· ' + text)));
+      h('div.gap-entry', icon(ic), h('b', name), `${clock(g.start)}–${g.end ? clock(g.end) : 'now'}`, h('span', '· ' + text)));
   }
 
   function segmentEntry(s, n) {
@@ -76,7 +76,7 @@ async function render(root, params) {
             s.open && h('span.tag.ember', 'writing now'))),
         h('div.seg-time',
           h('span.seg-active', duration(s.active)),
-          h('span.seg-range', `${clock(s.started_at)}–${s.open ? 'now' : clock(s.ended_at)}`),
+          h('span.seg-range', `${clock(s.started_at)}–${s.open || !s.ended_at ? 'now' : clock(s.ended_at)}`),
           h('span.folio', folio(n)))),
       editing.has(s.id) ? segmentForm(s) : null,
       isOpen ? h('div.seg-body',

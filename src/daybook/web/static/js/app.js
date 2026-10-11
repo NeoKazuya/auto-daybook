@@ -53,19 +53,21 @@ const CAPTURE_LABEL = {
 async function refreshStatus() {
   const footer = document.getElementById('footer');
   try {
-    const [s, sk] = await Promise.all([api.status(), api.skills()]);
-    status = { ...s, needs_review: sk.filter((x) => x.status === 'needs_review').length };
+    const [s, sk, privacy] = await Promise.all([api.status(), api.skills(), api.privacy()]);
+    status = { ...s, needs_review: sk.entries.filter((x) => x.status === 'needs_review').length };
     ribbon.captureState = s.capture;
     document.querySelectorAll('.state-pip').forEach((el) => { el.dataset.state = s.capture; });
-    const m = s.model;
+    const g = s.gateway;
     footer.replaceChildren(
       h('span.item', h(`span.dot${s.capture === 'running' ? '.live' : ''}`), CAPTURE_LABEL[s.capture] ?? s.capture),
       h('span.sep'),
-      h('span.item', icon('cpu'), m.name, h(`span.dot${m.reachable ? '.ok' : '.bad'}`), m.reachable ? 'reachable' : 'offline'),
+      h('span.item', icon('cpu'), g.model, h(`span.dot${g.reachable ? '.ok' : '.bad'}`), g.reachable ? 'reachable' : 'offline'),
       h('span.sep'),
-      h('span.item', icon('bolt'), `${m.calls_per_min} calls/min`),
-      ...(s.deletion_pending ? [h('span.sep'), h('span.item', icon('trash'), 'Deletion pending')] : []),
+      h('span.item', icon('bolt'), `${g.calls_per_minute} calls/min`),
+      ...(privacy.deletion_pending ? [h('span.sep'), h('span.item', icon('trash'), 'Deletion pending')] : []),
     );
+    sourceFlag.hidden = !(DEMO || s.mock);
+    sourceFlag.textContent = DEMO ? 'DEMO DATA' : 'MOCK API';
     if (current) renderNav(current.page);
   } catch (err) {
     footer.replaceChildren(h('span.item', h('span.dot.bad'), `Status unavailable — ${err.message}`));
@@ -76,23 +78,26 @@ async function refreshStatus() {
 
 applyPrefs();
 hydrateIcons();
-if (DEMO) {
-  document.getElementById('sidebar-foot').append(
-    h('div', 'LOCAL ONLY · 127.0.0.1'),
-    h('span.demo-flag', { title: 'No server token: showing built-in example data' }, 'DEMO DATA'));
-} else {
-  document.getElementById('sidebar-foot').append(h('div', 'LOCAL ONLY · 127.0.0.1'));
-}
+const sourceFlag = h('span.demo-flag', { hidden: true, title: 'Showing example data, not your notes' });
+document.getElementById('sidebar-foot').append(h('div', 'LOCAL ONLY · 127.0.0.1'), sourceFlag);
 
 window.addEventListener('hashchange', show);
 await refreshStatus();
 await show();
 setInterval(refreshStatus, 5000);
 
-// Live updates: pages that care re-read their data; the footer follows capture state.
+// Live updates: events are batched for 250 ms, then the page gets the set of event
+// types that arrived and re-reads what it shows. The footer follows status changes.
+const STATUS_EVENTS = new Set(['CaptureStateChanged', 'SkillsChanged', 'StatusChanged', 'MusicChanged', 'Reconnected']);
 let pending = null;
+let batch = new Set();
 subscribe((event) => {
-  if (event.type === 'CaptureStateChanged' || event.type === 'SkillChanged') refreshStatus();
+  if (STATUS_EVENTS.has(event.type)) refreshStatus();
+  batch.add(event.type);
   clearTimeout(pending);
-  pending = setTimeout(() => current?.hooks.onEvent?.(event), 250);
+  pending = setTimeout(() => {
+    const types = batch;
+    batch = new Set();
+    current?.hooks.onEvent?.(types);
+  }, 250);
 });

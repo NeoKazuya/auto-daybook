@@ -1,7 +1,7 @@
 // Sticky Board: chat. Each exchange is pinned as a note. Recall answers cite timeline
 // segments; a skill request pins a draft that links to its review card.
 import { api } from '../api.js';
-import { h, icon, btn, ribbon, panel, emptyState } from '../ui.js';
+import { h, icon, btn, ribbon, panel, emptyState, clock } from '../ui.js';
 
 const page = { route: 'board', label: 'Sticky Board', icon: 'sticky', render };
 export default page;
@@ -53,7 +53,7 @@ async function render(root, params) {
   }
 
   function sticky(n) {
-    const when = n.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    const when = clock(n.at.toISOString());
     if (n.pending) {
       return h('article.sticky.thinking', h('div.q', `› ${n.message}`), h('div.a', 'Reading your notes'),
         h('div.sticky-foot', h('span.folio', when), h('span.tag.quiet', 'model busy')));
@@ -64,21 +64,21 @@ async function render(root, params) {
         h('div.sticky-foot', h('span.folio', when), btn('Try again', { onclick: () => { notes.splice(notes.indexOf(n), 1); ask(n.message); } })));
     }
     const r = n.reply;
-    if (r.kind === 'draft') {
+    if (r.type === 'draft') {
       return h('article.sticky.draft',
         h('div.q', `› ${n.message}`),
         h('div', h('span.tag.ember', 'Skill draft · needs review')),
         h('div.a', r.summary),
         h('p.muted', { style: 'margin:0;font-size:0.98rem' }, 'Nothing runs until you approve this exact version.'),
         h('div.sticky-foot', h('span.folio', when),
-          h('a.btn.ember', { href: `#/skills?id=${encodeURIComponent(r.skill_id)}` }, icon('quill'), 'Review & enable')));
+          h('a.btn.ember', { href: `#/skills?id=${encodeURIComponent(r.entry.id)}` }, icon('quill'), 'Review & enable')));
     }
     return h('article.sticky',
       h('div.q', `› ${n.message}`),
       h('div.a', r.text),
-      r.cites?.length ? h('div.cites', r.cites.map((c) =>
-        h('a.tag.ember', { href: `#/daily?seg=${encodeURIComponent(c.segment_id)}`, title: 'Open in the Daily Book' }, icon('link'), c.title))) : null,
-      h('div.sticky-foot', h('span.folio', when), r.window?.label && h('span.tag.quiet', r.window.label)));
+      r.cites?.length ? h('div.cites', r.cites.map((id) =>
+        h('a.tag.ember', { href: `#/daily?seg=${encodeURIComponent(id)}`, title: 'Open in the Daily Book' }, icon('link'), n.titles?.[id] ?? 'Open segment'))) : null,
+      h('div.sticky-foot', h('span.folio', when), r.window && h('span.tag.quiet', `${clock(r.window.from)}–${clock(r.window.to)}`)));
   }
 
   async function ask(message) {
@@ -91,6 +91,11 @@ async function render(root, params) {
     send.disabled = true;
     try {
       n.reply = await api.chat(message);
+      // Answers cite segment IDs; look up their titles for the links.
+      if (n.reply.type === 'answer' && n.reply.cites.length) {
+        const tl = await api.timeline().catch(() => null);
+        n.titles = Object.fromEntries((tl?.segments ?? []).map((seg) => [seg.id, seg.title]));
+      }
     } catch (err) {
       n.error = `${err.message} Your message wasn't lost — try again.`;
     } finally {

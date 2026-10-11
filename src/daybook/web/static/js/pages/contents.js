@@ -1,6 +1,6 @@
 // Table of Contents: today at a glance. Each segment is a chapter line that opens
 // in the Daily Book.
-import { api } from '../api.js';
+import { api, supports } from '../api.js';
 import { h, ribbon, panel, stat, emptyState, errorState, skeletons, clock, duration, longDay, dayStamp } from '../ui.js';
 
 const page = { route: 'contents', label: 'Table of Contents', icon: 'contents', render };
@@ -19,8 +19,10 @@ async function render(root) {
 
   async function refresh() {
     try {
-      const [tl, kinds, sk, status] = await Promise.all([api.timeline(), api.totals('kind'), api.skills(), api.status()]);
-      body.replaceChildren(...view(tl, kinds, sk, status));
+      const [tl, kinds, sk, status] = await Promise.all([
+        api.timeline(), supports.totals ? api.totals('kind') : null, api.skills(), api.status(),
+      ]);
+      body.replaceChildren(...view(tl, kinds, sk.entries, status));
     } catch (err) {
       body.replaceChildren(errorState(err, refresh));
     }
@@ -29,16 +31,19 @@ async function render(root) {
   return { onEvent: refresh };
 }
 
+const CAPTURE = { running: 'Recording', paused: 'Paused', locked: 'Screen locked', away: 'Away', withheld: 'Private window', overlay: 'Overlay up' };
+
+// `kinds` is null when the server has no totals route yet; totals are never summed here.
 function view(tl, kinds, skills, status) {
-  const active = kinds.reduce((t, k) => t + k.active, 0);
   const activeSkills = skills.filter((s) => s.status === 'active').length;
   const review = skills.filter((s) => s.status === 'needs_review').length;
 
   const stats = h('div.stats',
-    stat('clock', 'Active today', duration(active)),
+    kinds ? stat('clock', 'Active today', duration(kinds.reduce((t, k) => t + k.active, 0)))
+      : stat('eyeoff', 'Capture', CAPTURE[status.capture] ?? status.capture),
     stat('layers', 'Chapters', `${tl.segments.length}`),
     stat('quill', 'Skills', review ? `${activeSkills} active · ${review} to review` : `${activeSkills} active`),
-    stat('cpu', 'Model', status.model.reachable ? `${status.model.calls_per_min} calls/min` : 'Offline'));
+    stat('cpu', 'Model', status.gateway.reachable ? `${status.gateway.calls_per_minute} calls/min` : 'Offline'));
 
   if (!tl.segments.length) {
     return [stats, emptyState('contents', 'No notes yet',
@@ -50,7 +55,7 @@ function view(tl, kinds, skills, status) {
   // Interleave segments and capture gaps by start time.
   const lines = [
     ...tl.segments.map((s) => ({ at: s.started_at, seg: s })),
-    ...tl.spans.filter((g) => g.state !== 'running').map((g) => ({ at: g.start, gap: g })),
+    ...tl.capture_spans.filter((g) => g.state !== 'running').map((g) => ({ at: g.start, gap: g })),
   ].sort((a, b) => new Date(a.at) - new Date(b.at));
 
   const toc = h('div.toc', lines.map(({ seg, gap }) => gap
@@ -58,15 +63,15 @@ function view(tl, kinds, skills, status) {
         h('span.toc-time', clock(gap.start)),
         h('span.toc-title', `${GAP_LABEL[gap.state] ?? gap.state} — no notes`),
         h('span.toc-leader'),
-        h('span.toc-dur', duration((new Date(gap.end) - new Date(gap.start)) / 1000)))
+        h('span.toc-dur', duration((new Date(gap.end ?? Date.now()) - new Date(gap.start)) / 1000)))
     : h(`a.toc-line${seg.open ? '.open' : ''}`, { href: `#/daily?seg=${seg.id}` },
         h('span.toc-time', clock(seg.started_at)),
         h('span.toc-title', seg.title),
         h('span.toc-leader'),
         h('span.toc-dur', duration(seg.active)))));
 
-  const max = Math.max(...kinds.map((k) => k.active), 1);
-  const bars = h('div.bars', kinds.map((k) =>
+  const max = Math.max(...(kinds ?? []).map((k) => k.active), 1);
+  const bars = kinds && h('div.bars', kinds.map((k) =>
     h('div.bar-row',
       h('span.bar-key', k.key),
       h('div.bar-track', h('div.bar-fill', { style: `width:${(k.active / max) * 100}%` })),
@@ -76,7 +81,7 @@ function view(tl, kinds, skills, status) {
     h('div.grid-2',
       panel('Chapters of the day', 'contents', h('span.counter', `${tl.segments.length} entries`), toc),
       h('div', { style: 'display:flex;flex-direction:column;gap:1.5rem' },
-        panel('Time by kind', 'layers', null, bars),
+        bars && panel('Time by kind', 'layers', null, bars),
         panel('Now writing', 'quill', null, nowCard(tl.segments.find((s) => s.open), status)))),
     stats,
   ];

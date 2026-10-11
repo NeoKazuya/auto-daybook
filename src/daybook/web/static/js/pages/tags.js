@@ -1,6 +1,6 @@
 // Index Tags: the back-of-the-book index. Full-text search over notes, plus time
 // grouped by kind and by app. Durations come from the server's totals, never the browser.
-import { api } from '../api.js';
+import { api, supports } from '../api.js';
 import { h, icon, ribbon, panel, emptyState, errorState, skeletons, clock, duration } from '../ui.js';
 
 const page = { route: 'tags', label: 'Index Tags', icon: 'tag', render };
@@ -23,6 +23,7 @@ async function render(root, params) {
       panel('By app', 'layers', null, apps)));
 
   async function find() {
+    if (!supports.search) return;
     const text = input.value.trim();
     history.replaceState(null, '', text ? `#/tags?q=${encodeURIComponent(text)}` : '#/tags');
     if (!text) { results.replaceChildren(); return; }
@@ -56,9 +57,21 @@ async function render(root, params) {
   }
 
   const pick = (key) => { input.value = key; find(); };
+  const notYet = (what) => emptyState('tag', `${what} isn’t available yet`,
+    'Daybook’s server doesn’t offer this yet. It arrives once Lane A adds it to the API.');
+
+  if (!supports.search) {
+    input.disabled = true;
+    results.replaceChildren(notYet('Search'));
+  }
+  if (!supports.totals) {
+    kinds.replaceChildren(notYet('Time by kind'));
+    apps.replaceChildren(notYet('Time by app'));
+    return {};
+  }
   const refresh = () => Promise.all([chips(kinds, 'kind', pick), chips(apps, 'app', pick)]);
   await refresh();
-  if (input.value) find();
+  if (input.value && supports.search) find();
   return { onEvent: refresh };
 }
 

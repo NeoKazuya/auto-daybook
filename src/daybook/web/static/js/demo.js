@@ -1,6 +1,8 @@
-// In-browser stand-in for the API, used only when the page has no token.
-// Shapes follow ARCHITECTURE §4 until web/wire.py lands; when it does, switch to
-// `daybook run --mock-api` and delete this file.
+// In-browser stand-in for the API, used only when the page has no token, so the UI
+// can be previewed from a plain static server. It returns the same shapes as
+// src/daybook/web/wire.py. With a backend, use `daybook run --mock-api` instead.
+// It also serves the routes and fields the UI has ahead of the server (search,
+// totals, monitoring rules); see `supports` in api.js.
 
 const today = new Date();
 const at = (hm) => {
@@ -10,6 +12,7 @@ const at = (hm) => {
   return d.toISOString();
 };
 const secs = (a, b) => (new Date(b) - new Date(a)) / 1000;
+const toSecs = (d) => { const m = /^(\d+)([smh])$/.exec(d ?? ''); return m ? Number(m[1]) * { s: 1, m: 60, h: 3600 }[m[2]] : 0; };
 
 let nextId = 100;
 const obs = (start, end, app, title, seen, visible_text = '') =>
@@ -82,15 +85,8 @@ const db = {
   ],
   privacy: {
     paused: false,
-    exclusions: [
-      { match: 'app', value: 'KeePassXC' },
-      { match: 'app', value: '1Password' },
-      { match: 'app', value: 'Bitwarden' },
-      { match: 'title', value: 'Private Browsing' },
-      { match: 'title', value: 'Incognito' },
-      { match: 'title', value: 'Daybook ·' },
-    ],
-    keep_frames: false,
+    exclude_apps: ['KeePassXC', '1Password', 'Bitwarden'],
+    exclude_titles: ['Private Browsing', 'Incognito', 'Daybook ·'],
     schedule: { enabled: false, days: [1, 2, 3, 4, 5], start: '09:00', end: '18:00' },
     apps_mode: 'all',
     allowed_apps: ['Code', 'Firefox', 'Terminal'],
@@ -128,19 +124,27 @@ const db = {
       [{ when: 'drifting is true for 10m', cooldown: '30m', do: [{ action: 'notify.send', args: { title: 'Back to it?', body: "You've been off task for $drifting.for." } }] }],
       ['notify.send']), { request: 'nudge me if I get distracted for more than 10 minutes' }),
   ],
-  status: {
-    model: { name: 'qwen3.6:35b', reachable: true, latency_ms: 2900, calls_per_min: 6, queue: 0 },
-    now_playing: { mood: 'focus', title: 'Cipher', artist: 'Kevin MacLeod' },
+  gateway: {
+    model: 'qwen3.6:35b', reachable: true, in_flight: null, queue_depth: 0,
+    latency: 2.9, calls_per_minute: 6, background_calls_per_minute: 5,
   },
+  music: { mood: 'focus', title: 'Cipher', playing: true },
 };
 
 
+// A wire SkillResponse. `rules` are written with `do`/`args` for brevity here.
 function skill(id, name, origin, status, enabled, goal, signals, rules, allow) {
   return {
-    id, name, origin, status, enabled, goal, signals, rules,
+    id, name, goal, origin, status, enabled, allow,
     created_by: origin === 'builtin' ? 'builtin' : 'chat',
+    request: null,
+    approved: status === 'active' || status === 'disabled',
     hash: `sha256:${id.padEnd(12, '0').slice(0, 12)}`,
-    permissions: allow.map((action) => ({ action, describe: CATALOG[action] })),
+    signals: signals.map((g) => ({ values: [], descriptions: {}, minimum: null, maximum: null, ...g })),
+    rules: rules.map((r) => ({
+      when: r.when, cooldown: toSecs(r.cooldown),
+      steps: r.do.map((d) => ({ action: d.action, arguments: d.args })),
+    })),
     errors: [],
     text: skillText(id, name, signals, rules, allow, goal),
   };
@@ -158,19 +162,22 @@ function skillText(id, name, signals, rules, allow, goal) {
 
 function segmentOut(s) {
   const o = s.observations;
+  const observations = o.map((x) => ({ ...x, segment: s.id, active: secs(x.started_at, x.last_seen_at) }));
   return {
     ...s,
-    started_at: o[0]?.started_at,
-    ended_at: o.at(-1)?.last_seen_at,
-    active: o.reduce((t, x) => t + secs(x.started_at, x.last_seen_at), 0),
+    observations,
+    started_at: o[0]?.started_at ?? null,
+    ended_at: o.at(-1)?.last_seen_at ?? null,
+    active: observations.reduce((t, x) => t + x.active, 0),
   };
 }
 
-function captureState() {
-  return db.privacy.paused ? 'paused' : 'running';
-}
+const captureState = () => (db.privacy.paused ? 'paused' : 'running');
+const ok = () => ({ ok: true, deletion_pending: db.deletion_pending });
+const privacyOut = () => ({ ...db.privacy, keep_frames: false, deletion_pending: db.deletion_pending, screenshots_stored: 'none' });
+const activeSignals = () => db.skills.filter((x) => x.status === 'active').reduce((t, x) => t + x.signals.length, 0);
 
-/* ---------- live events ---------- */
+/* ---------- live events (named like wire.EVENT_MODELS) ---------- */
 
 const listeners = new Set();
 export function subscribe(fn) {
@@ -186,13 +193,14 @@ setInterval(() => {
   const last = open?.observations.at(-1);
   if (!last) return;
   last.last_seen_at = new Date(new Date(last.last_seen_at).getTime() + 15000).toISOString();
-  emit('ObservationExtended', { segment: open.id });
+  emit('ObservationExtended', { id: last.id });
 }, 15000);
 
 /* ---------- routes ---------- */
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const fail = (status, detail) => Object.assign(new Error(detail), { status });
+// Errors carry the server's `detail` codes; api.js turns them into messages.
+const fail = (status, detail) => Object.assign(new Error(detail), { status, detail });
 
 export async function handle(method, path, body) {
   await wait(180 + Math.random() * 220);
@@ -203,100 +211,111 @@ export async function handle(method, path, body) {
   switch (key) {
     case 'GET /status':
       return {
-        capture: captureState(),
-        deletion_pending: db.deletion_pending,
-        overlay: null,
-        ...structuredClone(db.status),
-        now_playing: db.status.now_playing,
+        gateway: { ...db.gateway }, music: { ...db.music }, overlay: null,
+        capture: captureState(), shell_connected: false, mock: true,
       };
     case 'GET /now': {
       const open = db.segments.find((s) => s.open);
-      return { capture: captureState(), open_segment: open ? segmentOut(open) : null };
+      const seg = open ? segmentOut(open) : null;
+      return { capture: captureState(), segment: seg, observation: seg?.observations.at(-1) ?? null, readings: [] };
     }
     case 'GET /timeline':
-      return { segments: db.segments.map(segmentOut), spans: db.spans };
+      return { segments: db.segments.map(segmentOut), capture_spans: db.spans };
     case 'PATCH /segments': {
       const s = db.segments.find((x) => x.id === parts[1]);
-      if (!s) throw fail(404, 'That segment no longer exists.');
+      if (!s) throw fail(404, 'not_found');
       Object.assign(s, body, { authored: 'user' });
-      emit('SegmentEdited', { segment: s.id });
+      emit('SegmentChanged', { id: s.id });
       return segmentOut(s);
     }
     case 'DELETE /segments':
       db.segments = db.segments.filter((x) => x.id !== parts[1]);
-      emit('Forgotten');
-      return null;
+      emit('SegmentChanged', { id: parts[1] });
+      return ok();
     case 'PATCH /observations': {
-      const o = db.segments.flatMap((s) => s.observations).find((x) => x.id === parts[1]);
-      if (!o) throw fail(404, 'That note no longer exists.');
+      const seg = db.segments.find((s) => s.observations.some((x) => x.id === parts[1]));
+      const o = seg?.observations.find((x) => x.id === parts[1]);
+      if (!o) throw fail(404, 'not_found');
       Object.assign(o, body);
-      emit('ObservationEdited');
-      return o;
+      emit('SegmentChanged', { id: seg.id });
+      return { ...o, segment: seg.id, active: secs(o.started_at, o.last_seen_at) };
     }
     case 'DELETE /observations':
       for (const s of db.segments) s.observations = s.observations.filter((o) => o.id !== parts[1]);
       db.segments = db.segments.filter((s) => s.observations.length);
-      emit('Forgotten');
-      return null;
+      emit('SegmentChanged', { id: '' });
+      return ok();
     case 'POST /forget': {
       const from = new Date(body.from);
       for (const s of db.segments) s.observations = s.observations.filter((o) => new Date(o.started_at) < from);
       db.segments = db.segments.filter((s) => s.observations.length);
-      emit('Forgotten');
-      return null;
+      emit('SegmentChanged', { id: '' });
+      return ok();
     }
     case 'POST /forget-all':
       db.segments = [];
       db.spans = [];
-      emit('Forgotten');
-      return null;
+      emit('SegmentChanged', { id: '' });
+      return ok();
     case 'POST /chat':
       return chat(body.message);
     case 'GET /skills':
-      return db.skills;
+      return {
+        entries: db.skills, active_signals: activeSignals(), max_active_signals: 12,
+        catalog: Object.entries(CATALOG).map(([name, description]) => ({ name, description, parameters: {} })),
+        moods: { focus: 'concentrated work', calm: 'reading, research', energetic: 'light admin', break: 'not working' },
+      };
     case 'PUT /skills': {
       const s = db.skills.find((x) => x.id === parts[1]);
+      if (!s) throw fail(404, 'not_found');
       const errors = parseErrors(body.text);
-      Object.assign(s, { text: body.text, errors, status: errors.length ? 'invalid' : 'needs_review', hash: `sha256:${Math.random().toString(16).slice(2, 14)}` });
-      emit('SkillChanged', { skill: s.id });
+      Object.assign(s, {
+        text: body.text, errors, approved: false, status: errors.length ? 'invalid' : 'needs_review',
+        hash: `sha256:${Math.random().toString(16).slice(2, 14)}`,
+      });
+      emit('SkillsChanged', { id: s.id });
       return s;
     }
     case 'POST /skills': {
-      if (parts[1] === 'parse') return { errors: parseErrors(body.text) };
+      if (parts[1] === 'parse') {
+        const errors = parseErrors(body.text);
+        const entry = db.skills.find((x) => x.id === body.id);
+        return { valid: !errors.length, errors, entry: { ...entry, text: body.text, errors } };
+      }
       const s = db.skills.find((x) => x.id === parts[1]);
-      if (!s) throw fail(404, 'That skill no longer exists.');
+      if (!s) throw fail(404, 'not_found');
       const action = parts[2];
       if (action === 'approve') {
-        if (body.hash !== s.hash) throw fail(409, 'The skill changed since you reviewed it. Here is the new version.');
-        Object.assign(s, { status: 'active', enabled: true, origin: s.origin });
+        if (body.hash !== s.hash) throw fail(409, 'stale_approval');
+        Object.assign(s, { status: 'active', enabled: true, approved: true });
       } else if (action === 'enable') {
-        if (s.status === 'needs_review' || s.status === 'invalid') throw fail(409, 'This version hasn\'t been reviewed yet.');
+        if (!s.approved) throw fail(409, 'needs_review');
         Object.assign(s, { status: 'active', enabled: true });
       } else if (action === 'disable') {
-        Object.assign(s, { status: 'disabled', enabled: false });
+        Object.assign(s, { status: s.approved ? 'disabled' : s.status, enabled: false });
       }
-      emit('SkillChanged', { skill: s.id });
+      emit('SkillsChanged', { id: s.id });
       return s;
     }
     case 'DELETE /skills':
       db.skills = db.skills.filter((x) => x.id !== parts[1]);
-      emit('SkillChanged');
-      return null;
+      emit('SkillsChanged', { id: parts[1] });
+      return ok();
     case 'GET /privacy':
-      return { ...db.privacy, screenshots_stored: 0, deletion_pending: db.deletion_pending };
+      return privacyOut();
     case 'PUT /privacy':
       Object.assign(db.privacy, body);
       emit('CaptureStateChanged', { state: captureState() });
-      return { ...db.privacy, screenshots_stored: 0, deletion_pending: db.deletion_pending };
+      return privacyOut();
     case 'POST /tick':
-      emit('TickApplied');
-      return null;
+      emit('TickRecorded', { tick: `t${Date.now()}` });
+      return { recorded: true, tick: `t${Date.now()}` };
     case 'GET /search':
       return search(url.searchParams.get('q') ?? '');
     case 'GET /totals':
       return totals(url.searchParams.get('by') ?? 'kind');
     default:
-      throw fail(404, `No demo route for ${method} ${url.pathname}`);
+      throw fail(404, 'not_found');
   }
 }
 
@@ -328,14 +347,15 @@ function totals(by) {
 
 function parseErrors(text) {
   const errors = [];
-  if (!text.startsWith('---')) errors.push({ at: 'front matter', message: 'The file must start with --- and YAML front matter.' });
-  if (!/^id:\s*[a-z0-9-]{1,40}\s*$/m.test(text)) errors.push({ at: 'id', message: 'Missing or invalid id (lowercase letters, digits and dashes).' });
-  if (!/^signals:/m.test(text)) errors.push({ at: 'signals', message: 'At least one signal is required.' });
-  if (!/^rules:/m.test(text)) errors.push({ at: 'rules', message: 'At least one rule is required.' });
-  if (!/^allow:/m.test(text)) errors.push({ at: 'allow', message: 'List the actions this skill may use under allow.' });
+  const err = (location, message) => errors.push({ location, message });
+  if (!text.startsWith('---')) err('front matter', 'The file must start with --- and YAML front matter.');
+  if (!/^id:\s*[a-z0-9-]{1,40}\s*$/m.test(text)) err('id', 'Missing or invalid id (lowercase letters, digits and dashes).');
+  if (!/^signals:/m.test(text)) err('signals', 'At least one signal is required.');
+  if (!/^rules:/m.test(text)) err('rules', 'At least one rule is required.');
+  if (!/^allow:/m.test(text)) err('allow', 'List the actions this skill may use under allow.');
   for (const m of text.matchAll(/when:\s*(.+)/g)) {
     if (!/^(\w+ updates|\w+ becomes \S+|\w+ is \S+ for \d+[smh]|every \d+[smh])\s*$/.test(m[1].trim())) {
-      errors.push({ at: 'rules[].when', message: `"${m[1].trim()}" isn't one of the four trigger forms.` });
+      err('rules[].when', `"${m[1].trim()}" isn't one of the four trigger forms.`);
     }
   }
   return errors;
@@ -344,29 +364,31 @@ function parseErrors(text) {
 async function chat(message) {
   await wait(1400);
   const text = message.trim();
+  const now = new Date();
+  const hourAgo = new Date(now - 3600_000);
   const wantsSkill = text.startsWith('/skill') || (!text.startsWith('/ask') && /\b(remind|every time|whenever|when i)\b/i.test(text));
   if (wantsSkill) {
-    if (!db.skills.some((s) => s.id === 'stand-after-meeting')) {
-      const s = skill('stand-after-meeting', 'Stand up after meetings', 'user', 'needs_review', false,
+    let s = db.skills.find((x) => x.id === 'stand-after-meeting');
+    if (!s) {
+      s = skill('stand-after-meeting', 'Stand up after meetings', 'user', 'needs_review', false,
         'Every time I finish a meeting, remind me to stand up.',
         [{ name: 'in_meeting', ask: 'Is the user currently in a video call or online meeting (Zoom, Google Meet, Microsoft Teams, Jitsi, a Discord or Slack call, or similar)?', type: 'bool' }],
         [{ when: 'in_meeting becomes false', cooldown: '10m', do: [{ action: 'overlay.show', args: { title: "Meeting's over", body: 'Stand up and stretch for a minute before the next thing.', minutes: 1 } }] }],
         ['overlay.show']);
-      s.created_by = 'chat';
-      s.request = text.replace(/^\/skill\s*/, '');
+      Object.assign(s, { created_by: 'chat', request: text.replace(/^\/skill\s*/, '') });
       db.skills.push(s);
-      emit('SkillChanged', { skill: s.id });
+      emit('SkillsChanged', { id: s.id });
     }
-    return { kind: 'draft', skill_id: 'stand-after-meeting', summary: 'Shows a full-screen “Meeting’s over” reminder once each time a call ends.' };
+    return { type: 'draft', entry: s, summary: 'Shows a full-screen “Meeting’s over” reminder once each time a call ends.' };
   }
   if (/paus|10:1/i.test(text)) {
-    return { kind: 'answer', text: "I don't have notes for that: capture was paused from 10:10 to 10:25.", cites: [], window: { label: 'today' } };
+    return { type: 'answer', text: "I don't have notes for that: capture was paused from 10:10 to 10:25.", cites: [], window: { from: at('00:00'), to: now.toISOString() } };
   }
   const recent = db.segments.slice(-3).map(segmentOut);
   return {
-    kind: 'answer',
+    type: 'answer',
     text: `In the last hour you reviewed the stand-up skill draft for ${Math.round(recent[1].active / 60)} minutes, then moved on to debugging the event stream reconnect, which you're still on (${Math.round(recent[2].active / 60)} minutes so far). A short break overlay came up at 13:40.`,
-    cites: recent.slice(1).map((s) => ({ segment_id: s.id, title: s.title })),
-    window: { label: 'last hour' },
+    cites: recent.slice(1).map((s) => s.id),
+    window: { from: hourAgo.toISOString(), to: now.toISOString() },
   };
 }

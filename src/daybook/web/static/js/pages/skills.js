@@ -18,6 +18,7 @@ const STATUS = {
 
 async function render(root, params) {
   let skills = [];
+  let catalog = [];
   let selected = params.get('id');
   let notice = null;
   const count = h('span.counter', '…');
@@ -32,7 +33,7 @@ async function render(root, params) {
 
   async function refresh() {
     try {
-      skills = await api.skills();
+      ({ entries: skills, catalog } = await api.skills());
       if (!skills.some((s) => s.id === selected)) selected = skills.find((s) => s.status === 'needs_review')?.id ?? skills[0]?.id;
       draw();
     } catch (err) {
@@ -124,19 +125,21 @@ async function render(root, params) {
         h('p.goal', s.goal),
         dev && h('div.review-sec', h('div.label', 'It asks the model'), h('ul', s.signals.map((g) => h('li', g.ask)))),
         h('div.review-sec', h('div.label', 'Rules'), h('ul', s.rules.map((r) => h('li', ruleInWords(r))))),
-        dev && h('div.review-sec', h('div.label', 'Permissions'), h('ul', s.permissions.map((p) =>
-          h('li.perm', h('span', p.describe ?? p.action), h('span.tag.quiet', p.action))))),
+        dev && h('div.review-sec', h('div.label', 'Permissions'), h('ul', s.allow.map((action) =>
+          h('li.perm', h('span', catalog.find((c) => c.name === action)?.description ?? action), h('span.tag.quiet', action))))),
         dev && h('div.review-sec', h('div.label', 'Skill file'), editor, parse),
         h('div.actions-bar', buttons)));
   }
 
   await refresh();
-  return { onEvent: (e) => { if (e.type === 'SkillChanged' && !document.activeElement?.matches('textarea')) refresh(); } };
+  return { onEvent: (types) => {
+    if ((types.has('SkillsChanged') || types.has('Reconnected')) && !document.activeElement?.matches('textarea')) refresh();
+  } };
 }
 
 function parseView(errors) {
   if (!errors?.length) return [h('span.parse-ok', '✓ The file parses.')];
-  return errors.map((e) => h('div', `${e.at}: ${e.message}`));
+  return errors.map((e) => h('div', `${e.location}: ${e.message}`));
 }
 
 /* ---------- rules in words ---------- */
@@ -154,7 +157,7 @@ function trigger(when) {
   return [`When ${when}:`];
 }
 
-function step({ action, args = {} }) {
+function step({ action, arguments: args = {} }) {
   const v = (x) => (typeof x === 'string' && x.startsWith('$') ? `the current ${human(x.slice(1))}` : x);
   switch (action) {
     case 'overlay.show': return `show a full-screen overlay “${args.title}”${args.minutes ? ` for up to ${args.minutes} min` : ''}`;
@@ -169,10 +172,17 @@ function step({ action, args = {} }) {
   }
 }
 
+// Cooldowns arrive in seconds.
+function seconds(n) {
+  if (n % 3600 === 0) return `${n / 3600} ${n === 3600 ? 'hour' : 'hours'}`;
+  if (n % 60 === 0) return `${n / 60} ${n === 60 ? 'minute' : 'minutes'}`;
+  return `${n} seconds`;
+}
+
 function ruleInWords(rule) {
   return [
     ...trigger(rule.when), ' ',
-    rule.do.map(step).join(', then '), '.',
-    rule.cooldown ? ` At most once every ${dur(rule.cooldown)}.` : '',
+    rule.steps.map(step).join(', then '), '.',
+    rule.cooldown ? ` At most once every ${seconds(rule.cooldown)}.` : '',
   ];
 }

@@ -2,7 +2,7 @@
 // and forgetting), proof that no screenshots are stored, and the model's status.
 // Monitoring settings go through /api/privacy, which sense owns; display options are
 // per-browser preferences (prefs.js).
-import { api } from '../api.js';
+import { api, supports } from '../api.js';
 import { getPref, setPref } from '../prefs.js';
 import { h, icon, btn, busy, ribbon, panel, errorState, skeletons, confirmDialog, toast } from '../ui.js';
 
@@ -29,7 +29,7 @@ async function render(root) {
       [privacy, status, knownApps] = await Promise.all([
         api.privacy(),
         api.status(),
-        api.totals('app').then((rows) => rows.map((r) => r.key)).catch(() => []),
+        supports.totals ? api.totals('app').then((rows) => rows.map((r) => r.key)).catch(() => []) : [],
       ]);
       draw();
     } catch (err) {
@@ -64,7 +64,14 @@ async function render(root) {
         toggle(on, 'Monitoring', (v) => save({ paused: !v }, v ? 'Monitoring is on.' : 'Monitoring is off. Nothing is recorded until you turn it back on.'))));
   }
 
+  // Shown in place of settings the server doesn't support yet (see `supports` in api.js).
+  const notYet = (text) => h('p.muted', { style: 'margin:0' }, text);
+
   function hoursPanel() {
+    if (!supports.monitoringRules) {
+      return panel('Monitoring hours', 'clock', h('span.tag.quiet', 'Not available yet'),
+        notYet('Daybook’s server can’t limit monitoring to set hours yet. Until then it monitors whenever it’s on.'));
+    }
     const sch = privacy.schedule;
     const days = h('div.days', DAYS.map(([name, n]) => {
       const pressed = sch.days.includes(n);
@@ -98,8 +105,16 @@ async function render(root) {
   }
 
   function appsPanel() {
-    const only = privacy.apps_mode === 'only';
-    const mode = h('div.segmented', { role: 'group', 'aria-label': 'Which apps to monitor' },
+    const rules = supports.monitoringRules;
+    const only = rules && privacy.apps_mode === 'only';
+    const exclusions = [
+      ...privacy.exclude_apps.map((value) => ({ match: 'app', value })),
+      ...privacy.exclude_titles.map((value) => ({ match: 'title', value })),
+    ];
+    const without = (x) => x.match === 'app'
+      ? { exclude_apps: privacy.exclude_apps.filter((v) => v !== x.value) }
+      : { exclude_titles: privacy.exclude_titles.filter((v) => v !== x.value) };
+    const mode = rules && h('div.segmented', { role: 'group', 'aria-label': 'Which apps to monitor' },
       [['all', 'All apps except blocked'], ['only', 'Only allowed apps']].map(([v, label]) =>
         h('button', { type: 'button', 'aria-pressed': String(privacy.apps_mode === v),
           onclick: () => privacy.apps_mode !== v && save({ apps_mode: v },
@@ -118,15 +133,19 @@ async function render(root) {
     const blocked = h('div.app-list',
       h('div.label', 'Never monitor'),
       h('p.muted', { style: 'margin:0' }, 'While any of these is on screen, capture is withheld. Their titles are never stored.'),
-      h('div.rows', privacy.exclusions.map((x, i) => listRow(
+      h('div.rows', exclusions.map((x) => listRow(
         [h('span.tag.quiet', x.match === 'app' ? 'app' : 'title has'), x.value],
         `Stop blocking ${x.value}`,
-        (b) => busy(b, () => save({ exclusions: privacy.exclusions.filter((_, j) => j !== i) }, `${x.value} is no longer blocked.`))))),
-      addForm('blocked', 'App name, or text in a window title', true, (match, value) =>
-        save({ exclusions: [...privacy.exclusions, { match, value }] }, `${value} will never be monitored.`)));
+        (b) => busy(b, () => save(without(x), `${x.value} is no longer blocked.`))))),
+      addForm('blocked', 'App name, or text in a window title', true, (match, value) => {
+        const key = match === 'app' ? 'exclude_apps' : 'exclude_titles';
+        if (privacy[key].includes(value)) return toast(`${value} is already blocked.`);
+        return save({ [key]: [...privacy[key], value] }, `${value} will never be monitored.`);
+      }));
 
-    return panel('Apps', 'layers', h('span.counter', only ? `${privacy.allowed_apps.length} allowed` : `${privacy.exclusions.length} blocked`),
-      mode, allowed, blocked);
+    return panel('Apps', 'layers', h('span.counter', only ? `${privacy.allowed_apps.length} allowed` : `${exclusions.length} blocked`),
+      mode, allowed, blocked,
+      !rules && notYet('Monitoring only an allowed list of apps isn’t available yet; every app except blocked ones is monitored.'));
   }
 
   function listRow(label, removeTitle, onRemove) {
@@ -169,8 +188,8 @@ async function render(root) {
   }
 
   function notesPanel() {
-    const keep = h('select.input.select', { 'aria-label': 'Keep notes for' },
-      RETENTION.map(([v, text]) => h('option', { value: String(v), selected: privacy.retention_days === v }, text)));
+    const keep = h('select.input.select', { 'aria-label': 'Keep notes for', disabled: !supports.monitoringRules },
+      RETENTION.map(([v, text]) => h('option', { value: String(v), selected: (privacy.retention_days ?? null) === v }, text)));
     keep.addEventListener('change', () => {
       const v = keep.value === 'null' ? null : Number(keep.value);
       save({ retention_days: v }, v ? `Notes older than ${v} days will be deleted.` : 'Notes are kept until you delete them.');
@@ -192,9 +211,11 @@ async function render(root) {
       toast('Everything is forgotten.');
       refresh();
     } });
-    return panel('Notes', 'calendar', status.deletion_pending ? h('span.tag.ember', 'Deletion pending') : null,
-      setting('Keep notes', 'Older notes are deleted for good, the same way as Forget.', keep),
-      setting('Forget now', status.deletion_pending
+    return panel('Notes', 'calendar', privacy.deletion_pending ? h('span.tag.ember', 'Deletion pending') : null,
+      setting('Keep notes', supports.monitoringRules
+        ? 'Older notes are deleted for good, the same way as Forget.'
+        : 'Not available yet: Daybook’s server keeps notes until you delete them.', keep),
+      setting('Forget now', privacy.deletion_pending
         ? 'Deletion is waiting for a reader to finish, then the old pages are wiped from the database files.'
         : 'Removes the text from the timeline, from search, and from the database files.',
         h('div', { style: 'display:flex;gap:0.5rem;flex-wrap:wrap' }, forget15, forgetAll)));
@@ -213,32 +234,34 @@ async function render(root) {
   /* ---------- privacy proof and model ---------- */
 
   function screenshotsPanel() {
-    const stored = privacy.screenshots_stored ?? 0;
+    const none = privacy.screenshots_stored === 'none';
     return panel('Screenshots', 'shield', null,
-      h('div.big-ok', icon('shield'), `Screenshots stored: ${stored === 0 ? 'none' : stored}`),
+      h('div.big-ok', icon('shield'), none ? 'Screenshots stored: none' : 'Screenshots stored: debug frames'),
       h('p.muted', { style: 'margin:0' }, 'Frames exist only in memory while the model reads them. Only text notes are kept.'),
       privacy.keep_frames && h('div.notice', 'Debug setting keep_frames is ON: frames are being written to disk.'));
   }
 
   function modelPanel() {
-    const m = status.model;
+    const g = status.gateway;
     const tick = btn('Tick now', { icon: 'bolt', onclick: (e) => busy(e.currentTarget, async () => {
       await api.tick();
       toast('Tick requested. New notes and skill reactions follow in a few seconds.');
     }) });
-    return panel('Model', 'cpu', h(`span.tag${m.reachable ? '' : '.danger'}`, m.reachable ? 'Reachable' : 'Offline'),
+    const music = status.music;
+    return panel('Model', 'cpu', h(`span.tag${g.reachable ? '' : '.danger'}`, g.reachable ? 'Reachable' : 'Offline'),
       h('dl.kv',
-        h('dt', 'Model'), h('dd.mono', m.name),
-        h('dt', 'Latency'), h('dd', m.latency_ms ? `${(m.latency_ms / 1000).toFixed(1)} s` : '—'),
-        h('dt', 'Calls/min'), h('dd', `${m.calls_per_min}`),
-        h('dt', 'Queue'), h('dd', m.queue ? `${m.queue} waiting` : 'empty'),
-        h('dt', 'Music'), h('dd', status.now_playing ? `${status.now_playing.mood} · ${status.now_playing.title}` : 'stopped')),
-      !m.reachable && h('div.notice', 'The model is unreachable. Capture shows gaps until it’s back; nothing is retried in a storm.'),
+        h('dt', 'Model'), h('dd.mono', g.model),
+        h('dt', 'Latency'), h('dd', g.latency != null ? `${g.latency.toFixed(1)} s` : '—'),
+        h('dt', 'Calls/min'), h('dd', `${g.calls_per_minute} (${g.background_calls_per_minute} background)`),
+        h('dt', 'Queue'), h('dd', g.queue_depth ? `${g.queue_depth} waiting` : g.in_flight ? `running ${g.in_flight}` : 'empty'),
+        h('dt', 'Music'), h('dd', music.playing ? [music.mood, music.title].filter(Boolean).join(' · ') : 'stopped')),
+      !g.reachable && h('div.notice', 'The model is unreachable. Capture shows gaps until it’s back; nothing is retried in a storm.'),
       h('div', h('div.label', { style: 'margin-bottom:0.5rem' }, 'Demo helper'), tick));
   }
 
   await refresh();
-  return { onEvent: (e) => { if (e.type === 'CaptureStateChanged' || e.type === 'Forgotten') refresh(); } };
+  const WATCH = ['CaptureStateChanged', 'SegmentChanged', 'StatusChanged', 'MusicChanged', 'Reconnected'];
+  return { onEvent: (types) => { if (WATCH.some((t) => types.has(t))) refresh(); } };
 }
 
 function setting(title, text, control) {

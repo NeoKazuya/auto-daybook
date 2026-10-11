@@ -448,7 +448,10 @@ class Journal:
                 ),
             )
             events.append(SegmentChanged(id))
-            return self._segment(id)
+            updated = self._segment(id)
+            if updated != old:
+                events.append(StatusChanged("journal", "notes_invalidated"))
+            return updated
 
     def edit_observation(
         self, id: str, *, seen: str | None = None, visible_text: str | None = None
@@ -466,7 +469,10 @@ class Journal:
             )
             if old.segment:
                 events.append(SegmentChanged(old.segment))
-            return self._observation(id)
+            updated = self._observation(id)
+            if updated != old:
+                events.append(StatusChanged("journal", "notes_invalidated"))
+            return updated
 
     def _remove(self, ids: list[str], events: list[Event]) -> None:
         affected: set[str] = set()
@@ -494,6 +500,7 @@ class Journal:
             self._observation(id)
             self._bump()
             self._remove([id], events)
+            events.append(StatusChanged("journal", "notes_invalidated"))
 
     def forget_segment(self, id: str) -> None:
         with self._transaction(erase=True) as events:
@@ -501,6 +508,7 @@ class Journal:
             self._bump()
             self._db.execute("DELETE FROM segments WHERE id=?", (id,))
             events.append(SegmentChanged(id))
+            events.append(StatusChanged("journal", "notes_invalidated"))
 
     def forget_range(self, range: TimeRange) -> None:
         start, end = bounds(range)
@@ -518,8 +526,14 @@ class Journal:
                 else []
             )
             self._remove(ids, events)
-            self._db.execute("DELETE FROM readings WHERE at>=? AND at<?", (start, end))
-            self._db.execute("DELETE FROM ticks WHERE at>=? AND at<?", (start, end))
+            readings_removed = self._db.execute(
+                "DELETE FROM readings WHERE at>=? AND at<?", (start, end)
+            ).rowcount
+            ticks_removed = self._db.execute(
+                "DELETE FROM ticks WHERE at>=? AND at<?", (start, end)
+            ).rowcount
+            if ids or readings_removed or ticks_removed:
+                events.append(StatusChanged("journal", "notes_invalidated"))
             # Gaps are non-sensitive state history; preserve them for honest recall.
 
     def forget_all(self) -> None:
@@ -528,17 +542,22 @@ class Journal:
             ids = [
                 row[0] for row in self._db.execute("SELECT id FROM segments").fetchall()
             ]
+            removed = 0
             for table in (
                 "observations",
                 "segments",
                 "readings",
                 "ticks",
             ):
-                self._db.execute(f"DELETE FROM {table}")
+                removed += self._db.execute(f"DELETE FROM {table}").rowcount
             # The open span owns live capture state; retain it across forgetting.
             # Closed spans are historical notes and can be removed safely.
-            self._db.execute("DELETE FROM capture_spans WHERE end IS NOT NULL")
+            removed += self._db.execute(
+                "DELETE FROM capture_spans WHERE end IS NOT NULL"
+            ).rowcount
             events.extend(SegmentChanged(id) for id in ids)
+            if removed:
+                events.append(StatusChanged("journal", "notes_invalidated"))
 
     def trim_after(self, at: datetime) -> None:
         time = stamp(at)
@@ -560,15 +579,20 @@ class Journal:
                     "UPDATE observations SET last_seen_at=? WHERE id=?", (time, row[0])
                 )
                 events.append(ObservationExtended(row[0]))
-            self._db.execute("DELETE FROM readings WHERE at>?", (time,))
-            self._db.execute(
+            readings_removed = self._db.execute(
+                "DELETE FROM readings WHERE at>?", (time,)
+            ).rowcount
+            ticks_removed = self._db.execute(
                 "DELETE FROM ticks WHERE at>? OR evidence_until>?", (time, time)
-            )
-            for row in self._db.execute(
+            ).rowcount
+            open_segments = self._db.execute(
                 "SELECT id FROM segments WHERE open=1"
-            ).fetchall():
+            ).fetchall()
+            for row in open_segments:
                 events.append(SegmentChanged(row[0]))
             self._db.execute("UPDATE segments SET open=0 WHERE open=1")
+            if ids or spanning or readings_removed or ticks_removed or open_segments:
+                events.append(StatusChanged("journal", "notes_invalidated"))
 
     def clear_skill_readings(self, skill: str) -> None:
         """Reset a changed skill's history without letting an old tick restore it."""

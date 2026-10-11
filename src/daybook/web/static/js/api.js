@@ -41,7 +41,10 @@ const MESSAGES = {
   active_signal_limit: 'Too many active skill questions (12 at most). Disable another skill first.',
 };
 const explain = (detail, status) =>
-  MESSAGES[detail] ?? (detail?.startsWith('invalid_request') ? MESSAGES.invalid_request : null) ?? `Request failed (${status}).`;
+  MESSAGES[detail]
+  ?? (detail?.endsWith('_not_found') ? MESSAGES.not_found : null)
+  ?? (detail?.startsWith('invalid_request') ? MESSAGES.invalid_request : null)
+  ?? `Request failed (${status}).`;
 
 async function call(method, path, body) {
   if (DEMO) {

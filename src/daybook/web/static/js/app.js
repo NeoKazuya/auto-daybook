@@ -39,8 +39,13 @@ async function show() {
   renderNav(page);
   root.replaceChildren();
   window.scrollTo({ top: 0 });
-  current = { page, hooks: {} };
-  current.hooks = (await page.render(root, params)) ?? {};
+  // Tabs can change while a page is still loading; only the latest navigation keeps
+  // its hooks, and an older one that finishes late is cleaned up instead.
+  const nav = { page, hooks: {} };
+  current = nav;
+  const hooks = (await page.render(root, params)) ?? {};
+  if (current === nav) nav.hooks = hooks;
+  else hooks.cleanup?.();
 }
 
 /* ---------- footer: capture, model, calls/min ---------- */

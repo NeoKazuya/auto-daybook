@@ -16,23 +16,28 @@ const GAP = {
 
 async function render(root, params) {
   const expanded = new Set(params.get('seg') ? [params.get('seg')] : []);
+  // A recall citation carries the answer's time window, which may not be today.
+  const from = params.get('from');
+  const to = params.get('to');
+  const day = from ? new Date(from) : new Date();
+  const isToday = day.toDateString() === new Date().toDateString();
   const editing = new Set();
   const list = h('div', skeletons(4));
   const count = h('span.counter', '…');
 
   root.append(
     ribbon(page, [
-      h('span.pill', 'LEAF', h('b', dayStamp())),
+      h('span.pill', 'LEAF', h('b', dayStamp(day))),
       h('button.pill', { type: 'button', onclick: (e) => busy(e.currentTarget, async () => { await api.tick(); toast('Tick requested. New notes appear in a few seconds.'); }) },
         icon('bolt'), 'Tick now'),
     ]),
-    panel("Today's entries", 'calendar', count, list));
+    panel(isToday ? "Today's entries" : `Entries for ${dayStamp(day)}`, 'calendar', count, list));
 
   let data = null;
 
   async function refresh() {
     try {
-      data = await api.timeline();
+      data = await api.timeline(from, to);
       draw();
     } catch (err) {
       list.replaceChildren(errorState(err, refresh));
@@ -118,12 +123,15 @@ async function render(root, params) {
 
   function observationForm(o) {
     const seen = h('textarea.textarea', { style: 'min-height:5rem;font-family:var(--serif);font-size:1rem', 'aria-label': 'What was on screen' }, o.seen);
+    const text = h('textarea.textarea', { style: 'min-height:4rem', maxlength: 300, 'aria-label': 'Captured on-screen text' }, o.visible_text);
     const save = btn('Save', { kind: 'primary', onclick: () => busy(save, async () => {
-      await api.editObservation(o.id, { seen: seen.value.trim() });
+      await api.editObservation(o.id, { seen: seen.value.trim(), visible_text: text.value.trim() });
       editing.delete(o.id);
       await refresh();
     }) });
-    return h('div', { style: 'display:flex;flex-direction:column;gap:0.5rem;margin-top:0.4rem' }, seen,
+    return h('div', { style: 'display:flex;flex-direction:column;gap:0.5rem;margin-top:0.4rem' },
+      h('label.label', 'What was on screen'), seen,
+      h('label.label', 'Captured text (up to 300 characters)'), text,
       h('div.row-btns', { style: 'display:flex;gap:0.5rem;justify-content:flex-end' },
         btn('Cancel', { kind: 'ghost', onclick: () => { editing.delete(o.id); draw(); } }), save));
   }
@@ -135,8 +143,12 @@ async function render(root, params) {
       confirm: 'Delete segment', danger: true,
     });
     if (!ok) return;
-    await api.deleteSegment(s.id);
-    toast('Segment and its notes deleted.');
+    try {
+      await api.deleteSegment(s.id);
+      toast('Segment and its notes deleted.');
+    } catch (err) {
+      toast(`Nothing was deleted: ${err.message}`, 'error');
+    }
     await refresh();
   }
 
@@ -147,7 +159,12 @@ async function render(root, params) {
       confirm: 'Delete note', danger: true,
     });
     if (!ok) return;
-    await api.deleteObservation(o.id);
+    try {
+      await api.deleteObservation(o.id);
+      toast('Note deleted.');
+    } catch (err) {
+      toast(`Nothing was deleted: ${err.message}`, 'error');
+    }
     await refresh();
   }
 

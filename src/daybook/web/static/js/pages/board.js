@@ -77,7 +77,7 @@ async function render(root, params) {
       h('div.q', `› ${n.message}`),
       h('div.a', r.text),
       r.cites?.length ? h('div.cites', r.cites.map((id) =>
-        h('a.tag.ember', { href: `#/daily?seg=${encodeURIComponent(id)}`, title: 'Open in the Daily Book' }, icon('link'), n.titles?.[id] ?? 'Open segment'))) : null,
+        h('a.tag.ember', { href: `#/daily?${new URLSearchParams({ seg: id, from: r.window.from, to: r.window.to })}`, title: 'Open in the Daily Book' }, icon('link'), n.titles?.[id] ?? 'Open segment'))) : null,
       h('div.sticky-foot', h('span.folio', when), r.window && h('span.tag.quiet', `${clock(r.window.from)}–${clock(r.window.to)}`)));
   }
 
@@ -93,7 +93,7 @@ async function render(root, params) {
       n.reply = await api.chat(message);
       // Answers cite segment IDs; look up their titles for the links.
       if (n.reply.type === 'answer' && n.reply.cites.length) {
-        const tl = await api.timeline().catch(() => null);
+        const tl = await api.timeline(n.reply.window.from, n.reply.window.to).catch(() => null);
         n.titles = Object.fromEntries((tl?.segments ?? []).map((seg) => [seg.id, seg.title]));
       }
     } catch (err) {

@@ -32,6 +32,17 @@ def test_index_assets_are_served():
             assert c.get(ref).status_code == 200, ref
 
 
+def test_ui_loads_nothing_from_other_servers():
+    # Daybook promises everything runs on this machine, offline included.
+    css = (STATIC / "css/daybook.css").read_text()
+    with client() as c:
+        page = c.get("/").text
+        assert not re.search(r"(?:href|src)=\"https?://", page)
+        assert "http" not in "".join(re.findall(r"url\(([^)]*)\)", css))
+        for ref in re.findall(r'url\("\.\./(fonts/[^"]+)"\)', css):
+            assert c.get(f"/static/{ref}").status_code == 200, ref
+
+
 def test_every_module_import_resolves():
     imports = re.compile(r"""(?:from\s+|import\(\s*)['"](\.{1,2}/[^'"]+)['"]""")
     for module in (STATIC / "js").rglob("*.js"):

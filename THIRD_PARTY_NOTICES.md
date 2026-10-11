@@ -33,3 +33,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Literata and JetBrains Mono
+
+`src/daybook/web/static/fonts/` bundles the Latin and Latin Extended subsets of Literata (Copyright 2017 The Literata Project Authors) and JetBrains Mono (Copyright 2020 The JetBrains Mono Project Authors), unmodified, as served by Google Fonts. Both are licensed under the SIL Open Font License, Version 1.1; the full license text is in `src/daybook/web/static/fonts/OFL.txt`.

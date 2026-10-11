@@ -38,14 +38,22 @@ async function render(root) {
     }
   }
 
-  async function save(patch, message) {
-    try {
-      privacy = await api.setPrivacy({ ...privacy, ...patch });
-      if (message) toast(message);
-    } catch (err) {
-      toast(`Couldn't save: ${err.message}`, 'error');
-    }
-    draw();
+  // PUT /api/privacy replaces the whole resource, so saves run one at a time and each
+  // patch is computed from the latest saved state (pass a function of it), never from
+  // a copy taken when the control was clicked.
+  let queue = Promise.resolve();
+  function save(patch, message) {
+    queue = queue.then(async () => {
+      try {
+        const next = typeof patch === 'function' ? patch(privacy) : patch;
+        privacy = await api.setPrivacy({ ...privacy, ...next });
+        if (message) toast(message);
+      } catch (err) {
+        toast(`Couldn't save: ${err.message}`, 'error');
+      }
+      draw();
+    });
+    return queue;
   }
 
   function draw() {
@@ -80,14 +88,14 @@ async function render(root) {
         onclick: () => {
           const next = pressed ? sch.days.filter((d) => d !== n) : [...sch.days, n];
           if (!next.length) { toast('Pick at least one day, or turn off set hours.', 'error'); return; }
-          save({ schedule: { ...sch, days: next } });
+          save((p) => ({ schedule: { ...p.schedule, days: next } }));
         },
       }, name);
     }));
     const time = (key, label) => {
       const input = h('input.input.time', { type: 'time', value: sch[key], 'aria-label': label, disabled: !sch.enabled });
       input.addEventListener('change', () => {
-        if (input.value) save({ schedule: { ...sch, [key]: input.value } }, 'Monitoring hours saved.');
+        if (input.value) save((p) => ({ schedule: { ...p.schedule, [key]: input.value } }), 'Monitoring hours saved.');
       });
       return input;
     };
@@ -95,7 +103,7 @@ async function render(root) {
     return panel('Monitoring hours', 'clock', null,
       setting('Only monitor during set hours',
         sch.enabled ? 'Outside these hours Daybook takes no notes, as if paused.' : 'Daybook monitors whenever it is on.',
-        toggle(sch.enabled, 'Only monitor during set hours', (v) => save({ schedule: { ...sch, enabled: v } },
+        toggle(sch.enabled, 'Only monitor during set hours', (v) => save((p) => ({ schedule: { ...p.schedule, enabled: v } }),
           v ? 'Daybook now monitors only during set hours.' : 'Daybook now monitors whenever it is on.'))),
       h(`div.hours${sch.enabled ? '' : '.off'}`,
         h('div.label', 'Days'), days,
@@ -111,9 +119,9 @@ async function render(root) {
       ...privacy.exclude_apps.map((value) => ({ match: 'app', value })),
       ...privacy.exclude_titles.map((value) => ({ match: 'title', value })),
     ];
-    const without = (x) => x.match === 'app'
-      ? { exclude_apps: privacy.exclude_apps.filter((v) => v !== x.value) }
-      : { exclude_titles: privacy.exclude_titles.filter((v) => v !== x.value) };
+    const without = (x) => (p) => x.match === 'app'
+      ? { exclude_apps: p.exclude_apps.filter((v) => v !== x.value) }
+      : { exclude_titles: p.exclude_titles.filter((v) => v !== x.value) };
     const mode = rules && h('div.segmented', { role: 'group', 'aria-label': 'Which apps to monitor' },
       [['all', 'All apps except blocked'], ['only', 'Only allowed apps']].map(([v, label]) =>
         h('button', { type: 'button', 'aria-pressed': String(privacy.apps_mode === v),
@@ -124,11 +132,11 @@ async function render(root) {
       h('div.label', 'Allowed apps'),
       privacy.allowed_apps.length
         ? h('div.rows', privacy.allowed_apps.map((app) => listRow([h('span.tag.quiet', 'app'), app],
-            `Stop allowing ${app}`, (b) => busy(b, () => save({ allowed_apps: privacy.allowed_apps.filter((a) => a !== app) }, `${app} is no longer monitored.`)))))
+            `Stop allowing ${app}`, (b) => busy(b, () => save((p) => ({ allowed_apps: p.allowed_apps.filter((a) => a !== app) }), `${app} is no longer monitored.`)))))
         : h('p.muted', { style: 'margin:0' }, 'No apps allowed yet, so nothing is monitored. Add one below.'),
       addForm('allowed', 'App name, e.g. Code', false, (match, value) =>
         privacy.allowed_apps.includes(value) ? toast(`${value} is already allowed.`)
-          : save({ allowed_apps: [...privacy.allowed_apps, value] }, `${value} will be monitored.`))) : null;
+          : save((p) => ({ allowed_apps: [...new Set([...p.allowed_apps, value])] }), `${value} will be monitored.`))) : null;
 
     const blocked = h('div.app-list',
       h('div.label', 'Never monitor'),
@@ -140,7 +148,7 @@ async function render(root) {
       addForm('blocked', 'App name, or text in a window title', true, (match, value) => {
         const key = match === 'app' ? 'exclude_apps' : 'exclude_titles';
         if (privacy[key].includes(value)) return toast(`${value} is already blocked.`);
-        return save({ [key]: [...privacy[key], value] }, `${value} will never be monitored.`);
+        return save((p) => ({ [key]: [...new Set([...p[key], value])] }), `${value} will never be monitored.`);
       }));
 
     return panel('Apps', 'layers', h('span.counter', only ? `${privacy.allowed_apps.length} allowed` : `${exclusions.length} blocked`),

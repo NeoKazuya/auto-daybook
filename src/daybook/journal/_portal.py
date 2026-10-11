@@ -17,6 +17,7 @@ from ._types import (
     Situation,
     TimeRange,
     Total,
+    UpcomingItem,
 )
 
 if TYPE_CHECKING:
@@ -68,6 +69,23 @@ class Portal:
                 j._row_observation(observation) if observation else None,
                 readings,
             )
+
+    def upcoming(
+        self, now: datetime, *, overdue: float = 0, limit: int = 50
+    ) -> list[UpcomingItem]:
+        """Kept items due after now - overdue seconds, soonest first."""
+        from datetime import timedelta
+
+        from ._store import stamp
+
+        j = self._journal
+        with j._lock:
+            j._check_open()
+            rows = j._db.execute(
+                "SELECT * FROM upcoming WHERE dismissed=0 AND due_at>=? ORDER BY due_at, id LIMIT ?",
+                (stamp(now - timedelta(seconds=overdue)), limit),
+            ).fetchall()
+            return [j._row_upcoming(row) for row in rows]
 
     def observations(
         self, range: TimeRange, unassigned_only: bool = False

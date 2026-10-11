@@ -134,6 +134,34 @@ class MutationResponse(WireModel):
     deletion_pending: bool = False
 
 
+class UpcomingItem(WireModel):
+    """A deadline or event. source is the screen note it came from, or null if
+    the user added it; forgetting that note removes the item."""
+
+    id: str
+    title: str
+    due_at: datetime
+    source: str | None
+    added_at: datetime
+    kind: Literal["deadline", "event"] = "deadline"
+
+
+class UpcomingResponse(WireModel):
+    items: list[UpcomingItem]
+
+
+class UpcomingPost(WireModel):
+    title: Annotated[str, Field(min_length=1, max_length=200)]
+    due_at: datetime
+    kind: Literal["deadline", "event"] = "deadline"
+
+    @model_validator(mode="after")
+    def aware(self):
+        if self.due_at.tzinfo is None:
+            raise ValueError("due_at must include a timezone")
+        return self
+
+
 class ChatRequest(WireModel):
     message: str = Field(min_length=1, max_length=10000)
 
@@ -189,6 +217,8 @@ class SkillResponse(WireModel):
     signals: list[Signal]
     rules: list[Rule]
     allow: list[str]
+    # Daybook lists the skill reads besides the screen, such as "upcoming".
+    reads: list[str] = Field(default_factory=list)
     errors: list[SkillError]
     enabled: bool
     approved: bool
@@ -428,6 +458,7 @@ def skill_from_domain(entry: SkillEntry) -> SkillResponse:
         if skill
         else [],
         allow=list(skill.allow) if skill else [],
+        reads=list(skill.reads) if skill else [],
         errors=[SkillError.model_validate(e) for e in entry.errors],
         enabled=entry.enabled,
         approved=entry.approved,
@@ -515,6 +546,16 @@ _time = _example(
     TimeWindow, **{"from": "2026-10-10T09:00:00Z", "to": "2026-10-10T11:00:00Z"}
 )
 _example(MutationResponse, ok=True, deletion_pending=False)
+_upcoming = _example(
+    UpcomingItem,
+    id="u-cse130",
+    title="CSE 130 Assignment 3",
+    due_at="2026-10-11T06:59:00Z",
+    source="o-calendar",
+    added_at="2026-10-10T21:05:00Z",
+)
+_example(UpcomingResponse, items=[_upcoming])
+_example(UpcomingPost, title="CSE 130 Assignment 3", due_at="2026-10-11T06:59:00Z")
 _example(ChatRequest, message="What did I do in the last hour?")
 _example(
     SkillError,

@@ -19,6 +19,7 @@ Changing this format is a shared-contract change (see [CONTRIBUTING.md](../CONTR
 | `signals` | yes (at least 1) | Questions the tick answers on this skill's behalf. At most 4 per skill, and at most 12 across all active skills |
 | `rules` | yes (at least 1) | When to act, and what to do |
 | `allow` | yes | The actions this skill may use. Shown to the user as its permissions |
+| `reads` | no | Daybook lists this skill may read besides the screen. The only value is `upcoming`; see [Reading the Upcoming list](#reading-the-upcoming-list). Shown to the user as a permission |
 | `created_by` | no | `builtin`, `user`, or `chat`. Set by the app |
 | `request` | no | For chat-made skills, the message it was generated from |
 
@@ -65,6 +66,7 @@ A short completed fullscreen app overlay preserves a duration rule's original oc
 - literals (string, number, boolean)
 - `$<signal>`: the signal's current value
 - `$<signal>.for`: the current streak length, rendered like "52 min"
+- `$upcoming.next` (text parameters of a skill with `reads: [upcoming]`): the soonest Upcoming item, rendered like "CSE 130 Assignment 3 (due in 2 h 10 min)", or "nothing due"
 
 **Steps** run in order. A failing step is recorded, and the rule continues with its next step.
 
@@ -91,6 +93,7 @@ Every action used in `do` must appear in `allow`. Parameter values are checked a
 - an `allow` entry isn't in the catalog
 - an argument doesn't fit its parameter's type
 - the skill has more than 4 signals
+- `reads` isn't a list of known names, a signal is named like a `reads` entry (such as `upcoming`), or `$upcoming.next` appears without `reads: [upcoming]` or in a non-text parameter
 - a hook step appears in a skill that isn't a built-in (any user or chat-made skill), or has no matching function in `<id>.hook.py`
 
 An invalid file is still saved, and shows as **invalid** in the UI so it can be fixed.
@@ -124,6 +127,41 @@ explains the limitation instead of saving a skill. `draft_skill` raises
 Supported drafts keep the usual review and exact-hash approval flow. Skill drafts
 use low reasoning effort to plan combined conditions; other model calls keep
 their existing effort settings.
+
+## Reading the Upcoming list
+
+Daybook keeps an **Upcoming list** of deadlines and events: it scans notes that name a date (a calendar event, an assignment page, an email) and adds what it finds, and the user can add items in chat ("remember CSE 130 Assignment 3 is due Friday at 11:59 PM"). A skill opts in with `reads: [upcoming]`:
+
+- On every tick, the skill's questions may use the list as current facts. Each item comes with its due time already computed by code, for example "CSE 130 Assignment 3 (due in 2 h 10 min)", so a question can say "while something on the Upcoming list is due within 3 hours" and the model only compares, never does date math.
+- Its text arguments may use `$upcoming.next`.
+- Skills without `reads` see exactly what they saw before: the screen.
+
+```markdown
+---
+id: deadline-nudge
+name: Back to work before a deadline
+reads: [upcoming]
+signals:
+  drifting:
+    ask: >
+      Is the user watching videos, scrolling social media, gaming, or idly browsing
+      rather than working, while something on the Upcoming list is due within 12 hours?
+    type: bool
+rules:
+  - when: drifting is true for 2m
+    cooldown: 10m
+    do:
+      - overlay.show:
+          title: Deadline coming up
+          body: $upcoming.next. Time to get back to it?
+          dismiss: Back to it
+          layout: bubble
+allow: [overlay.show]
+---
+When something on my Upcoming list is due soon and I drift off to videos or social media, nudge me back to work.
+```
+
+This is the built-in `deadline-nudge` (disabled by default). Chat drafts see recent notes and the Upcoming list, so "pull me back to this assignment if I slack off" can name the assignment in the question and reminder, and can add `desktop.focus` to bring its window forward.
 
 ## Writing good signals
 

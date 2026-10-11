@@ -107,6 +107,7 @@ All notes live in one SQLite file, `$DAYBOOK_HOME/journal.db`, in WAL mode with 
 | `Tick` | `at`, `epoch`, `evidence_until`, `observations` (may be empty), `segments: tuple[SegmentAssignment, ...]`, `readings` | Groups must cover the expected observation IDs exactly once, in order. An empty batch has no groups. Applied in one transaction. Unique on `evidence_until`, the assigned batch's evidence frontier (or the latest extension for an empty batch), so re-applying is a no-op. A tick with no new observations still writes readings, which is how streaks keep growing on a still screen. Rejected whole if `epoch` is older than the journal's forget epoch |
 | `SkillState` | `skill`, `enabled`, `approved_hash` (or none), `at` | Enablement and approval are stored separately. A skill is **active** only if `enabled` is true *and* its current hash is approved. Disabling keeps the approval, so re-enabling needs no new review; any edit changes the hash, so the skill needs review again |
 | `Firing` | `skill`, `rule`, `key`, `at`, `outcomes` | Unique on (skill, rule, key). This makes each rule fire at most once per occurrence |
+| `UpcomingItem` | `id`, `title`, `due_at`, `source` (observation ID, or none if the user added it), `added_at` | **The Upcoming list:** deadlines and events seen on screen or named in chat. Unique on (normalized title, `due_at`), so a refreshed screen doesn't duplicate an item. Dismissing keeps a hidden tombstone, so the same screen can't re-add it. Forgetting the source note removes the item (`ON DELETE CASCADE`); user items go with `forget_range` over their `added_at` and with `forget_all`. Relative time ("due in 2 h 10 min") is rendered only by `UpcomingItem.describe(now)` |
 
 `ActivityKind` is one of: `coding`, `writing`, `reading`, `browsing`, `meeting`, `chatting`, `media`, `admin`, `other`.
 
@@ -135,7 +136,9 @@ Every model call goes through `ModelGateway.call(priority, prompt)`. `ModelConfi
 | tick | mind | text, 1.5–3K tokens; output schema built from the active signals | none, or low if quality needs it | 2–4 s | 2/min |
 | route | chat | ~300 tokens | none | ~1 s | on demand |
 | recall | chat | up to 8K tokens of notes and totals | none | 4–10 s | on demand |
-| draft skill | chat | format guide, catalog, and supported plan examples | low; 2000-token completion cap including reasoning | 12.8–25.4 s development; 9.2–32.0 s independent heldouts on the selected generator | on demand |
+| upcoming scan | mind | text: dated notes from the last recorded tick | none; 600-token completion cap | ~2 s | at most once per tick, only for notes with a date |
+| remember | chat | the user's message | none; 600-token completion cap | ~2 s | on demand |
+| draft skill | chat | format guide, catalog, supported plan examples, and recent notes with the Upcoming list | low; 2000-token completion cap including reasoning | 12.8–25.4 s development; 9.2–32.0 s independent heldouts on the selected generator | on demand |
 
 **Background budget:** the normal cadence targets up to six observations and two ticks per minute. App switches and capture resumption can bypass sense's ten-second spacing; this is not a hard gateway rate limit. Raising concurrency changes admission capacity, not those scheduling rules. With the GX10 limit of two, one background request leaves capacity for chat; if interactive work fills every slot, new work waits for a slot and follows the fairness rule. The eight-background-calls-per-minute acceptance is measured during normal use, not inferred from the concurrency limit.
 
@@ -173,12 +176,14 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 - `search(text, range=None, *, limit=None) -> [Hit]`: FTS5 over observation `seen`, `visible_text`, and title, plus segment title and intent. Apply the overlapping-observation window and optional positive result cap in the ranked SQL query before producing snippets; omitted `limit` preserves unlimited reads.
 - `totals(range, by="kind"|"title"|"app") -> [Total]`. All duration arithmetic lives here; the model never adds up times.
 - `readings(signal, range)`: the trigger evaluator's only input.
+- `upcoming(now, *, overdue=0, limit=50) -> [UpcomingItem]`: kept items due after `now − overdue` seconds, soonest first.
 - `context(range, budget_tokens, detail="segments"|"observations") -> str`: one line per segment, with observations indented if requested, and capture spans included as "10:10–10:25 paused". Under budget pressure it drops the oldest observation lines first, then the oldest segments. It estimates tokens as characters ÷ 3.5.
 
 **`Journal`** (writes):
 
 - **sense:** `add_observation`, `extend_observation`, `trim_after(t)` (when going away or after a failed observe), `set_capture_state` (idempotent). `trim_after(t)` deletes every observation that started after `t` (with its FTS rows), cuts the one spanning `t` back to `t`, deletes signal readings and ticks after `t`, deletes segments left with no observations, and closes the open segment so resumed work starts a new one, all in one transaction. Firings are kept: they record effects that really happened, and a streak that restarts after the trim gets a new occurrence key.
 - **mind:** `record_tick` (one transaction for all ordered groups and readings; idempotent; rejects an invalid partition, stale or already assigned member, or a result started before the last forget) and `close_open_segment`.
+- **mind, chat, and web:** `add_upcoming(drafts, epoch, *, at)` returns only newly added items; repeats, items whose source note is gone, and results started before the last forget are skipped. `dismiss_upcoming(id)` hides an item.
 - **web, on user request:**
   - `edit_segment` (sets `authored=user`), `edit_observation`
   - `forget_observation`, `forget_segment` (also deletes its observations), `forget_range`, `forget_all`
@@ -314,6 +319,10 @@ The output model is built per tick from the active questions and admitted observ
 
 Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
+**Upcoming facts in the tick.** Only when an active skill declares `reads: [upcoming]` (see [skills.md](skills.md#reading-the-upcoming-list)), the user message adds up to five Upcoming items, each rendered by `UpcomingItem.describe(at)` as "CSE 130 Assignment 3 (due in 2 h 10 min)", and marks that skill's question lines `[reads Upcoming]`. The list is labelled as current facts with code-computed times; marked questions combine it with CURRENT evidence, and every other question still uses CURRENT evidence only. With no such skill, the prompt is unchanged. The model never subtracts times.
+
+**Upcoming scan.** With `upcoming = true` (the default), after a recorded tick, the run loop scans that tick's new notes outside the tick lock, so a scan never delays a tick or a **Tick now** response. A note costs a call only if its text names a date (a month, weekday, today/tonight/tomorrow, due/deadline, or a numeric date; a clock time alone doesn't count) and the same text wasn't scanned before. One TICK-priority call extracts items as local `YYYY-MM-DDTHH:MM` with the source note ID (constrained to the supplied IDs); code converts them with the system time zone's rules for that date and keeps only items in the next 60 days. Failures skip that batch. Observe is unchanged: on a calendar event popup, its notes already keep the title, date, and time. A standing date question for observe was tried and dropped, because it changed every note and one of two recorded-scenario runs with it scored lower.
+
 **Done when:**
 
 - `parse_tick` is table-tested: type coercion, missing and extra keys, and Continue vs Start when there's no open segment.
@@ -412,7 +421,11 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 - `DraftReady(entry, summary)`
 - `Plain(text)`
 
-**Routing:** one short INTERACTIVE call returns `recall`, `make_skill`, or `other`. Messages starting with `/ask` or `/skill` skip the router, as a demo safety net.
+**Routing:** one short INTERACTIVE call returns `recall`, `make_skill`, `remember`, or `other`. Messages starting with `/ask`, `/skill`, or `/remember` skip the router, as a demo safety net.
+
+**Remember:** "remember CSE 130 Assignment 3 is due Friday at 11:59 PM" runs the same extraction as the Upcoming scan, at INTERACTIVE priority, and adds user items (no source note). The reply is `Plain`, naming each added item with its relative due time.
+
+**Skill drafts** get context: `portal.context(last 30 min, 700, detail="observations")` and the Upcoming list, marked as evidence and never instructions. "Pull me back to this assignment" can then name the assignment in the drafted question and reminder.
 
 **Recall:**
 
@@ -456,6 +469,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 | `PATCH/DELETE /api/observations/{id}` | `edit_observation`, `forget_observation` |
 | `POST /api/forget {from,to}`, `POST /api/forget-all` | `forget_range`, `forget_all` |
 | `POST /api/chat {message}` | `chat.respond` |
+| `GET /api/upcoming` (items due from an hour ago on), `POST /api/upcoming {title, due_at}` (409 if already listed), `DELETE /api/upcoming/{id}` | `portal.upcoming`, `add_upcoming`, `dismiss_upcoming` |
 | `GET /api/skills`, `PUT /api/skills/{id}`, `POST /api/skills/{id}/approve {hash}` (409 if stale), `POST /api/skills/{id}/enable` (409 if needs review), `POST /api/skills/{id}/disable`, `DELETE /api/skills/{id}`, `POST /api/skills/parse {id, text}` (checked through `SkillBook`, so the file name and origin are known) | `SkillBook` methods and `parse_skill` |
 | `GET/PUT /api/privacy` | `sense.privacy`, `set_privacy` |
 | `POST /api/music/play {mood}` (`MusicStatus` on success, 409 if unavailable) | `music.play_mood` through the daemon (CLI) |
@@ -474,6 +488,8 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 - Every UI page in [§8](#8-user-interface) works against a replay instance.
 
 Search returns `{hits: [{segment_id, observation_id, at, kind, title, snippet}]}` in Portal rank order. An unassigned observation has null `segment_id` and `kind`, with its window title as the label; no activity classification is invented. Blank or punctuation-only queries return no hits. Queries are at most 500 characters; `limit` defaults to 50 and accepts 1–200. Totals returns `{totals: [{label, active}]}`, where active is seconds clipped to the query window and results sort by active descending. Search, totals, and timeline share local-today defaults (local midnight to now); supplied timestamps require an offset and the resulting range must be ordered. Both new routes are read-only, with the same GET authorization behavior as timeline. Journal publishes the existing `StatusChanged {component: "journal", status: "notes_invalidated"}` shape after a committed edit, deletion, or trim changes existing evidence. Clients clear retained recall answers on this status. Routine new observations, extensions, ticks, skill-reading resets, and no-op trims do not emit it; `notes_changed` remains the ordinary refresh notification. Rolled-back writes publish neither status.
+
+Upcoming returns `{items: [{id, title, due_at, source, added_at}]}`, soonest first. Adding or dismissing an item publishes `StatusChanged {component: "journal", status: "upcoming_changed"}` (plus the usual `notes_changed`); clients refresh the list on it. Skill responses carry `reads` (for example `["upcoming"]`), which the review card shows as a permission.
 
 ### 6.10 `shell`: the tray and overlay process
 
@@ -576,6 +592,7 @@ music_dir = "~/Music/daybook"
 desktop_backend = "xdo"        # or "cua"
 keep_frames = false
 tick_interval = "90s"         # "30s" for the live demo, so short streaks confirm on time
+upcoming = true               # keep deadlines and events seen on screen in the Upcoming list
 
 [model]
 base_url = "http://127.0.0.1:18300/v1"

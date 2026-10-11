@@ -10,7 +10,9 @@ import yaml
 from daybook.act import Catalog
 from daybook.journal import SignalId
 
-from . import Rule, Signal, Skill, SkillError, SkillSource, Step, Trigger
+from . import READABLE, Rule, Signal, Skill, SkillError, SkillSource, Step, Trigger
+
+UPCOMING_NEXT = "$upcoming.next"
 
 
 def duration(text: object, *, zero: bool = False) -> float:
@@ -42,7 +44,16 @@ def parse(
         return [SkillError("frontmatter", "invalid YAML")]
     if not isinstance(data, dict):
         return [SkillError("frontmatter", "expected a mapping")]
-    allowed = {"id", "name", "signals", "rules", "allow", "created_by", "request"}
+    allowed = {
+        "id",
+        "name",
+        "signals",
+        "rules",
+        "allow",
+        "reads",
+        "created_by",
+        "request",
+    }
     for field in data.keys() - allowed:
         error(str(field), "unknown field")
     id = data.get("id")
@@ -60,6 +71,15 @@ def parse(
     ):
         error("allow", "expected a list of catalog action names")
         permissions = []
+    reads = data.get("reads", [])
+    if (
+        not isinstance(reads, list)
+        or any(r not in READABLE for r in reads)
+        or len(set(reads)) != len(reads)
+    ):
+        error("reads", "expected a list of: " + ", ".join(READABLE))
+        reads = []
+    reads = tuple(reads)
     raw_signals = data.get("signals")
     if not isinstance(raw_signals, dict) or not 1 <= len(raw_signals) <= 4:
         error("signals", "expected 1 to 4 signals")
@@ -74,6 +94,9 @@ def parse(
             continue
         if not isinstance(raw, dict) or not isinstance(raw.get("ask"), str):
             error(loc, "expected ask and type")
+            continue
+        if name in reads:
+            error(loc, "signal name is reserved by reads")
             continue
         if raw.keys() - {"ask", "type", "describe"}:
             error(loc, "unknown signal field")
@@ -97,11 +120,16 @@ def parse(
                 continue
         sid = SignalId(str(id), name)
         if type_ == "bool":
-            signals.append(Signal(sid, raw["ask"], "bool"))
+            signals.append(Signal(sid, raw["ask"], "bool", reads=reads))
         elif type_ == "music.mood":
             signals.append(
                 Signal(
-                    sid, raw["ask"], "music.mood", tuple(catalog.moods), catalog.moods
+                    sid,
+                    raw["ask"],
+                    "music.mood",
+                    tuple(catalog.moods),
+                    catalog.moods,
+                    reads=reads,
                 )
             )
         elif (
@@ -113,7 +141,12 @@ def parse(
         ):
             signals.append(
                 Signal(
-                    sid, raw["ask"], "enum", tuple(type_["enum"]), raw.get("describe")
+                    sid,
+                    raw["ask"],
+                    "enum",
+                    tuple(type_["enum"]),
+                    raw.get("describe"),
+                    reads=reads,
                 )
             )
         elif (
@@ -131,6 +164,7 @@ def parse(
                     "number",
                     minimum=type_["number"][0],
                     maximum=type_["number"][1],
+                    reads=reads,
                 )
             )
         else:
@@ -241,6 +275,12 @@ def parse(
                         error(at + "." + name, "required argument")
                     continue
                 value = args[name]
+                if isinstance(value, str) and UPCOMING_NEXT in value:
+                    if "upcoming" not in reads:
+                        error(at + "." + name, "$upcoming.next needs reads: [upcoming]")
+                    elif param.type != "str":
+                        error(at + "." + name, "$upcoming.next is text")
+                    value = value.replace(UPCOMING_NEXT, "")
                 references = (
                     re.findall(r"\$([a-zA-Z_][a-zA-Z0-9_]*)(\.for)?", value)
                     if isinstance(value, str)
@@ -305,4 +345,5 @@ def parse(
         tuple(permissions),
         created_by,
         data.get("request"),
+        reads,
     )

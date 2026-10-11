@@ -205,6 +205,18 @@ def create_app(
     async def forget_all():
         return backend.forget(None)
 
+    @app.get("/api/upcoming", response_model=w.UpcomingResponse)
+    async def upcoming():
+        return backend.upcoming()
+
+    @app.post("/api/upcoming", response_model=w.UpcomingItem)
+    async def add_upcoming(body: w.UpcomingPost):
+        return backend.add_upcoming(body)
+
+    @app.delete("/api/upcoming/{id}", response_model=w.MutationResponse)
+    async def dismiss_upcoming(id: str):
+        return backend.dismiss_upcoming(id)
+
     @app.post("/api/chat", response_model=w.ChatResponse)
     async def chat(body: w.ChatRequest):
         return await resolved(backend.chat(body.message))

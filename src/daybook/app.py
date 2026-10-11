@@ -63,6 +63,8 @@ keep_frames = false
 tick_interval = "90s"
 # Set to "low" only if the replay signal-quality gate needs it.
 tick_effort = "none"
+# Keep deadlines and events seen on screen in the Upcoming list.
+upcoming = true
 
 [model]
 base_url = "{DEFAULT_MODEL.base_url}"
@@ -84,6 +86,7 @@ class Config:
     keep_frames: bool = False
     tick_interval: float = 90
     tick_effort: Literal["none", "low"] = "none"
+    upcoming: bool = True
     model: ModelConfig = DEFAULT_MODEL
 
 
@@ -128,6 +131,9 @@ def load_config(home: Path | None = None) -> Config:
         raise ValueError(
             "keep_frames=true is not supported; screenshot retention is not implemented"
         )
+    upcoming = data.get("upcoming", True)
+    if type(upcoming) is not bool:
+        raise ValueError("upcoming must be a boolean")
     model = data.get("model", {})
     if not isinstance(model, dict):
         raise ValueError("model must be a TOML table")
@@ -151,6 +157,7 @@ def load_config(home: Path | None = None) -> Config:
         keep_frames=keep_frames,
         tick_interval=duration(data.get("tick_interval", "90s")),
         tick_effort=effort,
+        upcoming=upcoming,
         model=ModelConfig(
             base_url=string(model, "base_url", DEFAULT_MODEL.base_url),
             model=string(model, "model", DEFAULT_MODEL.model),
@@ -392,6 +399,7 @@ async def open_runtime(
             evidence_ready=lambda observation_id, questions: sense.evidence_ready(
                 observation_id, questions
             ),
+            upcoming=config.upcoming,
         )
         x11 = None
         raw: Screen

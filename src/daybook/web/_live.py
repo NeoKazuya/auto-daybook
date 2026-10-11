@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from daybook.act import OverlayRequest
 from daybook.chat import Answer, DraftReady
-from daybook.journal import TimeRange
+from daybook.journal import TimeRange, UpcomingDraft
 from daybook.sense import PrivacySettings
 from daybook.skills import Skill, SkillEntry, SkillSource
 
@@ -159,6 +159,30 @@ class LiveAPI:
             self.services.journal.forget_range(TimeRange(window.start, window.end))
         else:
             self.services.journal.forget_all()
+        return self._mutation()
+
+    def upcoming(self) -> w.UpcomingResponse:
+        # Items stay listed for an hour past due so a just-missed one is visible.
+        items = self.services.journal.portal.upcoming(
+            datetime.now(timezone.utc), overdue=3600
+        )
+        return w.UpcomingResponse(
+            items=[w.UpcomingItem.model_validate(i) for i in items]
+        )
+
+    def add_upcoming(self, body: w.UpcomingPost) -> w.UpcomingItem:
+        journal = self.services.journal
+        added = journal.add_upcoming(
+            [UpcomingDraft(body.title, body.due_at, kind=body.kind)],
+            journal.epoch,
+            at=datetime.now(timezone.utc),
+        )
+        if not added:
+            raise HTTPException(409, "already_listed")
+        return w.UpcomingItem.model_validate(added[0])
+
+    def dismiss_upcoming(self, id: str) -> w.MutationResponse:
+        self.services.journal.dismiss_upcoming(id)
         return self._mutation()
 
     async def chat(

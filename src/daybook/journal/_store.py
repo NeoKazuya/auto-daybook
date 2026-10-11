@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -33,6 +34,8 @@ from ._types import (
     Start,
     Tick,
     TimeRange,
+    UpcomingDraft,
+    UpcomingItem,
     WindowInfo,
 )
 
@@ -117,7 +120,20 @@ END;
 CREATE TRIGGER IF NOT EXISTS segment_delete AFTER DELETE ON segments BEGIN
     DELETE FROM note_search WHERE id=old.id AND kind='segment';
 END;
+CREATE TABLE IF NOT EXISTS upcoming (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, key TEXT NOT NULL, due_at TEXT NOT NULL,
+    source TEXT REFERENCES observations(id) ON DELETE CASCADE,
+    added_at TEXT NOT NULL, dismissed INTEGER NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL DEFAULT 'deadline' CHECK(kind IN ('deadline', 'event')),
+    UNIQUE(key, due_at)
+);
+CREATE INDEX IF NOT EXISTS upcoming_due ON upcoming(due_at);
 """
+
+
+def upcoming_key(title: str) -> str:
+    """Case and spacing variants of one title are the same item."""
+    return " ".join(re.findall(r"\w+", title.casefold()))
 
 
 class Journal:
@@ -553,7 +569,12 @@ class Journal:
             ticks_removed = self._db.execute(
                 "DELETE FROM ticks WHERE at>=? AND at<?", (start, end)
             ).rowcount
-            if ids or readings_removed or ticks_removed:
+            # Screen items leave with their source note; user items by added time.
+            upcoming_removed = self._db.execute(
+                "DELETE FROM upcoming WHERE source IS NULL AND added_at>=? AND added_at<?",
+                (start, end),
+            ).rowcount
+            if ids or readings_removed or ticks_removed or upcoming_removed:
                 events.append(StatusChanged("journal", "notes_invalidated"))
             # Gaps are non-sensitive state history; preserve them for honest recall.
 
@@ -565,6 +586,7 @@ class Journal:
             ]
             removed = 0
             for table in (
+                "upcoming",
                 "observations",
                 "segments",
                 "readings",
@@ -614,6 +636,73 @@ class Journal:
             self._db.execute("UPDATE segments SET open=0 WHERE open=1")
             if ids or spanning or readings_removed or ticks_removed or open_segments:
                 events.append(StatusChanged("journal", "notes_invalidated"))
+
+    @staticmethod
+    def _row_upcoming(row: sqlite3.Row) -> UpcomingItem:
+        return UpcomingItem(
+            row["id"],
+            row["title"],
+            moment(row["due_at"]),
+            row["source"],
+            moment(row["added_at"]),
+            row["kind"],
+        )
+
+    def add_upcoming(
+        self, drafts: list[UpcomingDraft], epoch: int, *, at: datetime
+    ) -> list[UpcomingItem]:
+        """Add new items; repeats of a kept or dismissed item are ignored."""
+        added_at = stamp(at)
+        with self._transaction() as events:
+            if self._stale(epoch):
+                return []
+            added = []
+            for draft in drafts:
+                title = " ".join(draft.title.split())[:200]
+                key = upcoming_key(title)
+                if not key:
+                    continue
+                # A note forgotten while extraction ran takes its items with it.
+                if (
+                    draft.source is not None
+                    and not self._db.execute(
+                        "SELECT 1 FROM observations WHERE id=?", (draft.source,)
+                    ).fetchone()
+                ):
+                    continue
+                id = uuid4().hex
+                inserted = self._db.execute(
+                    "INSERT OR IGNORE INTO upcoming VALUES(?, ?, ?, ?, ?, ?, 0, ?)",
+                    (
+                        id,
+                        title,
+                        key,
+                        stamp(draft.due_at),
+                        draft.source,
+                        added_at,
+                        draft.kind,
+                    ),
+                ).rowcount
+                if inserted:
+                    added.append(
+                        self._row_upcoming(
+                            self._db.execute(
+                                "SELECT * FROM upcoming WHERE id=?", (id,)
+                            ).fetchone()
+                        )
+                    )
+            if added:
+                events.append(StatusChanged("journal", "upcoming_changed"))
+            return added
+
+    def dismiss_upcoming(self, id: str) -> None:
+        """Hide an item and keep a tombstone so the same screen can't re-add it."""
+        with self._transaction() as events:
+            if not self._db.execute(
+                "UPDATE upcoming SET dismissed=1 WHERE id=? AND dismissed=0", (id,)
+            ).rowcount:
+                raise KeyError(id)
+            events.append(StatusChanged("journal", "upcoming_changed"))
 
     def clear_skill_readings(self, skill: str) -> None:
         """Reset a changed skill's history without letting an old tick restore it."""

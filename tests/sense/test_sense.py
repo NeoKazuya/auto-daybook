@@ -522,3 +522,50 @@ async def test_older_active_observe_failure_trims_original_change(tmp_path):
     await obj.wait_idle()
     assert journal.rows[0].last_seen_at == BASE + timedelta(seconds=10)
     assert journal.trims[0] == BASE + timedelta(seconds=10)
+
+
+async def test_queued_observe_cannot_return_to_forgotten_time(tmp_path):
+    class AdmissionGateway(ScriptedGateway):
+        def __init__(self):
+            super().__init__(['{"seen":"code","visible_text":""}'])
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def call(self, priority, prompt):
+            self.entered.set()
+            await self.release.wait()
+            return await super().call(priority, prompt)
+
+    screen, journal, gw = FakeScreen(), FakeJournal(), AdmissionGateway()
+    obj = Sense(screen, journal, gw, Bus(), tmp_path, lambda _: None)
+    await obj.poll(BASE)
+    await gw.entered.wait()
+    journal.epoch += 1
+    gw.release.set()
+    await obj.wait_idle()
+    assert not journal.rows and not gw.prompts
+
+
+async def test_forget_between_poll_and_task_admission(tmp_path):
+    obj, _, journal, gw, _ = sense(tmp_path)
+    await obj.poll(BASE)
+    journal.epoch += 1
+    await obj.wait_idle()
+    assert not journal.rows and not gw.prompts
+
+
+async def test_app_switch_nudge_survives_failed_observe(tmp_path):
+    obj, screen, journal, gw, nudges = sense(
+        tmp_path,
+        [
+            '{"seen":"code","visible_text":""}',
+            ModelUnavailable("timeout"),
+            '{"seen":"reading","visible_text":""}',
+        ],
+    )
+    await poll(obj, 0)
+    pdf = WindowInfo("Evince", "research.pdf")
+    screen.facts = state(active=pdf, windows=(VisibleWindow("pdf", pdf, RECT),))
+    await poll(obj, 1)
+    await poll(obj, 5)
+    assert nudges == [False, True]

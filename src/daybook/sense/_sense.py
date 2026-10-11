@@ -64,6 +64,8 @@ class Sense:
         self._observation: Observation | None = None
         self._last_thumb: bytes | None = None
         self._last_window = None
+        self._switch = 0
+        self._notified_switch = 0
         self._last_request: datetime | None = None
         self._last_poll: datetime | None = None
         self._tasks: set[asyncio.Task[None]] = set()
@@ -171,6 +173,9 @@ class Sense:
             and self._last_window.app != facts.active.app
         )
         self._last_window = facts.active
+        if app_switched:
+            self._switch += 1
+        pending_switch = self._switch > self._notified_switch
         new = (
             resumed
             or window_changed
@@ -189,7 +194,9 @@ class Sense:
                 self._observe(
                     at,
                     facts,
-                    app_switched,
+                    pending_switch,
+                    self._switch,
+                    self.journal.epoch,
                     self._sequence,
                     self._continuity,
                     self._generation,
@@ -203,31 +210,33 @@ class Sense:
         at: datetime,
         trigger: ScreenState,
         app_switched: bool,
+        switch: int,
+        epoch: int,
         sequence: int,
         continuity: int,
         consent: int,
     ) -> None:
-        epoch = self.journal.epoch
         window = trigger.active
         built = False
         admitted = False
 
         async def builder() -> Prompt[_Observed] | None:
-            nonlocal epoch, window, built, admitted
+            nonlocal window, built, admitted
             before = self.screen.state()
             if (
-                consent != self._generation
+                epoch != self.journal.epoch
+                or consent != self._generation
                 or continuity != self._continuity
                 or gate(before, self._privacy) != "running"
             ):
                 return None
             admitted = True
-            epoch = self.journal.epoch
             window = before.active
             image = self.screen.grab()
             after = self.screen.state()
             if (
-                consent != self._generation
+                epoch != self.journal.epoch
+                or consent != self._generation
                 or gate(after, self._privacy) != "running"
                 or before.active != after.active
                 or before.windows != after.windows
@@ -248,7 +257,13 @@ class Sense:
             self._failed(at, sequence, "observe_replaced")
             return
         except Exception:
+            if epoch != self.journal.epoch:
+                self.bus.publish(StatusChanged("sense", "discarded_after_forget"))
+                return
             self._failed(at, sequence, "observe_failed", captured=admitted)
+            return
+        if epoch != self.journal.epoch:
+            self.bus.publish(StatusChanged("sense", "discarded_after_forget"))
             return
         if consent != self._generation or continuity != self._continuity:
             self._failed(at, sequence, "discarded_after_consent", captured=admitted)
@@ -272,6 +287,8 @@ class Sense:
         self._epoch = self.journal.epoch
         if self._last_poll and self._last_poll > at and self._last_state == "running":
             self.journal.extend_observation(observation.id, self._last_poll)
+        if app_switched:
+            self._notified_switch = max(self._notified_switch, switch)
         self.nudge(app_switched)
 
     async def wait_idle(self) -> None:

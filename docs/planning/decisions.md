@@ -10,7 +10,7 @@ Status: **decided** (the user answered), **default** (proposed by the planner an
 |---|---|---|---|---|---|
 | P1 | 2026-10-10 | How do PRs flow? | Straight to `main`. No staging branch, no freeze, no GitHub Actions (to save Actions quota) | decided | [CONTRIBUTING.md](../../CONTRIBUTING.md). Checks run locally |
 | P2 | 2026-10-10 | Who runs the workflow? | People only talk to their agents. Agents plan, claim, branch, verify, review, merge, and report back in fixed Plan / Done / Blocked formats | decided | CONTRIBUTING.md, "For agents" and "Talking to your person" |
-| P3 | 2026-10-10 | When does review block a merge? | Only for shared-contract changes. Other PRs merge when the local checks pass, and the Codex review is triaged afterward | decided | Speed over pre-merge review |
+| P3 | 2026-10-10 | When does review block a merge? | Every PR stays open through completed review. Fix confirmed findings in the same PR, rerun checks, then merge; no timeout-based merge exception | decided | Updated by the user: no merge-first/follow-up-PR review cycle; see [CONTRIBUTING.md](../../CONTRIBUTING.md) steps 5–6 |
 | P4 | 2026-10-10 | When do agents stop and ask? | Only for irreversible actions, anything outside the repo, conflicting claims, and product direction (PStack `principle-never-block-on-the-human`) | decided | CONTRIBUTING.md, "Don't block on your person" |
 | P5 | 2026-10-10 | Which engineering procedures? | Adopt PStack concepts from the canonical source (`cursor/plugins@e43c7ee2`), not inferred versions | decided | `docs/agents/*.md`, [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md) |
 | P6 | 2026-10-10 | How is the architecture planned? | With PStack `architect`: ground, then at least two structurally distinct candidates from different model families, then judge with a rubric and combine. Codex cross-checks the docs | decided | This folder; `docs/ARCHITECTURE.md` to follow |
@@ -35,7 +35,7 @@ Status: **decided** (the user answered), **default** (proposed by the planner an
 | D12 | 2026-10-10 | Model for development | Test on an already-downloaded model first, while Qwen3.8 finishes downloading. It must be able to read images | decided | Model backend behind an OpenAI-compatible interface; Qwen3.6-35B via Ollama tested OK (see grounding) |
 | D13 | 2026-10-10 | Computer control | User asked "what about computer control?" Research recommends a thin in-house module (mss, python-xlib, xdotool/wmctrl, python-mpv, PySide6 overlay), borrowing the Anthropic computer-use demo's action layer | default | See [computer-control.md](computer-control.md). Free-form VLM clicking is a stretch goal |
 | D14 | 2026-10-10 | Where does the user interact? | Local web app plus a tray icon (pause and status) | decided | The tray needs an X11 tray host on GNOME (**inferred:** GNOME hides legacy tray icons without the AppIndicator extension; check on the box) |
-| D15 | 2026-10-10 | How far should computer control go? | "Depends on whether we can find something fully built out. If so, just use it" | open | Research found no turnkey fit. trycua/cua is closest (linux-arm64 driver plus MCP server) but says "Real Xorg: not yet validated". Design the action layer behind one interface so a framework can be plugged in if a quick test passes, with an in-house named-action fallback |
+| D15 | 2026-10-10 | How far should computer control go? | Use XdoDesktop for the three named desktop actions. The optional cua trial failed repeated app launch on the real GX10 session; see the trial result below | decided | Do not build CuaDesktop for this hackathon; retain the named-action interface and xdotool/wmctrl/gtk-launch implementation |
 | D16 | 2026-10-10 | Note shape | Two layers: raw observations on every capture, rolled up by the model every few minutes into activity segments with inferred intent. Skills and recall read segments; raw observations stay available for detail and correction | decided | Observation vs interpretation stays separable, as the handoff asks |
 | D17 | 2026-10-10 | Privacy controls for the demo | All four: pause/resume, app and window exclusions, delete screenshots after the model reads them, edit and delete notes in the UI | decided | Screenshots are transient. Exclusions are checked before capture or before the model call |
 | D18 | 2026-10-10 | GitHub repo | `NeoKazuya/auto-daybook`, private (already created by the user) | decided | Make it public at submission if the event requires that |
@@ -57,4 +57,19 @@ Status: **decided** (the user answered), **default** (proposed by the planner an
 - Product name (`daybook` is the working name).
 - Whether withheld (excluded-app) time shows as a "private" gap on the timeline (current design) or not at all.
 - Whether to switch to Qwen3.8 once it downloads (gated on `accept.py --vision` and the replay fixtures).
-- The cua trial result (D15).
+
+## GX10 cua trial — 2026-10-10
+
+**Result: no; use `XdoDesktop`.** This closes D15 for the hackathon build.
+The optional adapter was tested for about 10 minutes, within the one-hour limit
+in ARCHITECTURE §11.1. No `CuaDesktop` is shipped.
+
+- Downloaded the official [cua-driver 0.34.1 Linux ARM64 release](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.34.1), verified its archive against the release's SHA256SUMS, and extracted it into an isolated trial directory on the GX10. No service or extension was installed.
+- `gx10 status` passed. The test ran on the existing unlocked GNOME/Xorg `:1` session through `gx10 run`, holding the capture lock. Telemetry was disabled.
+- A temporary daemon with a private socket successfully listed the desktop windows. A Python `CuaDesktop` trial adapter called the driver CLI for the named desktop operations.
+- `launch_app` with the desktop ID `org.gnome.TextEditor` opened the editor and returned a visible window. Repeating the same launch while the editor was already running failed after 8 seconds with `launch_handoff_timeout`, `effect: refused`, and `handoff: dbus_activation`; the existing editor window remained visible. This fails the required `desktop.launch` behavior.
+- The focus and URL tests were not reached after this failure. The temporary daemon was stopped and the lock released. No screenshots or recordings were written by the trial.
+
+The result is a failure of this release in the tested session, not a claim that
+all cua versions fail on Xorg. The existing xdotool/wmctrl/gtk-launch backend
+remains the implementation for the three named desktop actions.

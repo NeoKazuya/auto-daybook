@@ -1,0 +1,145 @@
+{
+  "active": {
+    "app": "com.microsoft.VSCode",
+    "title": "daybook-fixture.py - Visual Studio Code"
+  },
+  "windows": [
+    {
+      "id": "41943047",
+      "info": {
+        "app": "Gjs",
+        "title": "(unrecorded window)"
+      },
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 1080
+      },
+      "opacity": 1.0,
+      "pid": 404983
+    },
+    {
+      "id": "29360132",
+      "info": {
+        "app": "gnome-control-center",
+        "title": "(unrecorded window)"
+      },
+      "rect": {
+        "x": 55,
+        "y": 27,
+        "width": 1102,
+        "height": 762
+      },
+      "opacity": 1.0,
+      "pid": 36661
+    },
+    {
+      "id": "44040202",
+      "info": {
+        "app": "Gnome-terminal",
+        "title": "(unrecorded window)"
+      },
+      "rect": {
+        "x": 140,
+        "y": 109,
+        "width": 866,
+        "height": 629
+      },
+      "opacity": 1.0,
+      "pid": 37310
+    },
+    {
+      "id": "10485783",
+      "info": {
+        "app": "firefox_firefox",
+        "title": "(unrecorded window)"
+      },
+      "rect": {
+        "x": 66,
+        "y": 32,
+        "width": 1854,
+        "height": 1048
+      },
+      "opacity": 1.0,
+      "pid": 23155
+    },
+    {
+      "id": "56623198",
+      "info": {
+        "app": "libreoffice-writer",
+        "title": "(unrecorded window)"
+      },
+      "rect": {
+        "x": 66,
+        "y": 32,
+        "width": 1854,
+        "height": 1048
+      },
+      "opacity": 1.0,
+      "pid": 317484
+    },
+    {
+      "id": "56624542",
+      "info": {
+        "app": "Soffice",
+        "title": "(unrecorded window)"
+      },
+      "rect": {
+        "x": 701,
+        "y": 468,
+        "width": 584,
+        "height": 249
+      },
+      "opacity": 1.0,
+      "pid": 317484
+    },
+    {
+      "id": "39845892",
+      "info": {
+        "app": "org.gnome.Nautilus",
+        "title": "(unrecorded window)"
+      },
+      "rect": {
+        "x": 155,
+        "y": 127,
+        "width": 1012,
+        "height": 672
+      },
+      "opacity": 1.0,
+      "pid": 86493
+    },
+    {
+      "id": "67108870",
+      "info": {
+        "app": "KeePassXC",
+        "title": "private (redacted fixture)"
+      },
+      "rect": {
+        "x": 1000,
+        "y": 113,
+        "width": 900,
+        "height": 737
+      },
+      "opacity": 1.0,
+      "pid": 405631
+    },
+    {
+      "id": "48234500",
+      "info": {
+        "app": "com.microsoft.VSCode",
+        "title": "daybook-fixture.py - Visual Studio Code"
+      },
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 1920,
+        "height": 1080
+      },
+      "opacity": 1.0,
+      "pid": 404427
+    }
+  ],
+  "microphone_active": false,
+  "overlay": false
+}

@@ -1,0 +1,26 @@
+[
+  {
+    "at": 30,
+    "kind": "coding",
+    "mood": "focus",
+    "focused": true,
+    "in_meeting": false,
+    "capture": "running"
+  },
+  {
+    "at": 60,
+    "kind": "reading",
+    "mood": "calm",
+    "focused": true,
+    "in_meeting": false,
+    "capture": "running"
+  },
+  {
+    "at": 90,
+    "kind": "reading",
+    "mood": "calm",
+    "focused": true,
+    "in_meeting": false,
+    "capture": "running"
+  }
+]

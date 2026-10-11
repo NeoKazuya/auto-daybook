@@ -1,0 +1,34 @@
+[
+  {
+    "at": 0,
+    "directory": "000"
+  },
+  {
+    "at": 30,
+    "directory": "001"
+  },
+  {
+    "at": 60,
+    "directory": "002"
+  },
+  {
+    "at": 90,
+    "directory": "003"
+  },
+  {
+    "at": 120,
+    "directory": "004"
+  },
+  {
+    "at": 150,
+    "directory": "005"
+  },
+  {
+    "at": 180,
+    "directory": "006"
+  },
+  {
+    "at": 185,
+    "directory": "007"
+  }
+]

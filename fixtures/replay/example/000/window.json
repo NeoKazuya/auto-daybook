@@ -1,0 +1,25 @@
+{
+  "active": {
+    "app": "Code",
+    "title": "example.py"
+  },
+  "windows": [
+    {
+      "id": "42",
+      "info": {
+        "app": "Code",
+        "title": "example.py"
+      },
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 720
+      },
+      "opacity": 1.0,
+      "pid": 1000
+    }
+  ],
+  "microphone_active": false,
+  "overlay": false
+}

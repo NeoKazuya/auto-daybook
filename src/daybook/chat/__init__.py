@@ -181,9 +181,17 @@ class Chat:
                 message,
                 re.IGNORECASE,
             )
-            mixed = re.search(
-                r"\b(before|after|around|outside|earlier|later|preceding|following)\b",
+            # Temporal adjectives select a gap; they do not ask about notes
+            # outside it. Remove those modifiers before looking for relations.
+            scope = re.sub(
+                r"\b(?:earlier|later|preceding|following)\s+(?=(?:paused|locked|private|excluded)\b)",
+                "",
                 message,
+                flags=re.IGNORECASE,
+            )
+            mixed = re.search(
+                r"\b(?:before|after|around|outside|except|besides|earlier|later|preceding|following)\b|\band\s+then\b",
+                scope,
                 re.IGNORECASE,
             )
             exclusively_withheld = bool(withheld and not mixed)

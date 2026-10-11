@@ -17,6 +17,7 @@ from daybook.journal import (
     Continue,
     Journal,
     ObservationDraft,
+    SegmentAssignment,
     SignalId,
     SignalReading,
     SignalValue,
@@ -69,7 +70,7 @@ def tick(
         journal.epoch,
         time(at),
         ids,
-        decision,
+        (SegmentAssignment(ids, decision),) if decision is not None and ids else (),
         (SignalReading(signal, value, time(at), "ignored-id"),),
     )
 
@@ -131,7 +132,12 @@ def test_tick_id_utc_and_idempotency(journal: Journal):
     value = tick(journal, (note.id,), 60, Start("Coding", "coding", "A patch"))
     offset = value.evidence_until.astimezone(timezone(timedelta(hours=-7)))
     equivalent = Tick(
-        value.at, value.epoch, offset, value.observations, value.segment, value.readings
+        value.at,
+        value.epoch,
+        offset,
+        value.observations,
+        value.segments,
+        value.readings,
     )
     assert equivalent.id == value.id == "tick:2026-10-10T10:01:00+00:00"
     with journal._bus.subscribe() as queue:
@@ -146,19 +152,20 @@ def test_tick_id_utc_and_idempotency(journal: Journal):
     assert journal.portal.observations(RANGE, unassigned_only=True) == []
 
 
-def test_missing_observation_ids_skipped_and_empty_tick_readings(journal: Journal):
+def test_missing_observation_rejects_whole_tick_and_empty_tick_reads(journal):
     first = observe(journal, 0, 60)
     journal.forget_observation(first.id)
     good = observe(journal, 70, 90)
-    current = segment(journal, (first.id, good.id), 90)
-    assert [o.id for o in current.observations] == [good.id]
-    empty = tick(journal, (), 120, Start("Should not appear", "other", ""), value=None)
-    assert journal.record_tick(empty)
+    assert not journal.record_tick(
+        tick(journal, (first.id, good.id), 90, Start("Work", "coding", ""))
+    )
+    assert journal.portal.latest_tick_evidence_until() is None
+    assert journal.portal.readings(SIGNAL, RANGE) == []
+    assert journal.portal.observations(RANGE, unassigned_only=True)[0].id == good.id
+    current = segment(journal, (good.id,), 90)
+    assert journal.record_tick(tick(journal, (), 120, value=None))
     assert journal.portal.now().segment == current
     assert [r.value for r in journal.portal.readings(SIGNAL, RANGE)] == [True, None]
-    assert journal.portal.readings(SIGNAL, TimeRange(time(90), time(120)))[
-        0
-    ].at == time(90)
 
 
 def test_user_edits_survive_continue_and_restart(journal: Journal):
@@ -172,7 +179,7 @@ def test_user_edits_survive_continue_and_restart(journal: Journal):
     assert edited.authored == "user"
     second = observe(journal, 60, 120)
     assert journal.record_tick(
-        tick(journal, (second.id,), 120, Continue("Wrong", "reading", "Wrong intent"))
+        tick(journal, (second.id,), 120, Continue("Wrong", "writing", "Wrong intent"))
     )
     kept = journal.portal.now().segment
     assert kept is not None
@@ -282,8 +289,11 @@ def test_derived_times_and_partial_forget(journal: Journal):
     )
     kept = journal.portal.now().segment
     assert kept is not None and kept.title == "New text"
+    assert kept.id != current.id  # The new kind cannot relabel prior time.
     journal.forget_segment(current.id)
-    assert journal.portal.segments(RANGE) == journal.portal.observations(RANGE) == []
+    assert journal.portal.segments(RANGE) == [kept]
+    journal.forget_segment(kept.id)
+    assert journal.portal.observations(RANGE) == []
     assert journal.portal.search("Book") == []
 
 
@@ -589,9 +599,9 @@ def test_tick_frontier_survives_restart_and_tracks_forgetting(tmp_path):
     at = datetime.now(UTC)
     journal = Journal(path, Bus())
     assert journal.portal.latest_tick_evidence_until() is None
-    assert journal.record_tick(Tick(at, journal.epoch, at, (), None, ()))
+    assert journal.record_tick(Tick(at, journal.epoch, at, (), (), ()))
     later = at + timedelta(seconds=30)
-    assert journal.record_tick(Tick(later, journal.epoch, later, (), None, ()))
+    assert journal.record_tick(Tick(later, journal.epoch, later, (), (), ()))
     journal.close()
     journal = Journal(path, Bus())
     assert journal.portal.latest_tick_evidence_until() == later

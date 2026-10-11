@@ -24,6 +24,8 @@ from daybook.model import (
 from ._gate import black, changed, gate
 from ._types import PrivacySettings, Screen, ScreenState
 
+_REFRESH_AFTER = timedelta(seconds=60)
+
 
 class _Observed(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -66,6 +68,7 @@ class Sense:
         self._epoch = journal.epoch
         self._last_state: CaptureState | None = None
         self._observation: Observation | None = None
+        self._last_observed_at: datetime | None = None
         self._last_thumb: bytes | None = None
         self._last_window = None
         self._pending_window = False
@@ -117,6 +120,7 @@ class Sense:
         self.gateway.drop_observe()
         self._continuity += 1
         self._observation = None
+        self._last_observed_at = None
         self._last_thumb = None
         if settings.paused:
             self._state("paused", datetime.now(timezone.utc))
@@ -137,6 +141,7 @@ class Sense:
         if self._last_state == "running" or self._observation is not None:
             self._continuity += 1
         self._observation = None
+        self._last_observed_at = None
         self._last_thumb = None
         self._last_window = None
         self._pending_overlay_resume = state == "overlay"
@@ -155,6 +160,7 @@ class Sense:
         self._epoch = self.journal.epoch
         self._continuity += 1
         self._observation = None
+        self._last_observed_at = None
         self._last_thumb = None
         if self._last_state == "running":
             self._state("withheld", at)
@@ -191,6 +197,7 @@ class Sense:
             self._epoch = self.journal.epoch
             self._continuity += 1
             self._observation = None
+            self._last_observed_at = None
             self._last_thumb = None
         if not resumed and self._observation:
             self.journal.extend_observation(self._observation.id, at)
@@ -206,15 +213,19 @@ class Sense:
         if app_switched:
             self._switch += 1
         pending_switch = self._switch > self._notified_switch
+        pending = any(not task.done() for task in self._tasks)
+        refresh_due = (
+            not pending
+            and self._last_observed_at is not None
+            and at - self._last_observed_at >= _REFRESH_AFTER
+        )
         new = (
             resumed
             or self._pending_window
             or self._last_thumb is None
             or changed(self._last_thumb, thumbnail)
-            or (
-                questions != self._observed_questions
-                and not any(not task.done() for task in self._tasks)
-            )
+            or refresh_due
+            or (questions != self._observed_questions and not pending)
         )
         due = (
             self._last_request is None
@@ -254,10 +265,11 @@ class Sense:
         window = trigger.active
         built = False
         admitted = False
+        captured_at: datetime | None = None
         admitted_questions: tuple[str, ...] = ()
 
         async def builder() -> Prompt[_Observed] | None:
-            nonlocal window, built, admitted, admitted_questions
+            nonlocal window, built, admitted, admitted_questions, captured_at
             before = self.screen.state()
             if (
                 epoch != self.journal.epoch
@@ -277,6 +289,9 @@ class Sense:
                 return None
             admitted = True
             window = before.active
+            # Use admission time at poll resolution, not the trigger or result
+            # time: queued work captures fresh pixels, while slow inference ages them.
+            captured_at = self._last_poll or at
             image = self.screen.grab(before)
             after = self.screen.state()
             if (
@@ -354,6 +369,7 @@ class Sense:
             self._failed(at, sequence, "discarded_after_forget", captured=admitted)
             return
         self._observation = observation
+        self._last_observed_at = captured_at
         self._observed_questions = admitted_questions
         self._epoch = self.journal.epoch
         if self._last_poll and self._last_poll > at and self._last_state == "running":

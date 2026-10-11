@@ -118,12 +118,18 @@ class Start:
 
 
 @dataclass(frozen=True)
+class SegmentAssignment:
+    observations: tuple[str, ...]
+    decision: Continue | Start
+
+
+@dataclass(frozen=True)
 class Tick:
     at: datetime
     epoch: int
     evidence_until: datetime
     observations: tuple[str, ...]
-    segment: Continue | Start | None
+    segments: tuple[SegmentAssignment, ...]
     readings: tuple[SignalReading, ...]
 
     @property

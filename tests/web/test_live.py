@@ -17,6 +17,7 @@ from daybook.journal import (
     Journal,
     ObservationDraft,
     Outcome,
+    SegmentAssignment,
     SignalId,
     SignalReading,
     Start,
@@ -126,7 +127,11 @@ def live(tmp_path):
         journal.epoch,
         at + timedelta(minutes=5),
         (observation.id,),
-        Start("Fix imports", "coding", "Repair tests"),
+        (
+            SegmentAssignment(
+                (observation.id,), Start("Fix imports", "coding", "Repair tests")
+            ),
+        ),
         (
             SignalReading(
                 SignalId("music", "mood"), "focus", at + timedelta(minutes=5), ""

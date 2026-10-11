@@ -12,6 +12,7 @@ from daybook.journal import (
     Continue,
     Journal,
     ObservationDraft,
+    SegmentAssignment,
     Start,
     Tick,
     TimeRange,
@@ -40,7 +41,12 @@ def index(tmp_path):
             journal.epoch,
             at + timedelta(minutes=2),
             (observation.id,),
-            Start("Repair imports", "coding", "Fix the import path"),
+            (
+                SegmentAssignment(
+                    (observation.id,),
+                    Start("Repair imports", "coding", "Fix the import path"),
+                ),
+            ),
             (),
         )
     )
@@ -463,7 +469,12 @@ def test_today_search_dates_hits_at_first_overlapping_evidence(
             journal.epoch,
             previous.last_seen_at,
             (previous.id,),
-            Start("midnight task", "coding", "Continue the task"),
+            (
+                SegmentAssignment(
+                    (previous.id,),
+                    Start("midnight task", "coding", "Continue the task"),
+                ),
+            ),
             (),
         )
     )
@@ -478,7 +489,11 @@ def test_today_search_dates_hits_at_first_overlapping_evidence(
             journal.epoch,
             current.last_seen_at,
             (current.id,),
-            Continue(segment.title, segment.kind, segment.intent),
+            (
+                SegmentAssignment(
+                    (current.id,), Continue(segment.title, segment.kind, segment.intent)
+                ),
+            ),
             (),
         )
     )

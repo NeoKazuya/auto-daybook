@@ -53,8 +53,10 @@ rules:
 |---|---|---|
 | `<signal> updates` | on every tick where the signal has a known value | that tick |
 | `<signal> becomes <value>` | when the value changes to `<value>`. Needs a previous known reading within 5 minutes, so app startup is never an edge | that tick |
-| `<signal> is <value> for <duration>` | when the value has been `<value>` continuously for at least `<duration>`. A gap of more than 5 minutes (lock, pause, away) breaks the streak | the streak's first tick: once per streak |
+| `<signal> is <value> for <duration>` | when the value has been `<value>` continuously for at least `<duration>`. Explicit pause, lock, private, or away interruptions restart the streak; missing readings more than 5 minutes apart also restart it | the streak's first tick: once per streak |
 | `every <duration>` | at most once per wall-clock bucket, and only on ticks, so only while the user is present | the bucket |
+
+A short completed fullscreen app overlay preserves a duration rule's original occurrence key when the readings on either side remain within five minutes and have the same known value. Dismissing a reminder therefore does not restart that reminder's timer or allow a second firing for the same streak. An overlay lasting more than five minutes breaks continuity. Streak duration, including `$<signal>.for`, remains elapsed time between the first and latest matching readings.
 
 **Durations:** a non-negative integer followed by `s`, `m`, or `h`, for example `30s`, `2m`, `50m`, `2h`. Zero (`0s`) is allowed only where a parameter says so (`min_dwell`); trigger durations and cooldowns must be greater than zero.
 

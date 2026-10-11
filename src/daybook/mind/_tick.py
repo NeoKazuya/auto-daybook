@@ -7,11 +7,12 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Annotated, Any, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 from daybook.journal import (
     ActivityKind,
     Continue,
+    SegmentAssignment,
     SignalReading,
     SignalValue,
     Start,
@@ -22,6 +23,7 @@ from daybook.skills import Signal
 
 class SegmentAnswer(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    observations: list[str] = Field(min_length=1)
     mode: Literal["continue", "start"]
     title: str = Field(min_length=1, max_length=200)
     kind: ActivityKind
@@ -29,7 +31,7 @@ class SegmentAnswer(BaseModel):
 
 
 def output_model(
-    signals: tuple[Signal, ...], *, has_observations: bool = False
+    signals: tuple[Signal, ...], *, observations: tuple[str, ...] = ()
 ) -> type[BaseModel]:
     fields = {}
     for signal in signals:
@@ -46,10 +48,37 @@ def output_model(
     readings = create_model(
         "TickSignals", __config__=ConfigDict(extra="forbid"), **fields
     )
+
+    # Membership and chronology belong to the request, never to model invention.
+    # Validation runs inside the gateway too, so malformed partitions use its
+    # normal structured-output repair before any journal mutation.
+    class PartitionedAnswer(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        segments: list[SegmentAnswer]
+
+        @model_validator(mode="after")
+        def partition(self):
+            actual = tuple(id for group in self.segments for id in group.observations)
+            if actual != observations:
+                raise ValueError(
+                    "segments must partition every supplied observation ID exactly once, in supplied order"
+                )
+            return self
+
+    id_type: Any = Literal[observations] if observations else str  # pyright: ignore[reportInvalidTypeForm]
+    group = create_model(
+        "SegmentGroup",
+        __base__=SegmentAnswer,
+        observations=(list[id_type], Field(min_length=1)),  # pyright: ignore[reportInvalidTypeForm]
+    )
+    groups: Any = list[group]  # pyright: ignore[reportInvalidTypeForm]
     return create_model(
         "TickAnswer",
-        __config__=ConfigDict(extra="forbid"),
-        segment=(SegmentAnswer if has_observations else type(None), ...),
+        __base__=PartitionedAnswer,
+        segments=(
+            groups,
+            Field(min_length=1 if observations else 0, max_length=len(observations)),
+        ),
         signals=(readings, ...),
     )
 
@@ -89,18 +118,24 @@ def parse(
     observations: tuple[str, ...],
     has_open_segment: bool,
 ) -> Tick:
-    segment = None
-    answer = raw.get("segment")
-    if observations and isinstance(answer, dict):
-        try:
-            parsed = SegmentAnswer.model_validate(answer)
-            constructor = (
-                Continue if parsed.mode == "continue" and has_open_segment else Start
+    plan = output_model((), observations=observations).model_validate(
+        {"segments": raw.get("segments"), "signals": {}}
+    )
+    assignments = []
+    for item in plan.model_dump()["segments"]:
+        answer = SegmentAnswer.model_validate(item)
+        constructor = (
+            Continue
+            if answer.mode == "continue" and has_open_segment and not assignments
+            else Start
+        )
+        assignments.append(
+            SegmentAssignment(
+                tuple(answer.observations),
+                constructor(answer.title, answer.kind, answer.intent),
             )
-            segment = constructor(parsed.title, parsed.kind, parsed.intent)
-        except ValueError:
-            pass
-    tick = Tick(at, epoch, evidence_until, observations, segment, ())
+        )
+    tick = Tick(at, epoch, evidence_until, observations, tuple(assignments), ())
     answers = raw.get("signals")
     answers = answers if isinstance(answers, dict) else {}
     readings = tuple(

@@ -575,3 +575,43 @@ def test_search_cap_bounds_result_materialization_to_matching_window(tmp_path):
             assert len(calls) == 1
     finally:
         journal.close()
+
+
+def test_mock_observation_search_matches_window_title_without_body_match():
+    application = create_app(mock=True, token="test-token", origin="http://testserver")
+    with TestClient(application) as client:
+        original = client.get("/api/timeline").json()["segments"][0]
+        note = original["observations"][0]
+        query = note["window"]["title"]
+        assert query
+        assert (
+            client.patch(
+                f"/api/segments/{original['id']}",
+                headers=HEADERS,
+                json={"title": "Different activity", "intent": "Routine work"},
+            ).status_code
+            == 200
+        )
+        assert (
+            client.patch(
+                f"/api/observations/{note['id']}",
+                headers=HEADERS,
+                json={"seen": "Plain note", "visible_text": ""},
+            ).status_code
+            == 200
+        )
+        response = client.get(
+            "/api/search",
+            params={
+                "q": query,
+                "from": note["started_at"],
+                "to": note["last_seen_at"],
+            },
+        )
+        assert response.status_code == 200
+        hits = response.json()["hits"]
+        assert len(hits) == 1
+        assert hits[0]["observation_id"] == note["id"]
+        assert hits[0]["segment_id"] == original["id"]
+        assert query in hits[0]["snippet"]
+        assert "Plain note" in hits[0]["snippet"]

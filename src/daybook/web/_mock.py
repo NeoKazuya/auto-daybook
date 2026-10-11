@@ -97,7 +97,13 @@ class MockAPI:
                     )
                 )
             for observation in observations:
-                snippet = observation.seen + " " + observation.visible_text
+                snippet = "\n".join(
+                    (
+                        observation.window.title,
+                        observation.seen,
+                        observation.visible_text,
+                    )
+                )
                 if all(word in snippet.casefold() for word in words):
                     hits.append(
                         w.SearchHit(

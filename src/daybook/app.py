@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
 LOG = logging.getLogger(__name__)
 CAPTURE_LOCK = Path("/tmp/daybook-capture.lock")
+BUILTIN_SKILLS = Path(__file__).resolve().parents[2] / "skills/builtin"
 DEFAULT_CONFIG = """port = 8765
 display = ":1"
 xauthority = "/run/user/1000/gdm/Xauthority"
@@ -328,7 +329,7 @@ async def open_runtime(
         )
         skills = SkillBook(
             config.home,
-            Path(__file__).resolve().parents[2] / "skills/builtin",
+            BUILTIN_SKILLS,
             journal.path,
             journal.portal,
             catalog,
@@ -595,10 +596,20 @@ def main() -> None:
                 errors = library.check()
                 result = {"ok": not errors, "errors": list(errors)}
             else:
+                path = args.file.resolve()
+                origin = (
+                    "builtin"
+                    if path.is_relative_to(BUILTIN_SKILLS.resolve())
+                    else "user"
+                )
+                hook = path.with_name(path.name.replace(".skill.md", ".hook.py"))
                 checked = parse_skill(
-                    args.file.read_text(),
-                    source=SkillSource(args.file, "user"),
+                    path.read_text(),
+                    source=SkillSource(path, origin),
                     catalog=build_catalog(library.moods),
+                    hook_text=hook.read_text()
+                    if origin == "builtin" and hook.exists()
+                    else None,
                 )
                 errors = [] if isinstance(checked, Skill) else checked
                 result = {

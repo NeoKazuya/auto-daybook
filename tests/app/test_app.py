@@ -218,3 +218,235 @@ def test_daemon_cli_uses_launch_port_and_authenticated_request(tmp_path: Path):
 def test_daemon_commands_fail_clearly_when_no_daemon(tmp_path: Path):
     with pytest.raises(RuntimeError, match="daybook run"):
         app.daemon_request(app.load_config(tmp_path), "/api/overlay/test")
+
+
+def library_config(tmp_path: Path) -> app.Config:
+    root = tmp_path / "music"
+    root.mkdir()
+    lines = []
+    for mood in ("calm", "focus", "break"):
+        (root / mood).mkdir()
+        (root / mood / "example.wav").write_bytes(b"fixture track")
+        lines.extend(
+            [
+                f'[moods.{mood}]\ndescribe="{mood}"',
+                f'[[tracks]]\nfile="{mood}/example.wav"\ntitle="Example"\nartist="Test"\nlicense="CC0"\nsource="https://example.test/track"',
+            ]
+        )
+    (root / "library.toml").write_text("\n".join(lines))
+    return replace(app.load_config(tmp_path), music_dir=root)
+
+
+async def test_concrete_replay_composes_owners_and_never_starts_real_effects(
+    tmp_path: Path, monkeypatch
+):
+    import daybook.model
+    import daybook.sense
+    from daybook.act import OverlayRequest
+    from daybook.model import ScriptedGateway
+
+    async def forbidden_process(*_, **__):
+        pytest.fail("a replay without real effects started a child")
+
+    def forbidden_screen(*_, **__):
+        pytest.fail("a replay opened the real X11 screen")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_process)
+    monkeypatch.setattr(daybook.sense, "X11Screen", forbidden_screen)
+    gateway = ScriptedGateway(
+        ['{"seen":"Editing a Python function.","visible_text":"def example()"}']
+    )
+    monkeypatch.setattr(daybook.model, "ModelGateway", lambda _: gateway)
+    config = library_config(tmp_path)
+    fixture = Path(__file__).resolve().parents[2] / "fixtures/replay/example"
+    async with app.open_runtime(config, replay=fixture) as runtime:
+        services = runtime.services
+        assert runtime.screen is None
+        assert {entry.id for entry in services.skills.entries()} == {
+            "music",
+            "break",
+            "break-demo",
+        }
+        await services.sense.poll()
+        await services.sense.wait_idle()
+        assert services.journal.portal.now().observation is not None
+        assert gateway.priorities == [daybook.model.Priority.OBSERVE]
+        gateway.replies.append(
+            json.dumps(
+                {
+                    "segment": {
+                        "mode": "start",
+                        "title": "Implement example",
+                        "kind": "coding",
+                        "intent": "Likely implementing a function.",
+                    },
+                    "signals": {
+                        str(signal.id): None
+                        for signal in services.skills.active_signals()
+                    },
+                }
+            )
+        )
+        tick = await services.mind.tick_now()
+        assert tick is not None and tick.id.startswith("tick:")
+        assert services.journal.portal.now().segment is not None
+        assert all(
+            reading.tick == tick.id
+            for reading in services.journal.portal.now().readings
+        )
+        # Fake overlays keep real policy: they own state and block replay capture.
+        services.overlay.shell_connected(False)
+        result = await services.overlay.show(
+            OverlayRequest("Break", "Step away"), "manual"
+        )
+        assert result.ok
+        await services.sense.poll()
+        assert services.journal.portal.now().capture == "overlay"
+        await services.overlay.hide()
+        assert not (tmp_path / "mpv.sock").exists()
+        assert not (tmp_path / "overlay.json").exists()
+    assert services.overlay.state is None
+    with pytest.raises(RuntimeError, match="closed"):
+        services.journal.portal.now()
+
+
+async def test_concrete_no_capture_creates_no_pixels_calls_or_children(
+    tmp_path: Path, monkeypatch
+):
+    import daybook.model
+    import daybook.sense
+    from daybook.model import ScriptedGateway
+
+    async def forbidden_process(*_, **__):
+        pytest.fail("no-capture started a real process")
+
+    def forbidden_screen(*_, **__):
+        pytest.fail("no-capture opened the real screen")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_process)
+    monkeypatch.setattr(daybook.sense, "X11Screen", forbidden_screen)
+    gateway = ScriptedGateway([])
+    monkeypatch.setattr(daybook.model, "ModelGateway", lambda _: gateway)
+    async with app.open_runtime(library_config(tmp_path), no_capture=True) as runtime:
+        await runtime.services.sense.poll()
+        assert runtime.services.journal.portal.now().capture == "locked"
+        assert await runtime.services.mind.tick_now() is None
+        assert gateway.prompts == []
+        assert not (tmp_path / "mpv.sock").exists()
+
+
+def test_cli_checks_and_error_exit_codes(tmp_path: Path, monkeypatch, capsys):
+    config = library_config(tmp_path)
+    monkeypatch.setattr(app, "load_config", lambda: config)
+    monkeypatch.setattr(sys, "argv", ["daybook", "music", "check"])
+    app.main()
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "errors": []}
+    skill = tmp_path / "test.skill.md"
+    skill.write_text(
+        "---\nid: test\nname: Test\nsignals: {}\nrules: []\nallow: []\n---\nDo nothing."
+    )
+    monkeypatch.setattr(sys, "argv", ["daybook", "skill", "check", str(skill)])
+    app.main()
+    assert json.loads(capsys.readouterr().out)["ok"]
+    skill.write_text("invalid skill")
+    with pytest.raises(SystemExit) as error:
+        app.main()
+    assert error.value.code == 1
+    assert not json.loads(capsys.readouterr().out)["ok"]
+
+
+@pytest.mark.parametrize("mode", ["real", "effects"])
+async def test_run_refuses_competing_real_screen_before_any_startup(
+    tmp_path: Path, monkeypatch, mode: str
+):
+    monkeypatch.setattr(app, "CAPTURE_LOCK", tmp_path / "capture.lock")
+    args = argparse.Namespace(
+        mock_api=False,
+        no_capture=mode == "effects",
+        replay=None,
+        real_effects=mode == "effects",
+    )
+    with app.capture_lock():
+        with pytest.raises(RuntimeError, match="--replay"):
+            await app.run_daemon(app.load_config(tmp_path), args)
+    assert not (tmp_path / "token").exists()
+    assert not (tmp_path / "journal.db").exists()
+
+
+async def test_run_rejects_shared_home_without_rotating_existing_token(tmp_path: Path):
+    config = app.load_config(tmp_path)
+    token = app.launch_token(tmp_path)
+    args = argparse.Namespace(
+        mock_api=True, no_capture=False, replay=None, real_effects=False
+    )
+    with app.home_lock(tmp_path):
+        with pytest.raises(RuntimeError, match="DAYBOOK_HOME"):
+            await app.run_daemon(config, args)
+    assert (tmp_path / "token").read_text() == token
+
+
+async def test_observe_once_printable_result_does_not_save_to_home(
+    tmp_path: Path, monkeypatch
+):
+    import daybook.model
+    import daybook.sense
+    from daybook.model import ScriptedGateway
+    from daybook.sense import ReplayScreen
+
+    fixture = Path(__file__).resolve().parents[2] / "fixtures/replay/example"
+    monkeypatch.setattr(app, "CAPTURE_LOCK", tmp_path / "capture.lock")
+    monkeypatch.setattr(daybook.sense, "X11Screen", lambda _: ReplayScreen(fixture))
+    gateway = ScriptedGateway(
+        ['{"seen":"Editing a function.","visible_text":"def example()"}']
+    )
+    monkeypatch.setattr(daybook.model, "ModelGateway", lambda _: gateway)
+    result = await app.observe_once(app.load_config(tmp_path))
+    assert isinstance(result, dict) and result["seen"] == "Editing a function."
+    assert not (tmp_path / "journal.db").exists()
+    assert not (tmp_path / "journal.db-wal").exists()
+
+
+async def test_tick_once_records_current_unassigned_notes_without_a_daemon(
+    tmp_path: Path, monkeypatch
+):
+    from datetime import UTC, datetime
+
+    import daybook.model
+    from daybook.events import Bus
+    from daybook.journal import Journal, ObservationDraft, WindowInfo
+    from daybook.model import ScriptedGateway
+
+    config = library_config(tmp_path)
+    journal = Journal(config.home / "journal.db", Bus())
+    now = datetime.now(UTC)
+    journal.add_observation(
+        ObservationDraft(
+            now, WindowInfo("Code", "example.py"), "Editing code.", "", 0, "fixture"
+        )
+    )
+    journal.close()
+    gateway = ScriptedGateway(
+        [
+            json.dumps(
+                {
+                    "segment": {
+                        "mode": "start",
+                        "title": "Implement example",
+                        "kind": "coding",
+                        "intent": "Likely writing code.",
+                    },
+                    "signals": {},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr(daybook.model, "ModelGateway", lambda _: gateway)
+    result = await app.tick_once(config)
+    assert isinstance(result, list) and result
+    assert all(reading["tick"].startswith("tick:") for reading in result)
+    reopened = Journal(config.home / "journal.db", Bus())
+    try:
+        segment = reopened.portal.now().segment
+        assert segment is not None and segment.title == "Implement example"
+    finally:
+        reopened.close()

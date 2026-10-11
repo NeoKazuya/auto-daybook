@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 
 def load(root: Path) -> MusicLibrary:
+    root = root.expanduser().resolve()
     data = tomllib.loads((root / "library.toml").read_text())
     moods = {
         str(name): str(value.get("describe", ""))

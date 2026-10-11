@@ -292,9 +292,14 @@ async def test_player_observes_track_changes_and_recovers_dead_child(
     )
     assert (await player.play_mood("focus", skill="music")).ok
     peer = peers[0]
-    peer.path = str(second)
+    next_track = next(
+        t
+        for t in library.tracks
+        if t.file.startswith("focus/") and t.title != player.status().title
+    )
+    peer.path = str(library.root / next_track.file)
     await original_sleep(0.015)
-    assert player.status().title == "Second track"
+    assert player.status().title == next_track.title
     count = sum(c[0] == "loadfile" for c in peer.commands)
     peer.process.returncode = 1
     await original_sleep(0.015)

@@ -132,7 +132,7 @@ Every model call goes through `ModelGateway.call(priority, prompt)`. The gateway
 | tick | mind | text, 1.5–3K tokens; output schema built from the active signals | none, or low if quality needs it | 2–4 s | 2/min |
 | route | chat | ~300 tokens | none | ~1 s | on demand |
 | recall | chat | up to 8K tokens of notes and totals | none | 4–10 s | on demand |
-| draft skill | chat | ~3K tokens (format guide, catalog, examples) | low | 10–20 s | on demand |
+| draft skill | chat | ~3K tokens (format guide, catalog, plan examples) | none | 10–20 s measured on GX10 | on demand |
 
 **Background load:** typically 5–12 model-seconds per minute; at most about 24 when the screen changes constantly. A chat request waits behind at most one call already running (about 3 s).
 
@@ -163,6 +163,7 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 **`Portal`** (read-only; used by the UI, recall, the mind, and hooks):
 
 - `now() -> Situation`: capture state, open segment, latest observation, latest reading per signal.
+- `latest_tick_evidence_until() -> datetime | None`: the maximum `evidence_until` among surviving committed ticks, including ticks without signal readings, or `None` when no tick survives. Mind reads this journal-owned frontier before model admission and evidence batching. This is a read-only query with no independent cache, so each read reflects the ticks that remain after forget or trim.
 - `segments(range)`, `observations(range, unassigned_only=False)`, `capture_spans(range)`.
 - `search(text, range=None) -> [Hit]`: FTS5 over observation `seen`, `visible_text`, and title, plus segment title and intent.
 - `totals(range, by="kind"|"title"|"app") -> [Total]`. All duration arithmetic lives here; the model never adds up times.
@@ -336,7 +337,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
   A failing step is recorded and the rule continues with its next step. Hook steps time out after 10 s. Nothing reacts while paused.
 - **`draft_skill(request)`.**
-  - The prompt has the format guide, `catalog.describe_for_prompt()`, and the built-in skills verbatim. It produces a declarative skill only, with no hook.
+  - The prompt has the format guide, `catalog.describe_for_prompt()`, and validated declarative built-ins converted to structured plan examples. Invalid files and built-ins containing hooks are excluded from examples. The model returns a declarative plan; code renders the `.skill.md` file, with no hook.
   - If parsing fails, the generator retries once with the errors included. If it still fails, the draft is saved as invalid so the user can fix it.
   - The result is written with `created_by: chat` and the original `request`, in "needs review" status, along with a one-line summary.
 

@@ -9,9 +9,17 @@ from typing import Awaitable, Callable, cast
 import pytest
 from PIL import Image
 
-from daybook.events import Bus
+from daybook.act import Catalog
+from daybook.events import Bus, TickRecorded
 from daybook.journal import Journal, Observation, WindowInfo
-from daybook.model import ModelUnavailable, ObserveReplaced, Prompt, ScriptedGateway
+from daybook.mind import Mind
+from daybook.model import (
+    ModelUnavailable,
+    ObserveReplaced,
+    Priority,
+    Prompt,
+    ScriptedGateway,
+)
 from daybook.sense import (
     PrivacySettings,
     Rect,
@@ -22,6 +30,7 @@ from daybook.sense import (
     gate,
 )
 from daybook.sense._gate import black, changed, excluded_visible
+from daybook.skills import SkillBook
 
 BASE = datetime.now(timezone.utc)
 CODE = WindowInfo("Code", "example.py")
@@ -584,3 +593,134 @@ async def test_same_app_document_change_survives_cooldown(tmp_path):
     await poll(obj, 1)
     await poll(obj, 10)
     assert len(journal.rows) == 2 and journal.rows[-1].window == document
+
+
+@pytest.mark.parametrize(
+    "gap_state,gap_start,resume_at,expected_tick,initial_tick",
+    [
+        ("overlay", 85, 100, 120, False),
+        ("overlay", 3, 5, 30, True),
+        ("paused", 85, 100, 180, False),
+        ("locked", 85, 100, 180, False),
+    ],
+)
+async def test_sense_resume_mind_cadence(
+    tmp_path, monkeypatch, gap_state, gap_start, resume_at, expected_tick, initial_tick
+):
+    # Drive the public Sense -> Mind callback with real journal/skill owners.
+    now = [BASE]
+
+    class SenseDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now[0]
+
+    monkeypatch.setattr("daybook.sense._sense.datetime", SenseDateTime)
+    bus = Bus()
+    journal = Journal(tmp_path / "journal.db", bus)
+    book = SkillBook(
+        tmp_path,
+        tmp_path / "empty-builtins",
+        tmp_path / "journal.db",
+        journal.portal,
+        Catalog((), {}),
+        bus,
+        clear_readings=journal.clear_skill_readings,
+    )
+    screen = FakeScreen()
+    observe_gateway = ScriptedGateway(['{"seen":"code","visible_text":""}'] * 2)
+    tick_gateway = ScriptedGateway(
+        [
+            json.dumps(
+                {
+                    "segment": {
+                        "mode": "continue",
+                        "title": "Work",
+                        "kind": "coding",
+                        "intent": "Implementing",
+                    },
+                    "signals": {},
+                }
+            )
+        ]
+        * (2 if initial_tick else 1)
+    )
+    ticks = []
+
+    async def sleep(seconds: float) -> None:
+        while not events.empty():
+            event = events.get_nowait()
+            if isinstance(event, TickRecorded):
+                ticks.append((now[0] - BASE).total_seconds())
+        if now[0] >= BASE + timedelta(seconds=expected_tick + 1):
+            raise asyncio.CancelledError
+        now[0] += timedelta(seconds=seconds)
+        elapsed = (now[0] - BASE).total_seconds()
+        if elapsed == gap_start:
+            if gap_state == "paused":
+                obj.set_privacy(PrivacySettings(paused=True))
+            else:
+                screen.facts = state(**{gap_state: True})
+        if elapsed == resume_at:
+            obj.set_privacy(PrivacySettings())
+            screen.facts = state()
+        await obj.poll(now[0])
+        await obj.wait_idle()
+        if gap_start <= elapsed < resume_at:
+            assert tick_gateway.priorities == ([Priority.TICK] if initial_tick else [])
+            assert len(observe_gateway.prompts) == 1
+
+    mind = Mind(journal, tick_gateway, book, clock=lambda: now[0], sleep=sleep)
+    obj = Sense(screen, journal, observe_gateway, bus, tmp_path, mind.nudge)
+    try:
+        with bus.subscribe() as events:
+            await obj.poll(now[0])
+            await obj.wait_idle()
+            if initial_tick:
+                assert await mind.tick_now()
+            with pytest.raises(asyncio.CancelledError):
+                await mind.run()
+        assert ticks == ([0, expected_tick] if initial_tick else [expected_tick])
+        assert len(observe_gateway.prompts) == 2
+        assert tick_gateway.priorities == [Priority.TICK] * len(ticks)
+    finally:
+        await obj.close()
+        journal.close()
+
+
+async def test_overlay_resume_nudge_survives_failed_observe(tmp_path):
+    obj, screen, _, _, nudges = sense(
+        tmp_path,
+        [
+            '{"seen":"code","visible_text":""}',
+            ModelUnavailable("timeout"),
+            '{"seen":"code","visible_text":""}',
+        ],
+    )
+    await poll(obj, 0)
+    screen.facts = state(overlay=True)
+    await poll(obj, 1)
+    screen.facts = state()
+    await poll(obj, 2)
+    assert nudges == [False]
+    await poll(obj, 5)
+    assert nudges == [False, True]
+    await poll(obj, 15)
+    assert nudges == [False, True]
+
+
+@pytest.mark.parametrize("interruption", ["paused", "locked"])
+async def test_overlay_resume_nudge_does_not_cross_privacy_gap(tmp_path, interruption):
+    obj, screen, _, _, nudges = sense(tmp_path)
+    await poll(obj, 0)
+    screen.facts = state(overlay=True)
+    await poll(obj, 1)
+    if interruption == "paused":
+        obj.set_privacy(PrivacySettings(paused=True))
+    else:
+        screen.facts = state(locked=True)
+    await poll(obj, 2)
+    obj.set_privacy(PrivacySettings())
+    screen.facts = state()
+    await poll(obj, 3)
+    assert nudges == [False, False]

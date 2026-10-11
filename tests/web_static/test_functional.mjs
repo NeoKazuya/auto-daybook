@@ -93,18 +93,22 @@ async function setup({ developer = false, manualTimers = false } = {}) {
     const root=h('main'); root.document=context.document; const hooks=await m.namespace.default.render(root,new URLSearchParams(params));
     return {root,hooks,ask:async message=>{const input=walk(root).find(x=>x.spec.startsWith('input')); input.value=message; walk(root).find(x=>x.spec.startsWith('form')).onsubmit({preventDefault(){}}); await settle();}};
   }
-  async function app() {
+  async function app({ route = 'daily', waitForBoot = true } = {}) {
     const surfaces=Object.fromEntries(['page','nav','footer','sidebar-foot'].map(id=>[id,h('div')]));
     const pip={dataset:{}};
     for(const element of Object.values(surfaces))element.document=context.document;
     context.document.getElementById=id=>surfaces[id];
     context.document.querySelectorAll=selector=>selector==='.state-pip'?[pip]:[];
-    context.window={scrollTo(){},addEventListener(){}};
-    context.location.hash='#/daily';
-    const module=await load(base+'/app.js');await module.evaluate();
-    return {footer:surfaces.footer,pip,refresh:()=>intervals.at(-1)()};
+    const listeners={};
+    context.window={scrollTo(){},addEventListener:(name,fn)=>{listeners[name]=fn;}};
+    context.location.hash='#/'+route;
+    const module=await load(base+'/app.js'),ready=module.evaluate();
+    if(waitForBoot)await ready;
+    return {root:surfaces.page,footer:surfaces.footer,pip,ready,refresh:()=>intervals.at(-1)(),
+      navigate:route=>{context.location.hash='#/'+route;return listeners.hashchange();}};
   }
   return {api:apiModule.namespace.api,subscribe:apiModule.namespace.subscribe,page,app,streams,channels,calls,toasts,
+    flushEvents:()=>{for(const timer of timers.filter(t=>!t.cancelled&&!t.ran&&t.delay===250)){timer.ran=true;timer.fn();}},
     runNextTimer:()=>{const timer=timers.find(t=>!t.cancelled&&!t.ran);assert.ok(timer,'a debounce is pending');assert.equal(timer.delay,350);timer.ran=true;return timer.fn();},
     setRequest:fn=>{request=fn;}};
 }
@@ -137,8 +141,8 @@ test('delayed skill draft survives a note edit', async()=>{
 test('ordinary journal updates keep recall; note invalidation, other tab and reconnect clear it', async()=>{
   for(const source of ['journal','tab','reconnect']) {
     const x=await setup(); x.setRequest(path=>path==='/api/chat'?answer:{segments:[]});
-    x.subscribe(()=>{}); const p=await x.page('board'); await p.ask('recall');
-    const s=x.streams[0]; s.onopen();
+    x.subscribe(()=>{}); const s=x.streams[0]; s.onopen();
+    const p=await x.page('board'); await p.ask('recall');
     s.listeners.ObservationAdded({data:'{}'}); s.listeners.SegmentChanged({data:'{}'});
     s.listeners.StatusChanged({data:JSON.stringify({component:'journal',status:'notes_changed'})});
     assert.match(p.root.textContent,/4 minutes/);
@@ -1006,3 +1010,214 @@ for(const stage of ['debouncing','checked']) {
     assert.equal(walk(p.root).find(n=>n.textContent==='Approve & enable').disabled,true);
   });
 }
+
+
+const notesInvalidated = {type:'StatusChanged',component:'journal',status:'notes_invalidated'};
+const deliverNotesInvalidated = p => p.hooks.onEvent(new Set(['StatusChanged']),[notesInvalidated]);
+
+for(const kind of ['segment','observation']) {
+  for(const fail of [false,true]) test('Daily explicit invalidation clears a '+kind+' draft even when its fresh GET '+(fail?'fails':'succeeds'),async()=>{
+    const f=await dailyFixture(),older=defer(),fresh=defer(),old=structuredClone(f.resource);
+    let gets=0;
+    f.x.setRequest((path,options)=>{
+      if(path==='/api/forget-all'){f.resource.segments=[];return {ok:true};}
+      if(path.startsWith('/api/timeline'))return ++gets===1?older.promise:fresh.promise;
+      return f.request(path,options);
+    });
+    f.p.hooks.onEvent();await settle();f.open(kind);
+    f.field(kind).value='Private unsaved draft';
+    await f.x.api.forgetAll();deliverNotesInvalidated(f.p);
+    assert.equal(f.field(kind),undefined);
+    assert.doesNotMatch(f.p.root.textContent,/Original title|Original note|Original screen text/);
+    assert.match(f.p.root.textContent,/loading/);
+    assert.ok(f.x.toasts.some(([message])=>/notes changed/i.test(message)));
+    older.resolve(old);await settle();
+    assert.doesNotMatch(f.p.root.textContent,/Original title|Original note/);
+    if(fail)fresh.reject(Error('offline'));else fresh.resolve(structuredClone(f.resource));
+    await settle();
+    assert.equal(gets,2);assert.equal(f.field(kind),undefined);
+    assert.doesNotMatch(f.p.root.textContent,/Original title|Original note|Original screen text/);
+    if(!fail)assert.match(f.p.root.textContent,/No notes yet/);
+  });
+  test('Daily ordinary updates preserve a '+kind+' editor and selection',async()=>{
+    const f=await dailyFixture();f.open(kind);
+    const editor=f.field(kind);editor.value='Keep this draft';editor.focus();editor.setSelectionRange(2,6);
+    const before=f.x.calls.length;
+    for(const event of [
+      {type:'CaptureStateChanged',state:'running'}, {type:'TickRecorded'}, {type:'SegmentChanged'},
+      {type:'StatusChanged',component:'sense',status:'privacy_changed'},
+    ])f.p.hooks.onEvent(new Set([event.type]),[event]);
+    await settle();
+    assert.equal(f.field(kind),editor);assert.equal(editor.value,'Keep this draft');
+    assert.equal(editor.selectionStart,2);assert.equal(editor.selectionEnd,6);
+    assert.equal(f.x.calls.length,before);
+  });
+  for(const stage of ['PATCH','post-save GET'])test('Daily forgotten '+kind+' cannot return from a delayed '+stage+' Save continuation',async()=>{
+    const f=await dailyFixture(),pending=defer();f.open(kind);f.field(kind).value='Private submitted wording';
+    let saved,held=false;
+    f.x.setRequest((path,options)=>{
+      if(path==='/api/forget-all'){f.resource.segments=[];return {ok:true};}
+      if(options.method==='PATCH'){
+        saved=f.request(path,options);return stage==='PATCH'?pending.promise:saved;
+      }
+      if(path.startsWith('/api/timeline')&&stage==='post-save GET'&&!held){held=true;return pending.promise;}
+      return f.request(path,options);
+    });
+    const saving=walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick();
+    await settle();assert.ok(saved);
+    const old=structuredClone(f.resource);
+    await f.x.api.forgetAll();deliverNotesInvalidated(f.p);await settle();
+    assert.equal(f.field(kind),undefined);
+    assert.doesNotMatch(f.p.root.textContent,/Private submitted wording|Original title|Original note/);
+    pending.resolve(stage==='PATCH'?saved:old);await saving;await settle();
+    assert.match(f.p.root.textContent,/No notes yet/);
+    assert.doesNotMatch(f.p.root.textContent,/Private submitted wording|Original title|Original note/);
+  });
+  test('Daily '+kind+' Save clears a deleted editor on 404 even after a missed event',async()=>{
+    const f=await dailyFixture();f.open(kind);f.field(kind).value='Private failed draft';
+    f.x.setRequest((path,options)=>{
+      if(path==='/api/forget-all'){f.resource.segments=[];return {ok:true};}
+      if(options.method==='PATCH')return new Response(JSON.stringify({detail:'not_found'}),{status:404});
+      return f.request(path,options);
+    });
+    await f.x.api.forgetAll();
+    await assert.rejects(walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick(),err=>err.status===404);
+    await settle();
+    assert.equal(f.field(kind),undefined);assert.match(f.p.root.textContent,/No notes yet/);
+    assert.doesNotMatch(f.p.root.textContent,/Original title|Original note|Original screen text/);
+  });
+}
+
+for(const stage of ['boot','navigation'])test('app replays privacy events received during '+stage+' Settings rendering',async()=>{
+  const x=await setup({manualTimers:true}),pending=defer();
+  let privacy={paused:false,exclude_apps:['PrivateApp'],exclude_titles:[]},hold=false,held=false,privacyGets=0;
+  const status={capture:'running',gateway:{model:'test',reachable:true,calls_per_minute:0},music:{}};
+  x.setRequest((path,options)=>{
+    if(path==='/api/privacy'){
+      if(options.method==='PUT')privacy={...privacy,...JSON.parse(options.body)};
+      else privacyGets++;
+      return structuredClone(privacy);
+    }
+    if(path==='/api/status'){
+      if(hold&&!held){held=true;return pending.promise;}
+      return status;
+    }
+    if(path==='/api/skills')return {entries:[],catalog:[]};
+    if(path.startsWith('/api/totals'))return {totals:[]};
+    return {segments:[],capture_spans:[]};
+  });
+  let app,loading;
+  if(stage==='boot'){
+    // The footer owns the first status GET. Hold only Settings' own request.
+    let statusGets=0;
+    x.setRequest((path,options)=>{
+      if(path==='/api/status'&&++statusGets===2){held=true;return pending.promise;}
+      if(path==='/api/privacy'){
+        if(options.method==='PUT')privacy={...privacy,...JSON.parse(options.body)};else privacyGets++;
+        return structuredClone(privacy);
+      }
+      if(path==='/api/status')return status;
+      if(path==='/api/skills')return {entries:[],catalog:[]};
+      if(path.startsWith('/api/totals'))return {totals:[]};
+      return {segments:[],capture_spans:[]};
+    });
+    app=await x.app({route:'settings',waitForBoot:false});loading=app.ready;await settle();
+  }else{
+    app=await x.app();hold=true;loading=app.navigate('settings');await settle();
+  }
+  assert.equal(held,true);assert.match(app.root.textContent,/loading/);
+  assert.ok(x.streams.length,'live subscription must exist during initial rendering');
+  await x.api.setPrivacy({paused:false,exclude_apps:[],exclude_titles:[]});
+  x.streams[0].listeners.StatusChanged({data:JSON.stringify({component:'sense',status:'privacy_changed'})});
+  x.flushEvents();await settle();
+  const before=privacyGets;
+  pending.resolve(status);await loading;await settle();x.flushEvents();await settle();
+  assert.ok(privacyGets>before,'Settings must reread privacy after its queued event');
+  assert.doesNotMatch(app.root.textContent,/PrivateApp/);
+});
+
+test('app abandons a loading navigation and its queued events without refreshing the new page',async()=>{
+  const x=await setup({manualTimers:true}),pending=defer();
+  let hold=false,held=false,timelineGets=0;
+  const status={capture:'running',gateway:{model:'test',reachable:true,calls_per_minute:0},music:{}};
+  x.setRequest(path=>{
+    if(path==='/api/status'){if(hold&&!held){held=true;return pending.promise;}return status;}
+    if(path==='/api/privacy')return {paused:false,exclude_apps:['AbandonedApp'],exclude_titles:[]};
+    if(path==='/api/skills')return {entries:[],catalog:[]};
+    if(path.startsWith('/api/totals'))return {totals:[]};
+    if(path.startsWith('/api/timeline'))timelineGets++;
+    return {segments:[],capture_spans:[]};
+  });
+  const app=await x.app();hold=true;
+  const abandoned=app.navigate('settings');await settle();assert.equal(held,true);
+  x.streams[0].listeners.StatusChanged({data:JSON.stringify({component:'sense',status:'privacy_changed'})});
+  await app.navigate('daily');await settle();const before=timelineGets;
+  x.flushEvents();await settle();
+  assert.equal(timelineGets,before,'the abandoned page batch cannot refresh the new page');
+  pending.resolve(status);await abandoned;await settle();
+  assert.equal(timelineGets,before);assert.match(app.root.textContent,/No notes yet/);
+  assert.doesNotMatch(app.root.textContent,/AbandonedApp/);
+});
+
+
+test('Daily reconnect clears editors after a missed external deletion',async()=>{
+  for(const kind of ['segment','observation']){
+    const f=await dailyFixture();f.open(kind);f.field(kind).value='Private disconnected draft';
+    f.x.setRequest((path,options)=>{
+      if(path==='/api/forget-all'){f.resource.segments=[];return {ok:true};}
+      return f.request(path,options);
+    });
+    await f.x.api.forgetAll();
+    f.p.hooks.onEvent(new Set(['Reconnected']),[{type:'Reconnected'}]);
+    assert.equal(f.field(kind),undefined);
+    assert.doesNotMatch(f.p.root.textContent,/Original title|Original note|Original screen text/);
+    await settle();assert.match(f.p.root.textContent,/No notes yet/);
+  }
+});
+
+
+test('app first stream open revalidates deletions missed during or after its initial snapshot',async()=>{
+  for(const stage of ['loading','rendered']){
+    const x=await setup({manualTimers:true}),pending=defer();
+    let held=false,timeline={segments:[{id:'s1',title:'Startup private title',intent:'Startup intent',kind:'coding',active:60,started_at:'2026-10-11T08:00:00Z',observations:[]}],capture_spans:[]};
+    const old=structuredClone(timeline);
+    x.setRequest((path,options)=>{
+      if(path==='/api/status')return {capture:'running',gateway:{model:'test',reachable:true,calls_per_minute:0},music:{}};
+      if(path==='/api/privacy')return {paused:false,exclude_apps:[],exclude_titles:[]};
+      if(path==='/api/skills')return {entries:[],catalog:[]};
+      if(path==='/api/forget-all'){timeline={segments:[],capture_spans:[]};return {ok:true};}
+      if(path.startsWith('/api/timeline')){if(!held){held=true;return pending.promise;}return structuredClone(timeline);}
+      return {};
+    });
+    const app=await x.app({waitForBoot:false});await settle();assert.equal(held,true);
+    if(stage==='rendered'){
+      pending.resolve(old);await app.ready;await settle();
+      assert.match(app.root.textContent,/Startup private title/);
+    }
+    await x.api.forgetAll();
+    x.streams[0].onopen();x.flushEvents();await settle();
+    if(stage==='loading'){pending.resolve(old);await app.ready;await settle();}
+    assert.match(app.root.textContent,/No notes yet/,stage);
+    assert.doesNotMatch(app.root.textContent,/Startup private title/,stage);
+    assert.equal(x.calls.filter(([path])=>path.startsWith('/api/timeline')).length,2);
+  }
+});
+
+test('Daily own Save still renders saved wording when its invalidation precedes the ACK or followup GET',async()=>{
+  for(const kind of ['segment','observation'])for(const stage of ['PATCH','post-save GET']){
+    const f=await dailyFixture(),pending=defer();f.open(kind);f.field(kind).value='My saved wording';
+    let saved,held=false;
+    f.x.setRequest((path,options)=>{
+      if(options.method==='PATCH'){
+        saved=f.request(path,options);return stage==='PATCH'?pending.promise:saved;
+      }
+      if(path.startsWith('/api/timeline')&&stage==='post-save GET'&&!held){held=true;return pending.promise;}
+      return f.request(path,options);
+    });
+    const saving=walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick();
+    await settle();deliverNotesInvalidated(f.p);await settle();
+    pending.resolve(stage==='PATCH'?saved:structuredClone(f.resource));await saving;await settle();
+    assert.equal(f.field(kind),undefined);assert.match(f.p.root.textContent,/My saved wording/);
+    f.open(kind);assert.equal(f.field(kind).value,'My saved wording');
+  }
+});

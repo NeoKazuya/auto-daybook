@@ -134,9 +134,9 @@ const EVENTS = [
 ];
 
 /**
- * Subscribe to every bus event as `{ type, ...payload }`. After a reconnect it also
- * sends `{ type: 'Reconnected' }`, since events may have been missed. Returns an
- * unsubscribe function.
+ * Subscribe to every bus event as `{ type, ...payload }`. Every connection opens
+ * with `{ type: 'Reconnected' }`: even the first may miss mutations between the
+ * initial HTTP snapshot and the stream opening. Returns an unsubscribe function.
  */
 export function subscribe(onEvent) {
   const receive = (event) => {
@@ -150,11 +150,7 @@ export function subscribe(onEvent) {
     return () => off();
   }
   const es = new EventSource('/api/events?client=ui');
-  let opened = false;
-  es.onopen = () => {
-    if (opened) receive({ type: 'Reconnected' });
-    opened = true;
-  };
+  es.onopen = () => receive({ type: 'Reconnected' });
   for (const name of EVENTS) {
     es.addEventListener(name, (e) => {
       let data = {};

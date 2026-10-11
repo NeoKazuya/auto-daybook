@@ -38,6 +38,7 @@ async function render(root, params) {
 
   let data = null;
   let latestRefresh = null;
+  let notesRevision = {};
 
   async function refresh() {
     const request = {};
@@ -135,17 +136,37 @@ async function render(root, params) {
     await refresh();
   }
 
+  function invalidateNotes() {
+    notesRevision = {};
+    if (editing.size) toast('Notes changed. Your edit was closed and the timeline is reloading.');
+    editing.clear();
+    data = null;
+    count.textContent = '…';
+    list.replaceChildren(skeletons(4));
+  }
+
   async function saveEdit(id, controls, change, message) {
+    const revision = notesRevision;
     for (const control of controls) control.disabled = true;
     try {
       const saved = await change();
+      if (notesRevision !== revision) return;
       // The confirmed PATCH is our fallback if the following GET is unavailable.
       const current = data.segments.flatMap(s => [s, ...s.observations]).find(item => item.id === id);
       if (current) Object.assign(current, saved);
       if (message) toast(message);
       await refresh();
+      if (notesRevision !== revision) return;
       editing.delete(id);
       draw();
+    } catch (err) {
+      if (notesRevision !== revision) return;
+      // A missed deletion event can still be confirmed by the failed PATCH.
+      if (err.status === 404) {
+        invalidateNotes();
+        await refresh();
+      }
+      throw err;
     } finally {
       for (const control of controls) control.disabled = false;
     }
@@ -230,5 +251,14 @@ async function render(root, params) {
     toast('That segment is no longer in the timeline. It may have been deleted.');
   }
 
-  return { onEvent: () => { if (!editing.size) refresh(); } };
+  return { onEvent: (types = new Set(), events = []) => {
+    // Reconnect may have missed a deletion. Ordinary capture/tick updates keep drafts.
+    const invalidated = types.has('Reconnected') || events.some((event) =>
+      event.type === 'StatusChanged' && event.component === 'journal' && event.status === 'notes_invalidated');
+    if (invalidated) {
+      invalidateNotes();
+      return refresh();
+    }
+    if (!editing.size) return refresh();
+  } };
 }

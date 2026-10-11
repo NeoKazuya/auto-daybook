@@ -15,7 +15,7 @@ const PAGES = [contents, daily, board, skills, tags, settings];
 const byRoute = new Map(PAGES.map((p) => [p.route, p]));
 
 const root = document.getElementById('page');
-let current = null;   // { page, hooks: { onEvent?, cleanup? } }
+let current = null;   // { page, hooks, events, pending }
 let status = null;
 
 function parseHash() {
@@ -34,18 +34,23 @@ function renderNav(active) {
 async function show() {
   const { route, params } = parseHash();
   const page = byRoute.get(route) ?? contents;
-  current?.hooks.cleanup?.();
+  current?.hooks?.cleanup?.();
+  clearTimeout(current?.pending);
   document.title = `Daybook · ${page.label}`;
   renderNav(page);
   root.replaceChildren();
   window.scrollTo({ top: 0 });
   // Tabs can change while a page is still loading; only the latest navigation keeps
   // its hooks, and an older one that finishes late is cleaned up instead.
-  const nav = { page, hooks: {} };
+  const nav = { page, hooks: null, events: [], pending: null };
   current = nav;
   const hooks = (await page.render(root, params)) ?? {};
-  if (current === nav) nav.hooks = hooks;
-  else hooks.cleanup?.();
+  if (current === nav) {
+    nav.hooks = hooks;
+    clearTimeout(nav.pending);
+    nav.pending = null;
+    flushEvents(nav);
+  } else hooks.cleanup?.();
 }
 
 /* ---------- footer: capture, model, calls/min ---------- */
@@ -92,22 +97,29 @@ const sourceFlag = h('span.demo-flag', { hidden: true, title: 'Showing example d
 document.getElementById('sidebar-foot').append(h('div', 'LOCAL ONLY · 127.0.0.1'), sourceFlag);
 
 window.addEventListener('hashchange', show);
-await refreshStatus();
-await show();
-setInterval(refreshStatus, 5000);
-
 // Live updates: events are batched for 250 ms, then the page gets the set of event
 // types and payloads that arrived and re-reads what it shows. The footer follows status changes.
 const STATUS_EVENTS = new Set(['CaptureStateChanged', 'SkillsChanged', 'StatusChanged', 'MusicChanged', 'Reconnected']);
-let pending = null;
-let batch = [];
+function flushEvents(nav) {
+  if (!nav.events.length) return;
+  const events = nav.events;
+  nav.events = [];
+  nav.hooks.onEvent?.(new Set(events.map((e) => e.type)), events);
+}
 subscribe((event) => {
   if (STATUS_EVENTS.has(event.type)) refreshStatus();
-  batch.push(event);
-  clearTimeout(pending);
-  pending = setTimeout(() => {
-    const events = batch;
-    batch = [];
-    current?.hooks.onEvent?.(new Set(events.map((e) => e.type)), events);
+  const nav = current;
+  if (!nav) return;
+  nav.events.push(event);
+  clearTimeout(nav.pending);
+  nav.pending = setTimeout(() => {
+    nav.pending = null;
+    if (current === nav && nav.hooks) flushEvents(nav);
   }, 250);
 });
+
+// Subscribe before the first reads: events received while render awaits belong to
+// that navigation and are replayed when its hooks become available.
+await refreshStatus();
+await show();
+setInterval(refreshStatus, 5000);

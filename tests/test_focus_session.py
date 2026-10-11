@@ -138,7 +138,7 @@ def runtime(tmp_path):
     journal = Journal(tmp_path / "journal.db", Bus())
     calls = []
 
-    async def notify(skill, parameters):
+    async def notify(context, parameters):
         calls.append(parameters)
         return Outcome("notify.send", True)
 

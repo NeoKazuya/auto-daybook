@@ -277,7 +277,7 @@ async def test_player_observes_track_changes_and_recovers_dead_child(
             self.path = None
             peers.append(self)
 
-        async def command(self, *args):
+        async def command(self, *args, can_act=None):
             if self.process is None or self.process.returncode is not None:
                 self.process = SimpleNamespace(returncode=None)
                 self.socket.touch()
@@ -329,7 +329,7 @@ async def test_ipc_failure_clears_status_and_recovery_target(
     player = MusicPlayer(library, tmp_path / "home", Bus(), Overlay(Bus()))
     assert (await player.play_mood("focus", skill="music")).ok
 
-    async def failed(self, *args):
+    async def failed(self, *args, can_act=None):
         raise OSError("IPC unavailable")
 
     monkeypatch.setattr(_music.Player, "command", failed)
@@ -620,11 +620,11 @@ async def test_pausing_during_the_wait_stops_the_close(tmp_path):
     portal = Portal_()
     closed = []
 
-    async def wait(skill, args):
+    async def wait(context, args):
         portal.capture = "paused"  # the user pauses Daybook mid-wait
         return Outcome("wait", True)
 
-    async def close(skill, args):
+    async def close(context, args):
         closed.append(args)
         return Outcome("desktop.close_tab", True)
 
@@ -685,7 +685,7 @@ async def test_xdo_close_tab_targets_only_the_checked_window(monkeypatch):
             return screen["class"]
         return None
 
-    async def command(action, *args):
+    async def command(action, *args, can_act=None):
         ran.append(args)
         return _desktop.Outcome(action, True)
 

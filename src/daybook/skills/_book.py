@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import re
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
 from typing import Callable, cast
 
@@ -51,6 +52,7 @@ class Book:
         self.portal, self.catalog, self.bus = portal, catalog, bus
         self.ledger = Ledger(database)
         self.clear_readings = clear_readings
+        self._revisions: dict[str, int] = {}
 
     def sources(self) -> dict[str, SkillSource]:
         sources = {}
@@ -183,6 +185,7 @@ class Book:
             raise SignalLimit("at most 12 active signals")
 
     def replace_approval(self, id: str, hash: str, *, enabled: bool) -> None:
+        self._revisions[id] = self._revisions.get(id, 0) + 1
         self.ledger.set_state(
             id, enabled=False, approved_hash=None, approved_at=None, observed_hash=hash
         )
@@ -209,6 +212,8 @@ class Book:
         return self.entry(id)
 
     def toggle(self, id: str, enabled: bool) -> None:
+        if not enabled:
+            self._revisions[id] = self._revisions.get(id, 0) + 1
         state = self.ledger.state(id)
         assert state is not None
         self.ledger.set_state(
@@ -245,8 +250,18 @@ class Book:
         self.ledger.clear(id, state=True)
         self.bus.publish(SkillsChanged(id))
 
-    def eligible(self, entry: SkillEntry, tick: Tick) -> bool:
+    def eligible(
+        self, entry: SkillEntry, tick: Tick, *, revision: int | None = None
+    ) -> bool:
+        if revision is not None and revision != self._revisions.get(entry.id, 0):
+            return False
         if self.portal.now().capture not in ("running", "overlay"):
+            return False
+        now = datetime.now(timezone.utc)
+        if now > tick.at and any(
+            span.state not in ("running", "overlay")
+            for span in self.portal.capture_spans(TimeRange(tick.at, now))
+        ):
             return False
         try:
             latest = self.entry(entry.id)
@@ -306,7 +321,16 @@ class Book:
                 if interrupted_until is not None
                 else history
             )
-            actions = self.catalog.allowed(skill.allow, skill.id)
+            actions = self.catalog.allowed(
+                skill.allow,
+                skill.id,
+                can_act=partial(
+                    self.eligible,
+                    entry,
+                    tick,
+                    revision=self._revisions.get(skill.id, 0),
+                ),
+            )
             upcoming = None
             if "upcoming" in skill.reads:
                 soonest = self.portal.upcoming(tick.at, limit=1)
@@ -320,7 +344,7 @@ class Book:
                 )
                 if (
                     occurrence is None
-                    or not self.eligible(entry, tick)
+                    or not actions.can_act()
                     or not self.ledger.claim(
                         skill.id, index, occurrence.key, tick.at, rule.cooldown
                     )
@@ -329,7 +353,7 @@ class Book:
                 self.bus.publish(SkillFired(skill.id, index, occurrence.key))
                 outcomes = []
                 for step in rule.steps:
-                    if not self.eligible(entry, tick):
+                    if not actions.can_act():
                         outcomes.append(Outcome(step.action, False, "skill_inactive"))
                         break
                     try:
@@ -351,7 +375,12 @@ class Book:
                                 function(HookContext(self.portal, actions, occurrence)),
                                 timeout=10,
                             )
-                            outcomes.append(Outcome("hook", True))
+                            active = actions.can_act()
+                            outcomes.append(
+                                Outcome(
+                                    "hook", active, "" if active else "skill_inactive"
+                                )
+                            )
                         else:
                             args = {
                                 key: render(
@@ -371,6 +400,8 @@ class Book:
                         outcomes.append(Outcome(step.action, False, "hook_timeout"))
                     except Exception:
                         outcomes.append(Outcome(step.action, False, "step_failed"))
+                    if not actions.can_act():
+                        break
                 self.ledger.finish(skill.id, index, occurrence.key, outcomes)
 
 

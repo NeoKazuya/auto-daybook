@@ -68,7 +68,7 @@ A short completed fullscreen app overlay preserves a duration rule's original oc
 - `$<signal>.for`: the current streak length, rendered like "52 min"
 - `$upcoming.next` (text parameters of a skill with `reads: [upcoming]`): the soonest Upcoming item, rendered like "CSE 130 Assignment 3 (due in 2 h 10 min)", or "nothing due"
 
-**Steps** run in order. A failing step is recorded, and the rule continues with its next step.
+**Steps** run in order. An ordinary failing step is recorded, and the rule continues with its next step. When capture is paused, the skill is disabled, or its approved file changes, eligibility denial stops subsequent steps and hooks. Desktop effects re-check immediately before each helper starts, including all stages of opening a new tab. A helper already started may finish; Daybook suppresses later effects rather than undoing them. Pause/resume and disable/re-enable cannot revive that pending sequence, even when both changes occur between checks. A fresh tick may act normally; the claimed occurrence is not retried.
 
 ### Actions
 
@@ -77,6 +77,21 @@ The action catalog in [ARCHITECTURE.md §6.7](ARCHITECTURE.md#67-act-actions-mus
 For short, casual reminders, use `overlay.show` with `layout: bubble` and conversational `body` text; use `layout: fullscreen` for a reminder that covers the screen. Omitting layout retains fullscreen behavior. Bubble rectangles are masked from capture in RAM; fullscreen pauses capture. The catalog supplies the valid layout values and defaults.
 
 To act on something only after warning about it, show the warning first, then `wait`, then act: for example `overlay.show` (a bubble), `wait: { for: 5s }`, `desktop.close_tab: { title: "*Instagram*" }`. `desktop.close_tab` refuses unless the same skill's warning was actually shown, and a pause or disable during the `wait` stops the close. The built-in `instagram-nudge` skill shows the pattern.
+
+Desktop navigation uses explicit actions and permissions. For example:
+
+```yaml
+do:
+  - desktop.launch: {app: "Visual Studio Code"}
+  - desktop.focus: {app: "Visual Studio Code", title: "*Budget*"}
+  - desktop.open_tab: {url: "https://example.com", app: "Firefox"}
+  - desktop.switch_tab: {tab: "2", app: "Firefox"}
+allow: [desktop.launch, desktop.focus, desktop.open_tab, desktop.switch_tab]
+```
+
+Launch accepts an installed application name or desktop file ID. A unique final word of an installed display name (such as Code or Chrome), or its class name (such as VS Code), also resolves; duplicate matches are refused. Focus also accepts a case-insensitive WM_CLASS glob and an optional window-title glob. Duplicate installed names or multiple non-active matching windows return an ambiguity error; a focus title selector can choose the window. Tab actions default to the active browser; an explicit app selects a running browser window. To target one of several browser windows, focus its title first, then omit the tab action's app.
+
+Tab navigation supports Firefox/LibreWolf and Chrome/Chromium/Brave/Edge using standard Linux shortcuts. `next` and `previous` follow the tab strip; quoted `"1"` through `"8"` select positions, and `last` selects the final tab. Hidden tab titles are not searchable. New-tab URLs must be HTTP/HTTPS; `desktop.open_url` retains file and mailto support. No action closes or quits a whole application.
 
 Every action used in `do` must appear in `allow`. Parameter values are checked against the catalog when the file is parsed; for example, `mood` must be a mood in the library.
 
@@ -117,6 +132,7 @@ it does not make the capability unavailable.
 
 A warning before an action is a best-effort reminder while its visible condition
 is observed. Sampling cannot guarantee catching a quick action or block it.
+Drafts preserve the requested activity, conditions, and named application/window targets.
 Daybook uses only the action catalog. It cannot hear calls, detect voice tone,
 read hidden app state, use private app APIs or keyboard hooks, intercept actions,
 or know feelings that have not been expressed.

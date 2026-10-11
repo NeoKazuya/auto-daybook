@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,17 +27,32 @@ Ask about the user's situation now. Let triggers handle time. For after/end/fini
 Scalar = str | float | bool
 
 
+class DraftMeaning(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    value: str
+    meaning: str
+
+
 class DraftSignal(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    name: str
     ask: str
-    type: str | dict[str, list[str | float]]
-    describe: dict[str, str] | None = None
+    type: Literal["bool", "music.mood", "enum", "number"]
+    values: list[str] | None = None
+    bounds: list[float] | None = Field(default=None, min_length=2, max_length=2)
+    describe: list[DraftMeaning] | None = None
+
+
+class DraftParameter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    value: Scalar
 
 
 class DraftStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: str
-    params: dict[str, Scalar]
+    params: list[DraftParameter]
 
 
 class DraftRule(BaseModel):
@@ -51,7 +67,7 @@ class Draft(BaseModel):
     id: str
     name: str
     goal: str
-    signals: dict[str, DraftSignal]
+    signals: list[DraftSignal]
     rules: list[DraftRule]
     allow: list[str]
     summary: str = Field(max_length=300)
@@ -67,7 +83,10 @@ def render(
     for rule in draft.rules:
         value = {
             "when": rule.when,
-            "do": [{step.action: step.params} for step in rule.steps],
+            "do": [
+                {step.action: {p.name: p.value for p in step.params}}
+                for step in rule.steps
+            ],
         }
         if rule.cooldown is not None:
             value["cooldown"] = rule.cooldown
@@ -76,8 +95,20 @@ def render(
         "id": id,
         "name": draft.name,
         "signals": {
-            name: signal.model_dump(exclude_none=True)
-            for name, signal in draft.signals.items()
+            signal.name: {
+                "ask": signal.ask,
+                "type": {"enum": signal.values or []}
+                if signal.type == "enum"
+                else {"number": signal.bounds or []}
+                if signal.type == "number"
+                else signal.type,
+                **(
+                    {"describe": {d.value: d.meaning for d in signal.describe}}
+                    if signal.describe is not None
+                    else {}
+                ),
+            }
+            for signal in draft.signals
         },
         "rules": rules,
         "allow": draft.allow,
@@ -108,15 +139,42 @@ async def generate(
         data = yaml.safe_load(front)
         data.pop("created_by", None)
         data.pop("request", None)
+        data["signals"] = [
+            {
+                "name": name,
+                "ask": signal["ask"],
+                "type": signal["type"]
+                if isinstance(signal["type"], str)
+                else next(iter(signal["type"])),
+                **(
+                    {"values": signal["type"]["enum"]}
+                    if isinstance(signal["type"], dict) and "enum" in signal["type"]
+                    else {"bounds": signal["type"]["number"]}
+                    if isinstance(signal["type"], dict)
+                    else {}
+                ),
+                **(
+                    {
+                        "describe": [
+                            {"value": value, "meaning": meaning}
+                            for value, meaning in signal["describe"].items()
+                        ]
+                    }
+                    if "describe" in signal
+                    else {}
+                ),
+            }
+            for name, signal in data["signals"].items()
+        ]
         for rule in data["rules"]:
             rule["steps"] = [
                 {
                     "action": action,
-                    "params": {
-                        name: value
+                    "params": [
+                        {"name": name, "value": value}
                         for name, value in params.items()
                         if book._book.catalog.specs[action].parameters[name].required
-                    },
+                    ],
                 }
                 for step in rule.pop("do")
                 for action, params in step.items()
@@ -124,7 +182,7 @@ async def generate(
         examples.append(
             json.dumps({**data, "goal": goal.strip(), "summary": data["name"]})
         )
-    user = f"The code renders the file; return a JSON instance, never a schema ($defs/properties/type) or YAML/text field. Rule steps use action and params instead of the file format do mappings.\nFormat guide:\n{GUIDE}\nAction catalog:\n{book._book.catalog.describe_for_prompt()}\nBuilt-in plan instances:\n{chr(10).join(examples)}\nUser request:\n{request}\nFor a reminder with no requested duration, params contains title/body only. Use $signal.for only for a held-value trigger, not a becomes edge. Return the instance with no schema fields."
+    user = f"The code renders the file; return a JSON instance, never a schema ($defs/properties/type) or YAML/text field. Plan signals are a list of name/ask/type objects; enum uses values, number uses two bounds, optional describe is a list of value/meaning objects. Rule steps use action and params; params is a list of name/value objects, never a map. The renderer converts these lists to the file format mappings.\nFormat guide:\n{GUIDE}\nAction catalog:\n{book._book.catalog.describe_for_prompt()}\nBuilt-in plan instances:\n{chr(10).join(examples)}\nUser request:\n{request}\nFor a reminder with no requested duration, the params list contains title/body entries only. Use $signal.for only for a held-value trigger, not a becomes edge. Return the instance with no schema fields."
     feedback = ""
     summary = "Draft skill"
     text = ""
@@ -133,7 +191,7 @@ async def generate(
         result = await gateway.call(
             Priority.INTERACTIVE,
             Prompt(
-                system="Choose a small declarative skill plan using the supplied grammar/catalog. Return the structured plan instance only, never schema definitions; code will render YAML. In each rule, steps are action+params objects. Use the fewest questions and rules needed. Reason briefly, then answer. No hook or executable code.",
+                system="Choose a small declarative skill plan using the supplied grammar/catalog. Return the structured plan instance only, never schema definitions; code will render YAML. In each rule, steps are action+params objects, and signals and params are lists of named objects. Use the fewest questions and rules needed. Reason briefly, then answer. No hook or executable code.",
                 user=user + feedback,
                 output=Draft,
                 effort="none",

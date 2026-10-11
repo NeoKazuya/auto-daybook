@@ -91,8 +91,30 @@ shows the overlay after it ends. Code renders the model's declarative plan as
 `.skill.md`, adds chat provenance, and applies the ordinary parser and approval
 flow. Hooks remain unavailable to generated skills.
 
-This measurement covers generation and saving, not delivery of the review card
-through chat and the UI. Optional timing, additional steps, and capability choices
-can still vary between model outputs and are exposed for review; code preserves
-catalog defaults when optional arguments are omitted. The replay signal-quality
-gate and its tick-only `low` fallback are unchanged.
+A subsequent actual HTTP `POST /api/chat` request delivered the inactive review
+response in 6.5 seconds, including generation and saving; exact-hash approval and
+external-edit invalidation also passed. The private plan uses lists of named
+signals and arguments because the OpenAI strict schema closes objects and cannot
+represent arbitrary map keys. The saved file and public API remain unchanged.
+UI rendering is still unproven. Optional timing, additional steps, and capability
+choices can vary between model outputs and are exposed for review; code preserves
+catalog defaults when optional arguments are omitted.
+
+## GX10 tick quality (2026-10-10)
+
+The four fixed recordings cover Code to technical PDF reading, a meeting to Code,
+a 185-second Code focus streak, and lock/exclusion periods. Labels were fixed
+before benchmarking. The initial effort `none` run matched all three signals on
+5/13 running ticks (38.5%). The prescribed `low` fallback failed four of five
+completed labelled ticks by exhausting 1,500 output tokens on reasoning without
+a JSON answer and reaching the 40-second timeout; even perfect remaining ticks
+could not reach 80%.
+
+A generic prompt/schema revision requires every nullable signal key, separates
+current facts from historical rollups, and requires a segment decision for new
+evidence. Its final effort `none` run matched all three signals on 11/13 running
+ticks (84.6%) and activity kind on 13/13 (100%) in 57.2 seconds for the complete
+batch. The meeting and focus reminders each fired once; locked and excluded
+periods made zero model calls. The earlier failed runs remain recorded; this is
+a measured pass on these recordings, not a guarantee of model accuracy on every
+screen.

@@ -30,6 +30,33 @@ Remind me to stand after a meeting.
 def payload(text, summary):
     front, goal = text[4:].split("\n---", 1)
     data = yaml.safe_load(front)
+    data["signals"] = [
+        {
+            "name": name,
+            "ask": signal["ask"],
+            "type": signal["type"]
+            if isinstance(signal["type"], str)
+            else next(iter(signal["type"])),
+            **(
+                {"values": signal["type"]["enum"]}
+                if isinstance(signal["type"], dict) and "enum" in signal["type"]
+                else {"bounds": signal["type"]["number"]}
+                if isinstance(signal["type"], dict)
+                else {}
+            ),
+            **(
+                {
+                    "describe": [
+                        {"value": value, "meaning": meaning}
+                        for value, meaning in signal["describe"].items()
+                    ]
+                }
+                if "describe" in signal
+                else {}
+            ),
+        }
+        for name, signal in data["signals"].items()
+    ]
     for rule in data["rules"]:
         rule["steps"] = []
         for step in rule.pop("do"):
@@ -37,7 +64,12 @@ def payload(text, summary):
             rule["steps"].append(
                 {
                     "action": action,
-                    "params": params if isinstance(params, dict) else {"value": params},
+                    "params": [
+                        {"name": name, "value": value}
+                        for name, value in (
+                            params if isinstance(params, dict) else {"value": params}
+                        ).items()
+                    ],
                 }
             )
     return json.dumps({**data, "goal": goal.strip(), "summary": summary})
@@ -151,3 +183,56 @@ async def test_builtin_hook_and_invalid_file_do_not_break_declarative_generation
     entry, _ = await draft_skill("remind", book=skills, gateway=gateway)
     assert entry.status == "needs_review"
     assert "developer-hook" not in gateway.prompts[0].user
+
+
+async def test_openai_draft_schema_does_not_erase_named_questions_or_arguments(
+    tmp_path,
+):
+    from daybook.model import ModelConfig
+    from daybook.model._gateway import request_body
+
+    skills = book(tmp_path)
+    gateway = ScriptedGateway([payload(TEXT, "Stand after meetings")])
+    entry, _ = await draft_skill("remind", book=skills, gateway=gateway)
+    assert entry.status == "needs_review"
+    schema = request_body(ModelConfig(dialect="openai"), gateway.prompts[0])[
+        "response_format"
+    ]["json_schema"]["schema"]
+
+    def check_objects(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                # Strict output closes objects: names must remain representable
+                # through declared properties instead of erased map keys.
+                assert node.get("properties"), node
+                assert node["additionalProperties"] is False
+            for value in node.values():
+                check_objects(value)
+        elif isinstance(node, list):
+            for value in node:
+                check_objects(value)
+
+    check_objects(schema)
+
+
+async def test_list_plan_renders_enum_descriptions_and_numeric_bounds(tmp_path):
+    skills = book(tmp_path)
+    text = TEXT.replace(
+        "    type: bool",
+        "    type: {enum: [active, inactive]}\n"
+        "    describe: {active: Meeting in progress, inactive: Other visible activity}\n"
+        "  level:\n"
+        "    ask: What is the current effort level?\n"
+        "    type: {number: [0, 10]}",
+    ).replace("in_meeting becomes false", "in_meeting becomes inactive")
+    gateway = ScriptedGateway([payload(text, "Typed draft")])
+    entry, _ = await draft_skill("remind", book=skills, gateway=gateway)
+    assert entry.status == "needs_review" and entry.skill
+    meeting, level = entry.skill.signals
+    assert meeting.type == "enum" and meeting.values == ("active", "inactive")
+    assert meeting.descriptions == {
+        "active": "Meeting in progress",
+        "inactive": "Other visible activity",
+    }
+    assert level.type == "number" and level.minimum == 0 and level.maximum == 10
+    assert entry.skill.rules[0].steps[0].arguments["minutes"] == 1

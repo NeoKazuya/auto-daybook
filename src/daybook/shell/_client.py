@@ -63,16 +63,22 @@ class Backend:
 
     def set_paused(self, paused: bool) -> dict[str, Any]:
         """Change only `paused` (PUT /api/privacy); returns the saved settings."""
-        current = self.privacy()
-        # PrivacyPut forbids the response-only fields, so send exactly its three.
-        body = {
-            "paused": paused,
-            "exclude_apps": current["exclude_apps"],
-            "exclude_titles": current["exclude_titles"],
-        }
-        response = self.http.put("/api/privacy", json=body, headers=self._headers())
-        response.raise_for_status()
-        return response.json()
+        for attempt in range(3):
+            current = self.privacy()
+            expected = {
+                key: current[key]
+                for key in ("paused", "exclude_apps", "exclude_titles")
+            }
+            response = self.http.put(
+                "/api/privacy",
+                json={**expected, "paused": paused, "expected": expected},
+                headers=self._headers(),
+            )
+            if response.status_code == 409 and attempt < 2:
+                continue
+            response.raise_for_status()
+            return response.json()
+        raise AssertionError("unreachable")
 
     def dismiss(self, id: str) -> bool:
         """POST the dismiss, retrying once; the window is already hidden."""

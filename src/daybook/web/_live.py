@@ -259,6 +259,10 @@ class LiveAPI:
         )
 
     async def set_privacy(self, body: w.PrivacyPut) -> w.PrivacyResponse:
+        # Compare and persist synchronously: no other request can interleave.
+        current = w.PrivacySettings.model_validate(self.services.sense.privacy)
+        if body.expected is not None and body.expected != current:
+            raise HTTPException(409, "privacy_conflict")
         self.services.sense.set_privacy(
             PrivacySettings(
                 body.paused, tuple(body.exclude_apps), tuple(body.exclude_titles)

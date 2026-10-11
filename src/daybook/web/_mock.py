@@ -364,7 +364,12 @@ class MockAPI:
         return w.example(w.PlainResponse)
 
     def set_privacy(self, body: w.PrivacyPut) -> w.PrivacyResponse:
-        self.privacy = w.PrivacyResponse(**body.model_dump())
+        current = w.PrivacySettings.model_validate(
+            self.privacy.model_dump(include=set(w.PrivacySettings.model_fields))
+        )
+        if body.expected is not None and body.expected != current:
+            raise HTTPException(409, "privacy_conflict")
+        self.privacy = w.PrivacyResponse(**body.model_dump(exclude={"expected"}))
         next_state = "paused" if body.paused else "running"
         if next_state != self.status.capture:
             now = datetime.now(timezone.utc)

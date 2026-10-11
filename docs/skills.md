@@ -7,7 +7,7 @@ Changing this format is a shared-contract change (see [CONTRIBUTING.md](../CONTR
 ## Files
 
 - `<id>.skill.md`: YAML front matter, followed by a Markdown body. The body is the goal, written in plain words for the user and the model.
-- `<id>.hook.py` (optional, developer-written only): async functions that rules can call as steps.
+- `<id>.hook.py` (optional, built-in skills only): async functions that rules can call as steps. Hooks are unrestricted Python, so they're allowed only in `skills/builtin/`, where they go through the repo's PR review. `.hook.py` files anywhere else are never loaded.
 - Built-in skills live in the repo's `skills/builtin/`. User and chat-made skills live in `$DAYBOOK_HOME/skills/`.
 
 ## Front matter
@@ -90,7 +90,7 @@ Every action used in `do` must appear in `allow`. Parameter values are checked a
 - an `allow` entry isn't in the catalog
 - an argument doesn't fit its parameter's type
 - a signal limit is exceeded (more than 4 in the skill, or more than 12 across active skills)
-- a hook step has no matching function in `<id>.hook.py`, or appears in a chat-made skill
+- a hook step appears in a skill that isn't a built-in (any user or chat-made skill), or has no matching function in `<id>.hook.py`
 
 An invalid file is still saved, and shows as **invalid** in the UI so it can be fixed.
 

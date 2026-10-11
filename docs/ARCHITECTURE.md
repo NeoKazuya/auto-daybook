@@ -103,7 +103,7 @@ All notes live in one SQLite file, `$DAYBOOK_HOME/journal.db`, in WAL mode with 
 | `Segment` | `id`, `title`, `kind: ActivityKind`, `intent`, `authored: model\|user`, `open`; derived: `started_at`, `ended_at`, `active`, `observations` | **The interpretation.** Times are derived from member observations at read time and never stored, so deleting an observation shrinks its segment. Once a user edits the text, `authored = user` and ticks never overwrite it |
 | `SignalReading` | `signal: SignalId(skill, name)`, `value: bool\|str\|float\|None`, `at`, `tick` | One row per signal per tick. `None` means the model couldn't tell or answered outside the type. "Held for 50 minutes" is computed from readings, so it survives a restart |
 | `CaptureSpan` | `state: running\|paused\|locked\|withheld\|overlay`, `start`, `end` | Why capture was or wasn't happening. The timeline shows gaps honestly, and recall won't invent activity inside them |
-| `Tick` | `at`, `observations`, `segment: Continue\|Start`, `readings` | Applied in one transaction. Unique on its newest observation, so re-applying is a no-op. Observations deleted mid-tick are skipped |
+| `Tick` | `at`, `epoch`, `evidence_until`, `observations` (may be empty), `segment: Continue\|Start` (or none), `readings` | Applied in one transaction. Unique on `evidence_until`, the newest `last_seen_at` it read, so re-applying is a no-op. A tick with no new observations still writes readings, which is how streaks keep growing on a still screen. Rejected whole if `epoch` is older than the journal's forget epoch |
 | `SkillState` | `skill`, `enabled`, `approved_hash` (or none), `at` | Enablement and approval are stored separately. A skill is **active** only if `enabled` is true *and* its current hash is approved. Disabling keeps the approval, so re-enabling needs no new review; any edit changes the hash, so the skill needs review again |
 | `Firing` | `skill`, `rule`, `key`, `at`, `outcomes` | Unique on (skill, rule, key). This makes each rule fire at most once per occurrence |
 
@@ -172,12 +172,14 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 **`Journal`** (writes):
 
 - **sense:** `add_observation`, `extend_observation`, `set_capture_state` (idempotent).
-- **mind:** `record_tick` (one transaction; idempotent) and `close_open_segment`.
+- **mind:** `record_tick` (one transaction; idempotent; rejected if started before the last forget) and `close_open_segment`.
 - **web, on user request:**
   - `edit_segment` (sets `authored=user`), `edit_observation`
   - `forget_observation`, `forget_segment` (also deletes its observations), `forget_range`, `forget_all`
 
 Every commit publishes a domain event on the bus.
+
+**Forget barrier.** The journal keeps a **forget epoch** that every forget increments in the same transaction as the delete. Sense and mind read `journal.epoch` when a model call starts and pass it with the result (`add_observation(draft, epoch)`, `Tick.epoch`). The journal rejects any write whose epoch is older, so a result computed from content that was just forgotten can't be written back. Rejections are logged as `discarded_after_forget` and published as a status event.
 
 **Done when:**
 
@@ -185,6 +187,8 @@ Every commit publishes a domain event on the bus.
 - `record_tick` is shown idempotent: applying it twice gives one result, and observations deleted mid-tick are skipped.
 - Deleting an observation shrinks its segment's derived times. Deleting a segment removes its observations and their FTS rows.
 - A user-authored segment survives a later `Continue`.
+- A tick or observation started before a `forget_range` is rejected after it, and nothing from the forgotten range reappears.
+- A tick with no new observations writes readings and no segment change.
 - `context()` respects its budget and includes capture spans.
 - `totals()` matches hand-computed durations on a fixture.
 
@@ -234,7 +238,7 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
 2. **Thumbnail.** Grab a 32×18 grayscale thumbnail. If it's black → `LOCKED`.
 3. **Keep time continuous.** Every poll that passes the gate extends the latest observation (`extend_observation`), whether or not the screen changed. An observation therefore covers the time until the next one starts, and totals don't lose the seconds between a change and the next model call.
 4. **New observation** if the window changed or the thumbnail differs by 3% or more, and at least 10 s have passed since the last observe (an app switch skips the wait). Call the gateway with an OBSERVE builder. The builder rechecks the gate, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it re-lists the windows.** If the window set changed, it discards the frame.
-5. **Write the result.** `add_observation`, then `mind.nudge(app_switched)`. A result is discarded if the consent generation changed while it was in flight (see [§7](#7-privacy)).
+5. **Write the result.** `add_observation(draft, epoch)`, then `mind.nudge(app_switched)`. A result is discarded if the consent generation changed while it was in flight (see [§7](#7-privacy)), and the journal rejects it if a forget happened since the call started.
 
 **Observe prompt:** describe only what's visible, in 1–2 sentences, plus up to 300 characters of salient on-screen text. No guesses about goals or feelings; that's the tick's job. The window app and title are given to the model as facts.
 
@@ -269,7 +273,8 @@ Our overlay is recognized by `_NET_WM_PID` matching the shell process that `dayb
 
 - A tick runs every 90 s, or 20 s after an app switch (or after an overlay is dismissed).
 - Ticks are never less than 30 s apart.
-- A tick runs only when there are unassigned observations: no new evidence means no tick, no readings, and no firings.
+- A tick runs only when there is new evidence since the last tick: either new unassigned observations, or the latest observation was extended (the user is still there on an unchanged screen). No new evidence (locked, paused, withheld, overlay up, or away) means no tick, no readings, and no firings.
+- When there are no new observations, the tick still answers every signal and writes readings, but makes no segment decision. That keeps `is … for` streaks and `every` triggers working while someone reads or types on a still screen.
 - After a gap longer than 5 minutes, the open segment is closed.
 
 **Tick prompt** (text only, ~1.5–3K tokens):
@@ -277,7 +282,7 @@ Our overlay is recognized by `_NET_WM_PID` matching the shell process that `dayb
 - the rules for segments: prefer `Continue` unless the task clearly changed; state intent briefly, and hedge when unsure
 - `portal.context(last 30 min, detail="segments")` for continuity
 - the open segment and its last 3 observations
-- the new observations, with times and window facts
+- the new observations, with times and window facts, or, if there are none, a note that the screen has stayed the same since `<time>`
 - one line per active question, for example `break.focused (bool): Is the user doing sustained, focused work …?`. Enum lines list each value with its description
 
 The output model is built per tick from the active questions, so the JSON schema constrains each signal's type.
@@ -307,7 +312,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
   - arguments match the catalog's parameter types, including catalog types such as `music.mood`
   - every referenced signal is declared
   - a skill has at most 4 signals, and there are at most 12 active signals overall
-  - a hook step has a matching function in `<id>.hook.py`
+  - a hook step appears only in a built-in skill (loaded from `skills/builtin/` and unmodified from the committed version), and has a matching function in `<id>.hook.py`. Hooks in user or chat-made skills are parse errors, and `.hook.py` files outside `skills/builtin/` are never loaded
 - **`evaluate(rule, history, max_gap=5 min, now) -> Occurrence | None`.** Pure. It covers the four trigger forms and the keys that make firing idempotent.
 - **Approval and enablement** (stored separately, in `skill_state`).
   - A skill is active only if it is enabled *and* `sha256(skill file + hook file)` is approved.
@@ -483,7 +488,7 @@ Each control is enforced at one boundary:
 | Exclusions | `sense.gate` | Checked against every viewable window before any pixels are read, and rechecked after the grab. Withheld time is a `WITHHELD` capture span. Excluded window titles are never stored or logged. Changing exclusions increments the consent generation |
 | Locked screen | `sense.gate` | `LockedHint`, an empty active window, an unreadable state, or a black thumbnail all count as locked. Fails closed |
 | Screenshots | `sense` + `model` | Frames exist only as bytes inside the observe builder and the HTTP request. Nothing is queued or written to disk. `debug.keep_frames` is off by default and shown in the UI if turned on |
-| Edit / delete notes | `journal` | Edits mark segments as user-authored. Deletion of an observation, a segment, a time range, or everything is immediate, with `secure_delete=ON`. A deleted observation can't come back through a later tick |
+| Edit / delete notes | `journal` | Edits mark segments as user-authored. Deletion of an observation, a segment, a time range, or everything is immediate, with `secure_delete=ON`. A deleted observation can't come back through a later tick, and the forget epoch makes the journal reject any observe or tick result that started before the forget |
 | Logs | every module | Logs hold timings, states, IDs, and error kinds. Never prompts, frames, titles, or note text |
 | Local API | `web` | Loopback only, plus the per-launch token and `Origin` check |
 | Model server | setup | Request logging off on Ollama/vLLM, verified in [setup.md](setup.md) |
@@ -618,7 +623,7 @@ The system is finished when all of these pass live on the GX10, with the real mo
    - **Pause** (tray and web) stops capture within 5 s, and no observation is written for work started before the pause.
    - **Exclusions:** a password manager visible in the background withholds capture.
    - **Locked screen:** a locked screen writes no observations.
-   - **No screenshots on disk:** `find $DAYBOOK_HOME /tmp -newer <start> -name '*.jpg' -o -name '*.png'` finds nothing.
+   - **No screenshots on disk:** `find $DAYBOOK_HOME /tmp -newer <start> \( -name '*.jpg' -o -name '*.png' \)` finds nothing.
    - **Forgetting:** "forget last 15 minutes" removes those notes from the timeline and from search.
 7. **Offline:** with the network disabled, items 1–5 still work.
 8. **Budget:** the footer shows at most 8 background calls per minute during normal use.

@@ -307,3 +307,28 @@ async def test_player_observes_track_changes_and_recovers_dead_child(
     assert player.status().playing
     await player.close()
     assert peer.process is None
+
+
+@pytest.mark.parametrize("operation", ["stop", "switch"])
+async def test_ipc_failure_clears_status_and_recovery_target(
+    library, tmp_path, monkeypatch, operation
+):
+    from daybook.act import _music
+
+    player = MusicPlayer(library, tmp_path / "home", Bus(), Overlay(Bus()))
+    assert (await player.play_mood("focus", skill="music")).ok
+
+    async def failed(self, *args):
+        raise OSError("IPC unavailable")
+
+    monkeypatch.setattr(_music.Player, "command", failed)
+    result = (
+        await player.stop()
+        if operation == "stop"
+        else await player.play_mood("calm", skill="manual", min_dwell=0)
+    )
+    assert not result.ok
+    assert not player.status().playing
+    assert player.status().mood is None
+    assert not player._player.playlist
+    await player.close()

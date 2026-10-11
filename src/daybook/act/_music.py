@@ -227,6 +227,7 @@ class Player:
             except (OSError, ValueError, TimeoutError):
                 if self.real_effects:
                     await self.mpv.close()
+                self.playlist = ()
                 self.current = MusicStatus()
                 self.bus.publish(MusicChanged(None, None))
                 return Outcome("music.play_mood", False, "player_unavailable")
@@ -248,6 +249,10 @@ class Player:
                 if self.current.playing:
                     await self.command("stop")
             except (OSError, ValueError, TimeoutError):
+                if self.real_effects:
+                    await self.mpv.close()
+                self.current = MusicStatus()
+                self.bus.publish(MusicChanged(None, None))
                 return Outcome("music.stop", False, "player_unavailable")
             self.current = MusicStatus()
             self.bus.publish(MusicChanged(None, None))

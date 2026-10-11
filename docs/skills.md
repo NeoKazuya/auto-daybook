@@ -132,7 +132,7 @@ Play local music that matches what I'm doing, and change it when my activity cha
 Focus music while I code or debug, calm music while I read, break music when I'm not working.
 ```
 
-`mood updates` fires on every tick. `play_mood` does nothing if that mood is already playing, and waits out the 60 s `min_dwell` before switching, so the music doesn't flip back and forth.
+`mood updates` fires on every tick. `play_mood` does nothing if that mood is already playing, and won't change this skill's own choice again within the 60 s `min_dwell`, so the music doesn't flip back and forth. The dwell counts only this skill's changes, so after a break the music skill can switch back right away.
 
 ### `break`
 

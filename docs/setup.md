@@ -37,7 +37,8 @@ Everyone shares the `asus` Unix account, so a single `gh auth login` would make 
 
 ```sh
 # in your own tmux session
-export GH_TOKEN=<your personal token with repo scope>
+read -rs -p 'GitHub token: ' GH_TOKEN && export GH_TOKEN   # hidden prompt: keeps the token out of the shared shell history
+# use a fine-grained token limited to NeoKazuya/auto-daybook (contents + pull requests + issues)
 gh auth status
 ```
 
@@ -47,6 +48,7 @@ gh auth status
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh     # installs uv to ~/.local/bin
+source "$HOME/.local/bin/env"                      # put uv on PATH in this shell
 gh repo clone NeoKazuya/auto-daybook ~/auto-daybook   # private repo: uses GH_TOKEN from step 3
 cd ~/auto-daybook && uv sync                        # Python 3.12 + dependencies, including PySide6-Essentials (~84 MB)
 ```

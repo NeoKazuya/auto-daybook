@@ -1,6 +1,7 @@
 """python -m daybook.shell --port 8765
 
 Started by daybookd (with DAYBOOK_TOKEN) or by hand (token from $DAYBOOK_HOME/token).
+Exits with wire.SHELL_QUIT_EXIT_CODE only when the user picks Quit in the tray.
 """
 
 from __future__ import annotations
@@ -19,13 +20,15 @@ def main() -> int:
     # X11 WM_CLASS comes from argv[0] and the application name; sense matches
     # "daybook-shell" (and our PID) to report the overlay capture state.
     sys.argv[0] = "daybook-shell"
-    from PySide6.QtGui import QGuiApplication
+    # QApplication rather than QGuiApplication: the tray menu is a widget.
+    from PySide6.QtWidgets import QApplication
 
     from ._app import OverlayBridge, build, load_fonts
     from ._client import Backend, read_token
     from ._controller import OverlayController
+    from ._tray import Tray
 
-    app = QGuiApplication(sys.argv)
+    app = QApplication(sys.argv)
     app.setApplicationName("daybook-shell")
     app.setDesktopFileName("daybook-shell")
     app.setQuitOnLastWindowClosed(False)
@@ -35,6 +38,8 @@ def main() -> int:
     serif, mono = load_fonts()
     bridge = OverlayBridge(OverlayController(), backend, serif, mono)
     engine, _window, _bubble = build(bridge)
+    tray = Tray(backend)
+    bridge.incoming.connect(tray.receive)
 
     stop = threading.Event()
     thread = threading.Thread(
@@ -51,6 +56,7 @@ def main() -> int:
         return app.exec()
     finally:
         stop.set()
+        tray.icon.hide()
         del engine
 
 

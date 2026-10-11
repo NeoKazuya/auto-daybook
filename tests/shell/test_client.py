@@ -1,3 +1,4 @@
+import json
 import threading
 
 import httpx
@@ -93,3 +94,52 @@ def test_run_resyncs_from_status_then_delivers_events():
     Backend(8765, "t", http).run(statuses.append, on_event, stop)
     assert statuses == [{"overlay": None, "capture": "running"}]
     assert events == ["OverlayShown", "OverlayHidden"]
+
+
+def test_set_paused_changes_only_paused_with_token_and_origin():
+    seen = []
+    saved = {
+        "paused": False,
+        "exclude_apps": ["keepassxc"],
+        "exclude_titles": ["*Bank*"],
+        "keep_frames": False,
+        "deletion_pending": False,
+        "screenshots_stored": "none",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.method == "PUT":
+            return httpx.Response(200, json={**saved, **json.loads(request.content)})
+        return httpx.Response(200, json=saved)
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://x")
+    result = Backend(8765, "t0k", http).set_paused(True)
+    assert result["paused"] is True
+    get, put = seen
+    assert (get.method, get.url.path) == ("GET", "/api/privacy")
+    assert (put.method, put.url.path) == ("PUT", "/api/privacy")
+    assert json.loads(put.content) == {
+        "paused": True,
+        "exclude_apps": ["keepassxc"],
+        "exclude_titles": ["*Bank*"],
+    }
+    assert put.headers["X-Daybook-Token"] == "t0k"
+    assert put.headers["Origin"] == "http://127.0.0.1:8765"
+
+
+def test_run_reports_a_lost_stream():
+    stop = threading.Event()
+    statuses, events = [], []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    def on_event(name, data):
+        events.append(name)
+        stop.set()
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://x")
+    Backend(8765, "t", http).run(statuses.append, on_event, stop)
+    assert statuses == []
+    assert events == ["Disconnected"]

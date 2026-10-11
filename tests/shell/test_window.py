@@ -1,16 +1,12 @@
 """Load the real QML offscreen and drive it the way the backend would."""
 
-import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from PySide6.QtCore import QObject, QPointF
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-qt_gui = pytest.importorskip("PySide6.QtGui")
-from PySide6.QtCore import QObject, QPointF  # noqa: E402
-
-from daybook.shell._app import FONTS, OverlayBridge, build, load_fonts  # noqa: E402
-from daybook.shell._controller import OverlayController  # noqa: E402
+from daybook.shell._app import FONTS, OverlayBridge, build, load_fonts
+from daybook.shell._controller import OverlayController
 
 
 class FakeBackend:
@@ -20,11 +16,6 @@ class FakeBackend:
     def dismiss(self, id: str) -> bool:
         self.dismissed.append(id)
         return True
-
-
-@pytest.fixture(scope="module")
-def app():
-    return qt_gui.QGuiApplication.instance() or qt_gui.QGuiApplication([])
 
 
 def text(window, name: str) -> str:

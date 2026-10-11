@@ -1,4 +1,4 @@
-"""The shell's only link to daybookd: GET /api/status, the SSE stream, and dismiss.
+"""The shell's only link to daybookd: status, the SSE stream, dismiss, and pause.
 
 Runs in a background thread; callbacks are handed to Qt by the caller.
 """
@@ -48,14 +48,35 @@ class Backend:
         self.token = token
         self.http = http or httpx.Client(base_url=self.origin, timeout=5)
 
+    def _headers(self) -> dict[str, str]:
+        return {"X-Daybook-Token": self.token, "Origin": self.origin}
+
     def status(self) -> dict[str, Any]:
         response = self.http.get("/api/status")
         response.raise_for_status()
         return response.json()
 
+    def privacy(self) -> dict[str, Any]:
+        response = self.http.get("/api/privacy")
+        response.raise_for_status()
+        return response.json()
+
+    def set_paused(self, paused: bool) -> dict[str, Any]:
+        """Change only `paused` (PUT /api/privacy); returns the saved settings."""
+        current = self.privacy()
+        # PrivacyPut forbids the response-only fields, so send exactly its three.
+        body = {
+            "paused": paused,
+            "exclude_apps": current["exclude_apps"],
+            "exclude_titles": current["exclude_titles"],
+        }
+        response = self.http.put("/api/privacy", json=body, headers=self._headers())
+        response.raise_for_status()
+        return response.json()
+
     def dismiss(self, id: str) -> bool:
         """POST the dismiss, retrying once; the window is already hidden."""
-        headers = {"X-Daybook-Token": self.token, "Origin": self.origin}
+        headers = self._headers()
         for _ in range(2):
             try:
                 response = self.http.post(f"/api/overlay/{id}/dismiss", headers=headers)
@@ -71,7 +92,10 @@ class Backend:
         on_event: Callable[[str, dict[str, Any]], None],
         stop: threading.Event,
     ) -> None:
-        """Stay connected until `stop` is set, resyncing from status on each connect."""
+        """Stay connected until `stop` is set, resyncing from status on each connect.
+
+        Each time the stream is lost, `on_event` gets a ("Disconnected", {}) event.
+        """
         delay = 1.0
         while not stop.is_set():
             try:
@@ -97,5 +121,8 @@ class Backend:
                             on_event(name, payload)
             except httpx.HTTPError:
                 pass
+            if stop.is_set():
+                return
+            on_event("Disconnected", {})
             stop.wait(delay)
             delay = min(delay * 2, 5.0)

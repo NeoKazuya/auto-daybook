@@ -525,3 +525,66 @@ async def test_in_flight_tick_is_discarded_after_pause_and_resume(runtime):
     assert await mind.tick_now() is None
     assert not skills.fired and not journal.portal.now().readings
     assert journal.portal.latest_tick_evidence_until() is None
+
+
+@pytest.mark.parametrize(
+    "next_kind,expected_totals,decision_type",
+    [
+        ("coding", {"reading": 60, "coding": 30}, Start),
+        ("reading", {"reading": 90}, Continue),
+    ],
+)
+async def test_kind_transition_preserves_prior_durations_and_same_kind_continues(
+    tmp_path, next_kind, expected_totals, decision_type
+):
+    journal = Journal(tmp_path / "db", Bus())
+    clock, skills = Clock(), SpyBook()
+    journal.set_capture_state("running", clock())
+    first = journal.add_observation(
+        ObservationDraft(
+            clock(), WindowInfo("Evince", "paper.pdf"), "Research document."
+        ),
+        journal.epoch,
+    )
+    assert first
+    reading = {**SEGMENT, "kind": "reading", "title": "Reading research"}
+    changed = {**SEGMENT, "kind": next_kind}
+    gateway = ScriptedGateway([reply(reading), reply(changed), reply(None)])
+    mind = Mind(journal, gateway, skills, clock=clock)
+    try:
+        clock.advance(30)
+        journal.extend_observation(first.id, clock())
+        assert await mind.tick_now()
+        original = journal.portal.now().segment
+        assert original
+        clock.advance(30)
+        journal.extend_observation(first.id, clock())
+        second = journal.add_observation(
+            ObservationDraft(
+                clock(),
+                WindowInfo("Code", "task.py")
+                if next_kind == "coding"
+                else WindowInfo("Evince", "next.pdf"),
+                "New visible activity.",
+            ),
+            journal.epoch,
+        )
+        assert second
+        clock.advance(30)
+        journal.extend_observation(second.id, clock())
+        tick = await mind.tick_now()
+        assert tick
+        totals = journal.portal.totals(TimeRange(NOW, clock() + timedelta(seconds=1)))
+        assert {total.label: total.active for total in totals} == expected_totals
+        assert isinstance(tick.segment, decision_type)
+        current = journal.portal.now().segment
+        assert current
+        assert (current.id == original.id) is (next_kind == "reading")
+        clock.advance(30)
+        journal.extend_observation(second.id, clock())
+        still = await mind.tick_now()
+        assert still and not still.observations and still.segment is None
+        after = journal.portal.now().segment
+        assert after and after.id == current.id
+    finally:
+        journal.close()

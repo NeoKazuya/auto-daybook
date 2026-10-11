@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Literal
 
-from daybook.journal import Journal, Tick, TimeRange
+from daybook.journal import Continue, Journal, Start, Tick, TimeRange
 from daybook.model import ModelGateway, ModelUnavailable, Priority, Prompt
 from daybook.skills import SkillBook
 
@@ -234,6 +235,18 @@ class Runner:
                 observations=tuple(o.id for o in included),
                 has_open_segment=situation.segment is not None,
             )
+            decision = tick.segment
+            if (
+                isinstance(decision, Continue)
+                and situation.segment is not None
+                and decision.kind != situation.segment.kind
+            ):
+                # A new kind needs its own time bucket; Continue would relabel
+                # every prior observation in the current segment retroactively.
+                tick = replace(
+                    tick,
+                    segment=Start(decision.title, decision.kind, decision.intent),
+                )
             if not self.journal.record_tick(tick):
                 return None
             # A bounded backlog batch may precede an already-completed long gap.

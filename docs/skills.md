@@ -68,12 +68,7 @@ rules:
 
 ### Actions
 
-The action catalog in [ARCHITECTURE.md §6.7](ARCHITECTURE.md#67-act-actions-music-overlay-and-desktop) is the only list. Today it has:
-
-- `music.play_mood {mood, min_dwell="60s"}`, `music.stop`
-- `overlay.show {title, body, dismiss="OK", minutes=1, style=calm|alert}`, `overlay.hide`
-- `notify.send {title, body}`
-- `desktop.open_url {url}`, `desktop.launch {app}`, `desktop.focus {app}`
+The action catalog in [ARCHITECTURE.md §6.7](ARCHITECTURE.md#67-act-actions-music-overlay-and-desktop) is the only list of actions and their parameters; it isn't repeated here. In a running system, `daybook skill check` and the skill editor show the live catalog.
 
 Every action used in `do` must appear in `allow`. Parameter values are checked against the catalog when the file is parsed; for example, `mood` must be a mood in the library.
 

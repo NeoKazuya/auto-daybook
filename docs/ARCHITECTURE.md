@@ -91,7 +91,7 @@ GNOME Xorg :1 ──────────────────────
 | `mpv --idle` | music playback over a JSON IPC socket | event-driven |
 | Ollama or vLLM | the one model (external to the app) | serial |
 
-`daybookd` spawns `mpv` and the shell, and restarts either if it exits. It runs inside `tmux` on the GX10, with the display environment from [gx10.md](gx10.md). Only one `daybookd` may watch the real screen, enforced with an flock on `/tmp/daybook-capture.lock`. Development instances run with `--replay` or `--no-capture` and their own `DAYBOOK_HOME`.
+`daybookd` spawns `mpv` and the shell, and restarts either if it exits. It runs inside `tmux` on the GX10, with the display environment from [gx10.md](gx10.md). Only one `daybookd` may watch the real screen, enforced with an flock on `/tmp/daybook-capture.lock`. Development instances run with `--replay` or `--no-capture` and their own `DAYBOOK_HOME`. In those modes `daybookd` doesn't spawn the shell or mpv, and the catalog uses fake music, overlay, and desktop backends that only record what they were asked to do, so a development instance never plays sound or draws on the presenter's screen. `--real-effects` turns the real backends back on, for someone working at the machine.
 
 ## 4. Data model
 
@@ -243,7 +243,7 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
 3. **Keep time continuous, but never across a gap.** If the previous poll was also `RUNNING`, extend the latest observation (`extend_observation`) whether or not the screen changed, so totals don't lose the seconds between a change and the next model call. If the previous poll was in any other state, or the journal's forget epoch changed since the previous poll (a forget may have removed the latest observations), don't extend: the next observation starts fresh, and step 4 skips the cooldown. When `AWAY` begins, everything after the last input time is removed with `trim_after(last_input)`: later observations (for example, from a video that kept changing) and readings, so the idle minutes count as neither activity nor focus.
    **A failed observe also breaks continuity.** If an observe triggered by a change times out, fails validation, or is discarded, sense calls `trim_after(t)` with `t` = the poll where the change was first seen, then stops extending until a new observation is written. The time in between is a gap, not credit to the previous activity.
 4. **New observation** if the window changed, the thumbnail differs by 3% or more, or capture just resumed after a gap. At least 10 s must have passed since the last observe; an app switch or a resume skips that wait. Call the gateway with an OBSERVE builder. The builder rechecks the gate, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it reruns the full gate** (lock, pause, overlay, away, and the stacking, geometry, and visibility check for exclusions) against the post-grab state. If any check fails, or the window set or stacking changed, it discards the frame.
-5. **Write the result.** `add_observation(draft, epoch)`, then `mind.nudge(app_switched)`. A result is discarded if the consent generation changed while it was in flight (see [§7](#7-privacy)), and the journal rejects it if a forget happened since the call started.
+5. **Write the result.** `add_observation(draft, epoch)`, then `mind.nudge(app_switched)`. In the same transaction, the previous observation's `last_seen_at` is cut back to the new observation's `started_at`, so polls that extended it while the observe was pending don't overlap the new one. A result is discarded if the consent generation changed while it was in flight (see [§7](#7-privacy)), and the journal rejects it if a forget happened since the call started.
 
 **Observe prompt:** describe only what's visible, in 1–2 sentences, plus up to 300 characters of salient on-screen text. No guesses about goals or feelings; that's the tick's job. The window app and title are given to the model as facts.
 
@@ -560,7 +560,7 @@ dialect = "ollama"             # "vllm" | "openai"
 **CLI:**
 
 ```sh
-daybook run [--replay DIR] [--no-capture] [--port N]   # daybookd: capture, tick, skills, web; spawns mpv and the shell
+daybook run [--replay DIR] [--no-capture] [--real-effects] [--port N]   # daybookd: capture, tick, skills, web; spawns mpv and the shell (not in replay/no-capture unless --real-effects)
 daybook observe-once                                   # one real capture -> printed observation (not saved)
 daybook tick-once                                      # one tick on current unassigned observations, prints readings
 daybook record DIR [--minutes N]                       # record real steps into a replay fixture (frames saved; dev only)

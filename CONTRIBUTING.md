@@ -51,7 +51,7 @@ When your person asks for something:
 ### 2. Build
 
 - Stay inside the task and its area of the code.
-- If the task needs a change to a shared contract, it is **shared-contract work**. It waits for review before merging (step 5). Shared contracts include types or schema used across modules, API shapes between frontend and backend, auth, secrets handling, and build or deploy config.
+- If the task needs a change to a shared contract, it is **shared-contract work**. It also needs the design check below; every PR waits for review before merging (step 5). Shared contracts include types or schema used across modules, API shapes between frontend and backend, auth, secrets handling, and build or deploy config.
 - For shared-contract work, read [docs/agents/design-red-flags.md](docs/agents/design-red-flags.md) first. Write the caller's usage before the types. Give each piece of state one owner. Move every caller to the new shape and delete the old one in the same PR.
 
 ### 3. Verify
@@ -98,16 +98,32 @@ Part of #1
 **Screenshot** (if it's UI)
 ```
 
-### 5. Merge
+### 5. Review and fix in the same PR
 
-Most PRs merge as soon as the checks pass. Don't wait for the review:
+**Every PR stays open until review is complete**, including ordinary changes, shared-contract work, and follow-up fixes. Do not merge first and move review findings into another PR. A delayed review is not permission to merge; keep the PR open and work on independent tasks while waiting.
 
 ```sh
-git pull --rebase origin main    # if main moved: run the checks again, then push
-gh pr merge <number> --squash --delete-branch
+gh api repos/{owner}/{repo}/pulls/<number>/comments                # inline comments
+gh pr view <number> --json reviews,comments
 ```
 
-The exception is **shared-contract work**. Wait up to 20 minutes for the review, triage it (step 6), fix any "Act on" findings, then merge. If no review arrives in 20 minutes, merge anyway, note it in the PR, and triage the review when it comes.
+Triage each review using [docs/agents/review-triage.md](docs/agents/review-triage.md). Check each finding against the code first, then sort it:
+
+- **Act on:** a real problem for this project. It breaks the demo or a main flow, loses or corrupts data, leaks a secret, or breaks another person's code. Fix it on the same branch, in this PR, before merging.
+- **Consider / Noted / Dismissed:** reply with the bucket and a one-line reason, then resolve the thread.
+
+Trace hypotheticals to a real call site before accepting them. Dismiss preferences and premature abstractions. Apply the **hackathon cost test** to security and hardening findings: fix them only if the fix doesn't make the team's job harder (no new machinery, process, or merge friction), since this is a small team on one trusted machine. The privacy features the demo promises still count as real problems. If more than five findings land in "Act on", or you agree with every point, go through them again.
+
+After fixing confirmed findings, rerun the relevant checks, push to the same PR, and check review feedback on the latest commit. Request another review if needed. Merge only when review is complete, every finding has been fixed or explicitly triaged, and the checks pass.
+
+### 6. Merge
+
+Once step 5 is complete:
+
+```sh
+git pull --rebase origin main    # if main moved: rerun checks, push, and complete step 5 on the updated head
+gh pr merge <number> --squash --delete-branch
+```
 
 After merging:
 
@@ -115,22 +131,7 @@ After merging:
 - Send your person a **Done** message.
 - Move on to the next task.
 
-### 6. Triage reviews on merged PRs
-
-Reviews arrive after the merge, so check for them at natural breaks: before claiming each new task, and before your final Done message.
-
-```sh
-gh pr list --author @me --state merged --limit 5
-gh api repos/{owner}/{repo}/pulls/<number>/comments                # inline comments
-gh pr view <number> --json reviews,comments
-```
-
-Triage each review using [docs/agents/review-triage.md](docs/agents/review-triage.md). Check each finding against the code first, then sort it:
-
-- **Act on:** a real problem for this project. It breaks the demo or a main flow, loses or corrupts data, leaks a secret, or breaks another person's code. Fix it in a small follow-up PR, which merges once the checks pass.
-- **Consider / Noted / Dismissed:** reply with the bucket and a one-line reason, then resolve the thread.
-
-Trace hypotheticals to a real call site before accepting them. Dismiss preferences and premature abstractions. Apply the **hackathon cost test** to security and hardening findings: fix them only if the fix doesn't make the team's job harder (no new machinery, process, or merge friction), since this is a small team on one trusted machine. The privacy features the demo promises still count as real problems. If more than five findings land in "Act on", or you agree with every point, go through them again. Follow-up fix PRs don't need another review unless they change a shared contract.
+For PRs already merged under the old workflow, finish triaging their outstanding reviews. If a confirmed issue needs a follow-up PR, that PR follows the same review-before-merge rule; this is cleanup, not the normal review cycle.
 
 ### 7. If main breaks after your merge
 
@@ -181,7 +182,7 @@ Starting on task 1 now.
 Done: <task> — <PR link>
 What changed: <one or two lines, from a user's point of view>
 Proof: <what was actually run, and the level reached, e.g. "reproduced in the running app (5)">
-Review: pending | fixed <n> in <PR link>, dismissed <n> (also report reviews of earlier PRs here)
+Review: complete — fixed <n> in this PR, dismissed <n> (also report outstanding reviews of earlier PRs here)
 Decisions I made: <choices your person might want to reverse, e.g. added a dependency, changed someone else's code, resolved a conflict; or "none">
 Not checked: <anything left unproven, or "nothing">
 Next: <next task, or "all tasks done">

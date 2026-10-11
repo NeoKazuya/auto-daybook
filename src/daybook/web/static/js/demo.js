@@ -1,8 +1,7 @@
 // In-browser stand-in for the API, used only when the page has no token, so the UI
 // can be previewed from a plain static server. It returns the same shapes as
 // src/daybook/web/wire.py. With a backend, use `daybook run --mock-api` instead.
-// It also serves the routes and fields the UI has ahead of the server (search,
-// totals, monitoring rules); see `supports` in api.js.
+// Monitoring rules remain a demo-only preview; see `supports` in api.js.
 
 const today = new Date();
 const at = (hm) => {
@@ -311,9 +310,9 @@ export async function handle(method, path, body) {
       emit('TickRecorded', { tick: `t${Date.now()}` });
       return { recorded: true, tick: `t${Date.now()}` };
     case 'GET /search':
-      return search(url.searchParams.get('q') ?? '');
+      return { hits: search(url.searchParams.get('q') ?? '').slice(0, Number(url.searchParams.get('limit') ?? 50)) };
     case 'GET /totals':
-      return totals(url.searchParams.get('by') ?? 'kind');
+      return { totals: totals(url.searchParams.get('by') ?? 'kind') };
     default:
       throw fail(404, 'not_found');
   }
@@ -342,7 +341,7 @@ function totals(by) {
       sums.set(k, (sums.get(k) ?? 0) + secs(o.started_at, o.last_seen_at));
     }
   }
-  return [...sums].map(([key, active]) => ({ key, active })).sort((a, b) => b.active - a.active);
+  return [...sums].map(([label, active]) => ({ label, active })).sort((a, b) => b.active - a.active);
 }
 
 function parseErrors(text) {

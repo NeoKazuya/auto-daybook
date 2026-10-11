@@ -7,14 +7,35 @@ const token = document.querySelector('meta[name="daybook-token"]')?.content ?? '
 export const DEMO = !token || new URLSearchParams(location.search).has('demo');
 
 /**
- * Features the UI has that the server doesn't serve yet. They work on demo data and
- * stay unavailable against a real server until Lane A adds them to wire.py.
+ * Server features and the remaining demo-only monitoring controls.
  */
 export const supports = {
-  search: DEMO,          // GET /api/search (Portal.search)
-  totals: DEMO,          // GET /api/totals (Portal.totals)
+  search: true,          // GET /api/search (Portal.search)
+  totals: true,          // GET /api/totals (Portal.totals)
   monitoringRules: DEMO, // schedule, apps_mode, allowed_apps, retention_days in /api/privacy
 };
+
+// Changes to existing notes invalidate derived recall, including in other tabs.
+// No note contents or session token are sent over the channel.
+const noteListeners = new Set();
+let noteChannel = null;
+try { noteChannel = new BroadcastChannel('daybook-notes'); } catch { /* unavailable */ }
+export function onNotesChanged(listener) {
+  noteListeners.add(listener);
+  return () => noteListeners.delete(listener);
+}
+function notesChanged(broadcast = false) {
+  for (const listener of noteListeners) listener();
+  if (broadcast) noteChannel?.postMessage({ type: 'notes_changed' });
+}
+if (noteChannel) noteChannel.onmessage = (event) => {
+  if (event.data?.type === 'notes_changed') notesChanged();
+};
+async function changeNotes(method, path, body) {
+  const result = await call(method, path, body);
+  notesChanged(true);
+  return result;
+}
 
 let demo = null;
 async function demoBackend() {
@@ -77,12 +98,12 @@ export const api = {
   status: () => call('GET', '/api/status'),
   now: () => call('GET', '/api/now'),
   timeline: (from, to) => call('GET', `/api/timeline${q({ from, to })}`),
-  editSegment: (id, patch) => call('PATCH', `/api/segments/${id}`, patch),
-  deleteSegment: (id) => call('DELETE', `/api/segments/${id}`),
-  editObservation: (id, patch) => call('PATCH', `/api/observations/${id}`, patch),
-  deleteObservation: (id) => call('DELETE', `/api/observations/${id}`),
-  forget: (from, to) => call('POST', '/api/forget', { from, to }),
-  forgetAll: () => call('POST', '/api/forget-all'),
+  editSegment: (id, patch) => changeNotes('PATCH', `/api/segments/${id}`, patch),
+  deleteSegment: (id) => changeNotes('DELETE', `/api/segments/${id}`),
+  editObservation: (id, patch) => changeNotes('PATCH', `/api/observations/${id}`, patch),
+  deleteObservation: (id) => changeNotes('DELETE', `/api/observations/${id}`),
+  forget: (from, to) => changeNotes('POST', '/api/forget', { from, to }),
+  forgetAll: () => changeNotes('POST', '/api/forget-all'),
   chat: (message) => call('POST', '/api/chat', { message }),
   skills: () => call('GET', '/api/skills'),
   saveSkill: (id, text) => call('PUT', `/api/skills/${id}`, { text }),
@@ -96,8 +117,8 @@ export const api = {
   setPrivacy: (p) => call('PUT', '/api/privacy', supports.monitoringRules ? p
     : { paused: p.paused, exclude_apps: p.exclude_apps, exclude_titles: p.exclude_titles }),
   tick: () => call('POST', '/api/tick'),
-  search: (text) => call('GET', `/api/search${q({ q: text })}`),
-  totals: (by, from, to) => call('GET', `/api/totals${q({ by, from, to })}`),
+  search: async (text, from, to, limit) => (await call('GET', `/api/search${q({ q: text, from, to, limit })}`)).hits,
+  totals: async (by, from, to) => (await call('GET', `/api/totals${q({ by, from, to })}`)).totals,
 };
 
 // Named SSE events from wire.EVENT_MODELS.
@@ -112,22 +133,27 @@ const EVENTS = [
  * unsubscribe function.
  */
 export function subscribe(onEvent) {
+  const receive = (event) => {
+    if (event.type === 'Reconnected' ||
+        (event.type === 'StatusChanged' && event.component === 'journal' && event.status === 'notes_invalidated')) notesChanged();
+    onEvent(event);
+  };
   if (DEMO) {
     let off = () => {};
-    demoBackend().then((d) => { off = d.subscribe(onEvent); });
+    demoBackend().then((d) => { off = d.subscribe(receive); });
     return () => off();
   }
   const es = new EventSource('/api/events?client=ui');
   let opened = false;
   es.onopen = () => {
-    if (opened) onEvent({ type: 'Reconnected' });
+    if (opened) receive({ type: 'Reconnected' });
     opened = true;
   };
   for (const name of EVENTS) {
     es.addEventListener(name, (e) => {
       let data = {};
       try { data = JSON.parse(e.data); } catch { /* ignore malformed frames */ }
-      onEvent({ type: name, ...data });
+      receive({ type: name, ...data });
     });
   }
   return () => es.close();

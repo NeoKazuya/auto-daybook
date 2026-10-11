@@ -29,7 +29,7 @@ async function render(root) {
       [privacy, status, knownApps] = await Promise.all([
         api.privacy(),
         api.status(),
-        supports.totals ? api.totals('app').then((rows) => rows.map((r) => r.key)).catch(() => []) : [],
+        supports.totals ? api.totals('app').then((rows) => rows.map((r) => r.label)).catch(() => []) : [],
       ]);
       draw();
     } catch (err) {

@@ -1,6 +1,6 @@
 // Skills: the reference page. A list of skills with their status, and a review card
 // for the selected one: its name, its prompt, its rules in words, and the approval controls.
-// Developer mode (Settings) adds the questions it asks the model, the permissions, and the raw
+// Questions and permissions are part of every review. Developer mode adds the raw
 // skill file with live parse errors.
 import { api } from '../api.js';
 import { getPref } from '../prefs.js';
@@ -123,9 +123,9 @@ async function render(root, params) {
         notice && h('div.notice', notice),
         h('h2', s.name),
         h('p.goal', s.goal),
-        dev && h('div.review-sec', h('div.label', 'It asks the model'), h('ul', s.signals.map((g) => h('li', g.ask)))),
+        h('div.review-sec', h('div.label', 'Questions'), h('ul', s.signals.map((g) => h('li', g.ask)))),
         h('div.review-sec', h('div.label', 'Rules'), h('ul', s.rules.map((r) => h('li', ruleInWords(r))))),
-        dev && h('div.review-sec', h('div.label', 'Permissions'), h('ul', s.allow.map((action) =>
+        h('div.review-sec', h('div.label', 'Permissions'), h('ul', s.allow.map((action) =>
           h('li.perm', h('span', catalog.find((c) => c.name === action)?.description ?? action), h('span.tag.quiet', action))))),
         dev && h('div.review-sec', h('div.label', 'Skill file'), editor, parse),
         h('div.actions-bar', buttons)));
@@ -160,7 +160,7 @@ function trigger(when) {
 function step({ action, arguments: args = {} }) {
   const v = (x) => (typeof x === 'string' && x.startsWith('$') ? `the current ${human(x.slice(1))}` : x);
   switch (action) {
-    case 'overlay.show': return `show a full-screen overlay “${args.title}”${args.minutes ? ` for up to ${args.minutes} min` : ''}`;
+    case 'overlay.show': return `show a ${args.layout === 'bubble' ? 'bubble reminder' : 'full-screen overlay'} “${args.title}”${args.minutes ? ` for up to ${args.minutes} min` : ''}`;
     case 'overlay.hide': return 'hide the overlay';
     case 'music.play_mood': return `play ${v(args.mood)} music`;
     case 'music.stop': return 'stop the music';

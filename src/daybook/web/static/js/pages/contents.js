@@ -73,7 +73,7 @@ function view(tl, kinds, skills, status) {
   const max = Math.max(...(kinds ?? []).map((k) => k.active), 1);
   const bars = kinds && h('div.bars', kinds.map((k) =>
     h('div.bar-row',
-      h('span.bar-key', k.key),
+      h('span.bar-key', k.label),
       h('div.bar-track', h('div.bar-fill', { style: `width:${(k.active / max) * 100}%` })),
       h('span.bar-val', duration(k.active)))));
 

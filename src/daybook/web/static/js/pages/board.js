@@ -1,6 +1,6 @@
 // Sticky Board: chat. Each exchange is pinned as a note. Recall answers cite timeline
 // segments; a skill request pins a draft that links to its review card.
-import { api } from '../api.js';
+import { api, onNotesChanged } from '../api.js';
 import { h, icon, btn, ribbon, panel, emptyState, clock } from '../ui.js';
 
 const page = { route: 'board', label: 'Sticky Board', icon: 'sticky', render };
@@ -8,6 +8,17 @@ export default page;
 
 // Kept for the session so switching tabs doesn't lose the board.
 const notes = [];
+let notesRevision = 0;
+let redraw = () => {};
+onNotesChanged(() => {
+  notesRevision++;
+  // Pending responses may still be skill drafts; fence their answers on arrival.
+  for (let i = notes.length - 1; i >= 0; i--) {
+    delete notes[i].titles;
+    if (!notes[i].pending && notes[i].reply?.type !== 'draft') notes.splice(i, 1);
+  }
+  redraw();
+});
 
 const EXAMPLES = [
   'what did I do in the last hour?',
@@ -86,26 +97,35 @@ async function render(root, params) {
     if (!message) return;
     input.value = '';
     const n = { message, at: new Date(), pending: true };
+    const revision = notesRevision;
     notes.push(n);
     draw();
     send.disabled = true;
     try {
       n.reply = await api.chat(message);
+      if (n.reply.type !== 'draft' && revision !== notesRevision) return;
       // Answers cite segment IDs; look up their titles for the links.
       if (n.reply.type === 'answer' && n.reply.cites.length) {
         const tl = await api.timeline(n.reply.window.from, n.reply.window.to).catch(() => null);
+        if (revision !== notesRevision) return;
         n.titles = Object.fromEntries((tl?.segments ?? []).map((seg) => [seg.id, seg.title]));
       }
     } catch (err) {
       n.error = `${err.message} Your message wasn't lost — try again.`;
     } finally {
+      if (revision !== notesRevision && n.reply?.type !== 'draft') {
+        const index = notes.indexOf(n);
+        if (index !== -1) notes.splice(index, 1);
+        delete n.titles;
+      }
       n.pending = false;
       send.disabled = false;
-      draw();
+      redraw();
     }
   }
 
+  redraw = draw;
   draw();
   input.focus();
-  return {};
+  return { cleanup: () => { if (redraw === draw) redraw = () => {}; } };
 }

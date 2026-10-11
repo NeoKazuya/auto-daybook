@@ -222,8 +222,7 @@ class ModelGateway:
         except Exception as exc:
             if isinstance(exc, (httpx.HTTPError, TimeoutError)):
                 self._reachable = False
-                if self._health_task is None or self._health_task.done():
-                    self._health_task = asyncio.create_task(self._recover_health())
+                self.check_health()
             # Never expose server error bodies, prompts, or validation values.
             if not request.future.done():
                 request.future.set_exception(ModelUnavailable(type(exc).__name__))
@@ -233,6 +232,11 @@ class ModelGateway:
             if task is not None:
                 self._active.pop(task, None)
             self._wake.set()
+
+    def check_health(self) -> None:
+        """Probe reachability in the background until the model answers."""
+        if not self._closed and (self._health_task is None or self._health_task.done()):
+            self._health_task = asyncio.create_task(self._recover_health())
 
     async def _recover_health(self) -> None:
         # A slow/failed completion is not proof that the server is offline.

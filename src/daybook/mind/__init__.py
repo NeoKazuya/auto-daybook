@@ -75,13 +75,7 @@ class Mind:
 
     async def tick_now(self) -> Tick | None:
         # The explicit debug action checks skills first, then updates history.
-        try:
-            active = bool(self._runner.skills.active_signals())
-        except Exception:
-            return None
         readings = await self._signals.check_now()
-        if active and readings is None:
-            return None
         history = await self._runner.tick_now()
         return readings or history
 

@@ -697,8 +697,9 @@ async def test_dismissal_during_a_tick_discards_its_upcoming_readings(journal):
     book = Book((DRIFT,))
     gateway = DismissingGateway([reply], journal, item.id)
     mind = Mind(journal, gateway, cast(SkillBook, book), clock=lambda: NOW)
-    assert await mind.tick_now() is None
+    assert await mind._signals.check_now() is None
     assert book.reacted == 0
+    assert not journal.portal.now().readings
 
 
 class RevivingGateway(ScriptedGateway):
@@ -738,5 +739,6 @@ async def test_revived_item_with_new_details_also_discards_the_tick(journal):
     book = Book((DRIFT,))
     gateway = RevivingGateway([reply], journal, item.id)
     mind = Mind(journal, gateway, cast(SkillBook, book), clock=lambda: NOW)
-    assert await mind.tick_now() is None
+    assert await mind._signals.check_now() is None
     assert book.reacted == 0
+    assert not journal.portal.now().readings

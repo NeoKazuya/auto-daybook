@@ -218,3 +218,32 @@ async def test_run_checks_skills_before_the_history_interval_and_cancels_childre
         running.cancel()
         with pytest.raises(asyncio.CancelledError):
             await running
+
+
+async def test_explicit_tick_groups_history_after_an_automatic_signal_check(setup):
+    journal, skills, now, note, calls = setup
+    gateway = ScriptedGateway(
+        [
+            '{"nudge.present":true}',
+            json.dumps(
+                {
+                    "segments": [
+                        {
+                            "observations": [note.id],
+                            "mode": "start",
+                            "title": "TikTok",
+                            "kind": "other",
+                            "intent": "Browsing",
+                        }
+                    ],
+                    "signals": {},
+                }
+            ),
+        ]
+    )
+    mind = Mind(journal, gateway, skills, clock=lambda: now[0])
+    assert await mind._signals.check_now()
+    assert journal.portal.now().segment is None
+    assert await mind.tick_now()
+    assert journal.portal.now().segment is not None
+    assert calls == ["nudge"] and len(gateway.prompts) == 2

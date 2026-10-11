@@ -699,8 +699,12 @@ async def test_dismissal_during_a_tick_discards_its_upcoming_readings(journal):
     assert book.reacted == 0
 
 
-class RevivingGateway(DismissingGateway):
+class RevivingGateway(ScriptedGateway):
     """Dismiss and re-add the same item, now an event, during the model call."""
+
+    def __init__(self, replies, journal, item):
+        super().__init__(replies)
+        self.journal, self.item = journal, item
 
     async def call(self, priority, prompt):
         built = await prompt() if callable(prompt) else prompt
@@ -717,7 +721,7 @@ class RevivingGateway(DismissingGateway):
             at=NOW,
         )
         assert revived.id == self.item
-        return await ScriptedGateway.call(self, priority, built)
+        return await super().call(priority, built)
 
 
 async def test_revived_item_with_new_details_also_discards_the_tick(journal):

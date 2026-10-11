@@ -427,6 +427,8 @@ def test_reads_and_upcoming_next_parse_and_render():
         ([("reads: [upcoming]\n", "")], "rules[0].do[0].body"),
         ([("reads: [upcoming]", "reads: [calendar]")], "reads"),
         ([("reads: [upcoming]", "reads: upcoming")], "reads"),
+        ([("reads: [upcoming]", "reads: [{}]")], "reads"),
+        ([("reads: [upcoming]", "reads: [[]]")], "reads"),
         (
             [("  drifting:", "  upcoming:"), ("drifting is", "upcoming is")],
             "signals.upcoming",

@@ -74,7 +74,7 @@ def parse(
     reads = data.get("reads", [])
     if (
         not isinstance(reads, list)
-        or any(r not in READABLE for r in reads)
+        or any(not isinstance(r, str) or r not in READABLE for r in reads)
         or len(set(reads)) != len(reads)
     ):
         error("reads", "expected a list of: " + ", ".join(READABLE))

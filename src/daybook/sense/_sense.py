@@ -152,7 +152,7 @@ class Sense:
             self._gap(state, at, facts)
             return
         try:
-            thumbnail = self.screen.thumbnail()
+            thumbnail = self.screen.thumbnail(facts)
         except Exception:
             self._gap("locked", at)
             self.bus.publish(StatusChanged("sense", "screen_unavailable"))
@@ -238,7 +238,7 @@ class Sense:
                 return None
             admitted = True
             window = before.active
-            image = self.screen.grab()
+            image = self.screen.grab(before)
             after = self.screen.state()
             if (
                 epoch != self.journal.epoch

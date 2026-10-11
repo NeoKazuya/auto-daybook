@@ -22,6 +22,7 @@ class OverlayRequest:
     dismiss: str = "OK"
     minutes: float = 1
     style: Literal["calm", "alert"] = "calm"
+    layout: Literal["fullscreen", "bubble"] = "fullscreen"
 
 
 @dataclass(frozen=True)
@@ -124,13 +125,16 @@ def build_catalog(
         ActionSpec("music.stop", "Stop music", {}),
         ActionSpec(
             "overlay.show",
-            "Show a fullscreen reminder",
+            "Show a fullscreen reminder or speech bubble; use casual body text for bubbles",
             {
                 "title": text,
                 "body": text,
                 "dismiss": Parameter("str", False, "OK"),
                 "minutes": Parameter("number", False, 1),
                 "style": Parameter("enum", False, "calm", ("calm", "alert")),
+                "layout": Parameter(
+                    "enum", False, "fullscreen", ("fullscreen", "bubble")
+                ),
             },
         ),
         ActionSpec("overlay.hide", "Dismiss the overlay", {}),
@@ -203,6 +207,7 @@ class Overlay:
                     or not math.isfinite(request.minutes)
                     or request.minutes <= 0
                     or request.style not in ("calm", "alert")
+                    or request.layout not in ("fullscreen", "bubble")
                 ):
                     raise ValueError("invalid overlay snapshot")
                 if expiry > datetime.now(timezone.utc):
@@ -263,6 +268,8 @@ class Overlay:
             return Outcome("overlay.show", False, "shell_disconnected")
         if not math.isfinite(request.minutes) or request.minutes <= 0:
             return Outcome("overlay.show", False, "invalid_duration")
+        if request.layout not in ("fullscreen", "bubble"):
+            return Outcome("overlay.show", False, "invalid_layout")
         id = uuid.uuid4().hex
         state = OverlayState(
             id,
@@ -409,6 +416,7 @@ def bind_handlers(
                 str(args.get("dismiss", "OK")),
                 float(cast(float, args.get("minutes", 1))),
                 cast(Literal["calm", "alert"], args.get("style", "calm")),
+                cast(Literal["fullscreen", "bubble"], args.get("layout", "fullscreen")),
             ),
             skill,
         )

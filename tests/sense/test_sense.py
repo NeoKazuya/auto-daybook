@@ -136,11 +136,13 @@ class FakeScreen:
     def state(self):
         return self.facts
 
-    def thumbnail(self):
+    def thumbnail(self, expected):
+        assert expected == self.facts
         self.thumbnails += 1
         return self.pixels
 
-    def grab(self):
+    def grab(self, expected):
+        assert expected == self.facts
         self.grabs += 1
         if self.after_grab:
             self.facts = self.after_grab
@@ -411,8 +413,8 @@ def test_replay_speed_step_and_image(tmp_path, monkeypatch):
     folder = Path(__file__).parents[2] / "fixtures/replay/example"
     screen = ReplayScreen(folder, speed=2)
     assert screen.state().active == CODE
-    assert len(screen.thumbnail()) == 576
-    image = Image.open(io.BytesIO(screen.grab()))
+    assert len(screen.thumbnail(screen.state())) == 576
+    image = Image.open(io.BytesIO(screen.grab(screen.state())))
     assert image.format == "JPEG" and image.width <= 1280
     steps = json.loads((folder / "steps.json").read_text())
     now[0] = steps[1]["at"] / 2

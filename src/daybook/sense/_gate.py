@@ -2,9 +2,13 @@
 
 from fnmatch import fnmatchcase
 
-from daybook.journal import CaptureState
+from daybook.journal import CaptureState, WindowInfo
 
 from ._types import PrivacySettings, Rect, ScreenState
+
+
+def is_bubble(info: WindowInfo) -> bool:
+    return info.app.lower() == "daybook-bubble"
 
 
 def intersection(left: Rect, right: Rect) -> Rect:
@@ -57,7 +61,7 @@ def excluded_visible(state: ScreenState, privacy: PrivacySettings) -> bool:
             continue
         remaining = [window.rect]
         for cover in state.windows[i + 1 :]:
-            if cover.opacity < 1:
+            if cover.opacity < 1 or is_bubble(cover.info):
                 continue
             remaining = [
                 piece for rect in remaining for piece in _subtract(rect, cover.rect)

@@ -83,6 +83,21 @@ cd ~/gx10-model-plan
 ./gx10.sh status
 ```
 
+The installed desktop checker is also configurable; its bare status command
+still targets Ollama. For the shared desktop/power/audio preflight, hold the
+capture lock and pass the running model explicitly:
+
+```sh
+~/.local/bin/gx10 run -- ~/.local/bin/gx10 status \
+  --base-url http://127.0.0.1:18300/v1 --model qwen3.8-flash-next \
+  --key-file ~/.config/qwen38/api-key
+```
+
+This reads screen pixels only in memory and calls the model-list endpoint;
+it does not run inference or load a model. The generic examples in
+[gx10-unattended.md](gx10-unattended.md) describe the older installer defaults.
+For current vision acceptance, use the model runbook below.
+
 Serving operations and the endpoint acceptance script live in
 `~/gx10-model-plan/RUNBOOK.md`. The adoption run of `accept.py --vision` passed
 14 checks; rerun it after changing the model or serving configuration. Keep

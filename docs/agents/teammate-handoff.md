@@ -20,7 +20,9 @@ Start your own persistent session and check the machine:
 
 ```sh
 tmux new -s <your-name>
-~/.local/bin/gx10 status
+~/.local/bin/gx10 run -- ~/.local/bin/gx10 status \
+  --base-url http://127.0.0.1:18300/v1 --model qwen3.8-flash-next \
+  --key-file ~/.config/qwen38/api-key
 ```
 
 VS Code/Cursor Remote-SSH can use the same SSH address. Everyone shares the `asus`
@@ -52,7 +54,7 @@ The unattended setup was installed and merged in PR #3:
   in [setup §6](../setup.md#6-the-model).
 
 Both smoke tests passed on 2026-10-10. Reboot/autologin has not been exercised.
-See [gx10-unattended.md](../gx10-unattended.md) for commands and verification scope.
+See [gx10-unattended.md](../gx10-unattended.md) for desktop mechanics and verification scope. Its installed checker retains the older Ollama defaults; use the explicit Qwen flags above and the current [model checks](../setup.md#6-the-model), not its bare status or vision examples.
 
 For desktop commands launched over SSH:
 

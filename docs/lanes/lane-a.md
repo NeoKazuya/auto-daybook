@@ -50,7 +50,7 @@ Each item is complete when its ARCHITECTURE "Done when" checks pass. This is a c
 - **Without the screen or the model.** Most work runs on `ReplayScreen`, `ScriptedGateway`, a temporary journal, and fake desktop, music, and overlay backends.
 - **Development instances:** `daybook run --replay fixtures/replay/<scenario> --port 8770–8779` with `DAYBOOK_HOME=~/.daybook-a-<agent>`. These never touch the real screen or speakers.
 - **Real model:** vLLM `qwen3.8-flash-next` at `http://127.0.0.1:18300/v1`, using `~/.config/qwen38/api-key` (never print or commit the key). Vision and fixed-recording quality passed; see [ARCHITECTURE §5](../ARCHITECTURE.md#5-model-use-and-budget). The app starts with configurable concurrency two and serialized background work. Ollama is deliberately stopped; do not start it or another large model beside vLLM.
-- **Real screen and effects:** hold the capture lock with the wrapper in [gx10-unattended.md](../gx10-unattended.md), and use `--real-effects`. Run `gx10 status` first.
+- **Real screen and effects:** hold the capture lock with the wrapper in [gx10-unattended.md](../gx10-unattended.md), and use `--real-effects`. Run the [configured, capture-locked GX10 status check](../agents/teammate-handoff.md#connect) first; the installed checker's bare command still targets stopped Ollama.
 
 ## Watch for
 

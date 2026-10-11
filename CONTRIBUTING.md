@@ -32,6 +32,7 @@ When your person asks for something:
 ### 1. Claim and set up
 
 - Post `Claimed: <task> (<person>) — branch <person>/<topic>` on the Tracker.
+- **Lane work** ([docs/lanes/](docs/lanes/README.md)) is the exception to "one task per PR": a lane is claimed once as a whole. Agents inside the lane still post a `Claimed:` line per PR with the paths it touches, and a `Done:` line when it merges.
 - Each agent has one worktree and reuses it for every task, so dependencies are installed only once. Create it the first time:
 
   ```sh
@@ -206,6 +207,7 @@ Meanwhile: <what you're doing instead, or "idle">
 ## Reference docs
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the system design and the full build plan. Shared contracts are defined there and in [docs/skills.md](docs/skills.md)
+- [docs/lanes/](docs/lanes/README.md): who builds what. Lane A (the complete backend, the Codex wave) and Lane B (the web UI and shell), with path ownership and how the lanes meet
 - [docs/setup.md](docs/setup.md): bringing the GX10 to a working state
 - [docs/agents/verification.md](docs/agents/verification.md): proving a change works, bug-fix tests, what goes in the Proof section
 - [docs/agents/review-triage.md](docs/agents/review-triage.md): sorting and answering review findings

@@ -277,7 +277,7 @@ async def test_player_observes_track_changes_and_recovers_dead_child(
             self.path = None
             peers.append(self)
 
-        async def command(self, *args):
+        async def command(self, *args, can_act=None):
             if self.process is None or self.process.returncode is not None:
                 self.process = SimpleNamespace(returncode=None)
                 self.socket.touch()
@@ -329,7 +329,7 @@ async def test_ipc_failure_clears_status_and_recovery_target(
     player = MusicPlayer(library, tmp_path / "home", Bus(), Overlay(Bus()))
     assert (await player.play_mood("focus", skill="music")).ok
 
-    async def failed(self, *args):
+    async def failed(self, *args, can_act=None):
         raise OSError("IPC unavailable")
 
     monkeypatch.setattr(_music.Player, "command", failed)

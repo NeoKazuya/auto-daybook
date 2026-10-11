@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from daybook.events import Bus, MusicChanged
 from daybook.journal import Outcome
 
-from . import MusicLibrary, MusicStatus, MusicTrack, Overlay
+from . import CanAct, MusicLibrary, MusicStatus, MusicTrack, Overlay
 
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
@@ -79,13 +79,23 @@ def check(library: MusicLibrary) -> tuple[str, ...]:
     return tuple(errors)
 
 
+class InactiveSkill(Exception):
+    """Admission was revoked before the first requested music command."""
+
+
+def require_admission(can_act: CanAct | None) -> None:
+    if can_act is not None and not can_act():
+        raise InactiveSkill
+
+
 class Mpv:
     def __init__(self, home: Path) -> None:
         self.socket = home / "mpv.sock"
         self.process: Process | None = None
         self.sequence = 0
 
-    async def start(self) -> None:
+    async def start(self, *, can_act: CanAct | None = None) -> None:
+        require_admission(can_act)
         if (
             self.process is not None
             and self.process.returncode is None
@@ -93,6 +103,7 @@ class Mpv:
         ):
             return
         await self.close()
+        require_admission(can_act)
         self.socket.parent.mkdir(parents=True, exist_ok=True)
         self.socket.unlink(missing_ok=True)
         self.process = await asyncio.create_subprocess_exec(
@@ -112,12 +123,14 @@ class Mpv:
             await asyncio.sleep(0.05)
         raise OSError("mpv unavailable")
 
-    async def command(self, *args: object) -> object:
-        await self.start()
+    async def command(self, *args: object, can_act: CanAct | None = None) -> object:
+        await self.start(can_act=can_act)
+        require_admission(can_act)
         reader, writer = await asyncio.open_unix_connection(self.socket)
         self.sequence += 1
         id = self.sequence
         try:
+            require_admission(can_act)
             writer.write(
                 (json.dumps({"command": args, "request_id": id}) + "\n").encode()
             )
@@ -174,15 +187,23 @@ class Player:
             if self.monitor is None:
                 self.monitor = asyncio.create_task(self.watch())
 
-    async def command(self, *args: object) -> None:
+    async def command(self, *args: object, can_act: CanAct | None = None) -> None:
+        require_admission(can_act)
         self.transcript.append(args)
         if self.real_effects:
-            await self.mpv.command(*args)
+            await self.mpv.command(*args, can_act=can_act)
 
-    async def fade(self, start: float, end: float) -> None:
+    # Eligibility governs admission to the first command, not rollback of an
+    # already-started fade or interruption of existing playback.
+    async def fade(
+        self, start: float, end: float, *, can_act: CanAct | None = None
+    ) -> None:
         for step in range(1, 13):
             await self.command(
-                "set_property", "volume", start + (end - start) * step / 12
+                "set_property",
+                "volume",
+                start + (end - start) * step / 12,
+                can_act=can_act if step == 1 else None,
             )
             if self.real_effects:
                 await asyncio.sleep(1.5 / 12)
@@ -195,8 +216,12 @@ class Player:
             return "dwell"
         return None
 
-    async def play(self, mood: str, skill: str, min_dwell: float) -> Outcome:
+    async def play(
+        self, mood: str, skill: str, min_dwell: float, *, can_act: CanAct | None = None
+    ) -> Outcome:
         async with self.lock:
+            if can_act is not None and not can_act():
+                return Outcome("music.play_mood", False, "skill_inactive")
             if mood not in self.library.moods or min_dwell < 0:
                 return Outcome("music.play_mood", False, "invalid_mood_or_dwell")
             refusal = self.permission(skill, min_dwell)
@@ -216,13 +241,18 @@ class Player:
             random.shuffle(tracks)
             try:
                 if self.current.playing:
-                    await self.fade(100, 0)
+                    await self.fade(100, 0, can_act=can_act)
                 # An overlay may have appeared while fading; ownership is checked again.
                 refusal = self.permission(skill, min_dwell)
                 if refusal:
                     await self.command("set_property", "volume", 100)
                     return Outcome("music.play_mood", True, refusal)
-                await self.command("set_property", "volume", 0)
+                await self.command(
+                    "set_property",
+                    "volume",
+                    0,
+                    can_act=None if self.current.playing else can_act,
+                )
                 await self.command("set_property", "loop-playlist", "inf")
                 for index, track in enumerate(tracks):
                     await self.command(
@@ -232,6 +262,8 @@ class Player:
                     )
                 await self.command("set_property", "pause", False)
                 await self.fade(0, 100)
+            except InactiveSkill:
+                return Outcome("music.play_mood", False, "skill_inactive")
             except (OSError, ValueError, TimeoutError):
                 if self.real_effects:
                     await self.mpv.close()
@@ -247,21 +279,28 @@ class Player:
             self.bus.publish(MusicChanged(mood, tracks[0].title))
             return Outcome("music.play_mood", True)
 
-    async def stop(self, skill: str | None = None) -> Outcome:
+    async def stop(
+        self, skill: str | None = None, *, can_act: CanAct | None = None
+    ) -> Outcome:
         async with self.lock:
+            if can_act is not None and not can_act():
+                return Outcome("music.stop", False, "skill_inactive")
             overlay = self.overlay.state
             if skill is not None and overlay is not None and overlay.owner != skill:
                 return Outcome("music.stop", True, "overlay_owned")
-            self.playlist = ()
             try:
                 if self.current.playing:
-                    await self.command("stop")
+                    await self.command("stop", can_act=can_act)
+            except InactiveSkill:
+                return Outcome("music.stop", False, "skill_inactive")
             except (OSError, ValueError, TimeoutError):
                 if self.real_effects:
                     await self.mpv.close()
                 self.current = MusicStatus()
                 self.bus.publish(MusicChanged(None, None))
+                self.playlist = ()
                 return Outcome("music.stop", False, "player_unavailable")
+            self.playlist = ()
             self.current = MusicStatus()
             self.bus.publish(MusicChanged(None, None))
             return Outcome("music.stop", True)

@@ -513,12 +513,19 @@ class MusicPlayer:
         await self._player.start()
 
     async def play_mood(
-        self, mood: str, *, skill: str, min_dwell: float = 60
+        self,
+        mood: str,
+        *,
+        skill: str,
+        min_dwell: float = 60,
+        can_act: CanAct | None = None,
     ) -> Outcome:
-        return await self._player.play(mood, skill, min_dwell)
+        return await self._player.play(mood, skill, min_dwell, can_act=can_act)
 
-    async def stop(self, *, skill: str | None = None) -> Outcome:
-        return await self._player.stop(skill)
+    async def stop(
+        self, *, skill: str | None = None, can_act: CanAct | None = None
+    ) -> Outcome:
+        return await self._player.stop(skill, can_act=can_act)
 
     def status(self) -> MusicStatus:
         return self._player.current
@@ -541,10 +548,11 @@ def bind_handlers(
             str(args["mood"]),
             skill=context.skill,
             min_dwell=duration(args.get("min_dwell", "60s")),
+            can_act=context.can_act,
         )
 
     async def stop(context: ActionContext, args: Mapping[str, object]) -> Outcome:
-        return await music.stop(skill=context.skill)
+        return await music.stop(skill=context.skill, can_act=context.can_act)
 
     warned: dict[str, float] = {}  # skill -> monotonic time of its last shown overlay
 

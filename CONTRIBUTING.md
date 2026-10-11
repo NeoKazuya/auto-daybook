@@ -32,6 +32,7 @@ When your person asks for something:
 ### 1. Claim and set up
 
 - Post `Claimed: <task> (<person>) — branch <person>/<topic>` on the Tracker.
+- **Lane work** ([docs/lanes/](docs/lanes/README.md)) is the exception to "one task per PR": a lane is claimed once as a whole. Agents inside the lane still post a `Claimed:` line per PR with the paths it touches, and a `Done:` line when it merges.
 - Each agent has one worktree and reuses it for every task, so dependencies are installed only once. Create it the first time:
 
   ```sh

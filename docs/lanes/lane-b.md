@@ -59,7 +59,7 @@ If Lane A hasn't claimed **chat** (routing, recall, skill drafting; §6.8), Lane
 ## Working setup
 
 - `daybook run --mock-api --port 8780–8789` with `DAYBOOK_HOME=~/.daybook-b-<agent>`. Open it in the GX10's browser, or forward the port: `ssh -L 8780:127.0.0.1:8780 asus@1s6m`.
-- Until Lane A wires up the shell's process management, start the shell by hand with `python -m daybook.shell --port 878x`.
+- Until Lane A wires up the shell's process management, start the shell by hand with `DAYBOOK_HOME=~/.daybook-b-<agent> python -m daybook.shell --port 878x`. It reads the token the running instance wrote to `$DAYBOOK_HOME/token`.
 - For real-screen overlay and tray checks, hold the capture lock (see [gx10-unattended.md](../gx10-unattended.md)).
 - Take PR screenshots from a mock instance, so no real notes appear in them.
 

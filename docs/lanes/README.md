@@ -9,6 +9,10 @@ The build is split into two lanes. Each lane builds its whole part, start to end
 
 Each lane is one task on the [Tracker](https://github.com/NeoKazuya/auto-daybook/issues/1). How a lane divides its own work is up to whoever runs it. Each brief has a scope checklist and an acceptance, not a sequence of steps.
 
+**Claims inside a lane.** The lane is claimed once (`Claimed: Lane A …`). Inside the lane, each agent posts a `Claimed:` line for the PR it's working on, with the paths it touches, before starting, and a `Done:` line when it merges. That's for overlap checks between agents in the same lane, not a plan; agents add these as they go. A lane is `Done:` only when its whole scope checklist is done.
+
+**Moving chat to Lane B.** Lane B may take `chat` (see [lane-b.md](lane-b.md#optional-chat)) by posting `Claimed: chat, moved from Lane A to Lane B`, as long as no Lane A agent has an open `Claimed:` line on `src/daybook/chat/`. Lane A agents check for that line before starting chat.
+
 ## Ownership by path
 
 Only the owning lane edits a path. The import-boundary check (`scripts/check_boundaries.py`) enforces the package boundaries.
@@ -27,6 +31,7 @@ Only the owning lane edits a path. The import-boundary check (`scripts/check_bou
 | `src/daybook/web/static/` | **Lane B** |
 | `src/daybook/shell/` | **Lane B** |
 | `scripts/record_fixture.py`, `fixtures/` | Lane A |
+| `tests/` | The lane that owns the code under test: `tests/web_static/` and `tests/shell/` are Lane B's, everything else is Lane A's |
 | `scripts/gx10/`, `docs/gx10-unattended.md` | GX10 setup (already merged in #3) |
 
 **Shared contracts.** Either lane may change these, but only through a shared-contract PR that waits for review (CONTRIBUTING step 5). Post a Tracker comment so the other lane sees it:

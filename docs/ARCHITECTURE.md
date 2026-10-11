@@ -427,7 +427,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
 - It binds to `127.0.0.1:8765`.
 - Every mutating route requires the per-launch token (`X-Daybook-Token`) and a same-origin `Origin` header.
-- The token is embedded in the served HTML and passed to the shell through its environment.
+- The token is embedded in the served HTML and passed to the shell through its environment. Every `daybook run`, including `--mock-api`, also writes it to `$DAYBOOK_HOME/token` (mode 0600). A shell started by hand reads it from there when `DAYBOOK_TOKEN` isn't set.
 
 **Routes** (from the Opus candidate's `web.py`):
 
@@ -471,7 +471,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
   - `DISPLAY=:1`
   - `XAUTHORITY=/run/user/1000/gdm/Xauthority`
   - `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus`
-  - `DAYBOOK_TOKEN`
+  - `DAYBOOK_TOKEN` (or, when started by hand, the token from `$DAYBOOK_HOME/token`)
 
 **Done when:**
 

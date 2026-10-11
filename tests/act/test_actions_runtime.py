@@ -705,9 +705,32 @@ async def test_xdo_close_tab_targets_only_the_checked_window(monkeypatch):
     screen["window"] = ""
     assert (await desktop.close_tab("*Instagram*")).detail == "window_unreadable"
 
-    for broad in ("*", "*?*", "[a]*", " * ", "[a-z]*", "[a-z][a-z][a-z]*", "*[!x]*"):
+    for broad in (
+        "*",
+        "*?*",
+        "[a]*",
+        " * ",
+        "[a-z]*",
+        "[a-z][a-z][a-z]*",
+        "*[!x]*",
+        "[] -~a]*",
+        "[!]x]*",
+    ):
         assert (await desktop.close_tab(broad)).detail == "pattern_too_broad"
     assert len(ran) == 1
+
+
+def test_literals_follow_fnmatch_class_rules():
+    import fnmatch
+
+    from daybook.act._desktop import literals, specific
+
+    assert literals("*Instagram*") == "Instagram"
+    assert literals("*Insta[gG]ram*") == "Instaram"
+    assert literals("[] -~a]*") == ""
+    assert literals("[abc") == "[abc"  # unterminated: literal, as fnmatch reads it
+    assert fnmatch.fnmatchcase("anything", "[] -~a]*")  # why it must count as wildcard
+    assert specific("*Instagram*") and not specific("[] -~a]*")
 
 
 def test_instagram_nudge_builtin_parses_against_the_catalog(library):

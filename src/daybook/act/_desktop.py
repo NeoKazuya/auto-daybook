@@ -110,11 +110,35 @@ def browser(wm_class: str) -> bool:
     )
 
 
+def literals(pattern: str) -> str:
+    """The characters a glob matches literally, parsed the way fnmatch does:
+    * and ? are wildcards; a [...] class (with an optional leading ! and a
+    leading ] as a member) is one wildcard; an unterminated [ is literal."""
+    out, i, n = [], 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        i += 1
+        if c in "*?":
+            continue
+        if c == "[":
+            j = i
+            if j < n and pattern[j] == "!":
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 1
+            if j < n:
+                i = j + 1  # the whole class matches one arbitrary character
+                continue
+        out.append(c)
+    return "".join(out)
+
+
 def specific(pattern: str) -> bool:
-    """A title pattern must name something: at least 3 non-wildcard characters,
-    so a skill can never close whatever tab happens to be active."""
-    literal = re.sub(r"\[[^\]]*\]?", "", pattern)  # a [...] class is a wildcard
-    return len(re.sub(r"[*?\]]", "", literal).strip()) >= 3
+    """A title pattern must name something: at least 3 literal characters, so a
+    skill can never close whatever browser tab happens to be active."""
+    return len(literals(pattern).strip()) >= 3
 
 
 async def close_tab(title: str) -> Outcome:

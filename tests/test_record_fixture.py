@@ -151,6 +151,7 @@ def test_parent_unrelated_lock_does_not_allow_capture(monkeypatch):
         f"1: FLOCK ADVISORY WRITE {os.getppid()} "
         f"{os.major(stat.st_dev):02x}:{os.minor(stat.st_dev):02x}:{stat.st_ino + 1} 0 EOF\n"
     )
+    monkeypatch.setattr(recorder, "wrapper_ancestors", lambda: {os.getppid()})
     original_read = Path.read_text
     monkeypatch.setattr(
         Path,

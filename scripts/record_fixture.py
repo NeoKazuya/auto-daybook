@@ -278,13 +278,33 @@ def record_step(folder: Path, at: float, allow_titles: tuple[str, ...]):
     return policy
 
 
+def wrapper_ancestors():
+    """uv may sit between the recorder and the GX10 capture-lock wrapper."""
+    wrappers = set()
+    pid = os.getppid()
+    visited = set()
+    wrapper = str(Path.home() / ".local/share/daybook-gx10/desktop-test.py").encode()
+    while pid > 1 and pid not in visited:
+        visited.add(pid)
+        try:
+            arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            if len(arguments) > 2 and arguments[1:3] == [wrapper, b"run"]:
+                wrappers.add(pid)
+            status = Path(f"/proc/{pid}/status").read_text().splitlines()
+            pid = int(next(row.split()[1] for row in status if row.startswith("PPid:")))
+        except (OSError, ValueError, StopIteration):
+            break
+    return wrappers
+
+
 @contextmanager
 def capture_lock():
-    # gx10 run owns a lock in our parent. Standalone invocations own it here.
+    # Standalone owns the lock; only the known gx10 wrapper may already own it.
     with open("/tmp/daybook-capture.lock", "a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            wrappers = wrapper_ancestors()
             stat = os.fstat(lock.fileno())
             identity = (os.major(stat.st_dev), os.minor(stat.st_dev), stat.st_ino)
 
@@ -293,7 +313,7 @@ def capture_lock():
                 if (
                     len(fields) < 6
                     or fields[1] != "FLOCK"
-                    or fields[4] != str(os.getppid())
+                    or fields[4] not in {str(pid) for pid in wrappers}
                 ):
                     return False
                 device = fields[5].split(":")

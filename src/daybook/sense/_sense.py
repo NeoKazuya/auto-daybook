@@ -22,7 +22,7 @@ from daybook.model import (
 )
 
 from ._gate import black, changed, gate
-from ._types import PrivacySettings, Screen, ScreenState
+from ._types import CaptureReason, CaptureStatus, PrivacySettings, Screen, ScreenState
 
 _REFRESH_AFTER = timedelta(seconds=60)
 
@@ -67,6 +67,7 @@ class Sense:
         self._generation = 0
         self._epoch = journal.epoch
         self._last_state: CaptureState | None = None
+        self._capture_reason: CaptureReason | None = None
         self._observation: Observation | None = None
         self._last_observed_at: datetime | None = None
         self._last_thumb: bytes | None = None
@@ -95,6 +96,13 @@ class Sense:
         except Exception:
             self.bus.publish(StatusChanged("sense", "questions_unavailable"))
             return False
+
+    @property
+    def status(self) -> CaptureStatus:
+        """Safe current explanation; historical capture spans stay in Journal."""
+        state = self.journal.portal.now().capture
+        reason = self._capture_reason if state == self._last_state else None
+        return CaptureStatus(state, reason)
 
     @property
     def privacy(self) -> PrivacySettings:
@@ -127,12 +135,25 @@ class Sense:
         self.bus.publish(StatusChanged("sense", "privacy_changed"))
         return settings
 
-    def _state(self, state: CaptureState, at: datetime) -> None:
+    def _state(
+        self, state: CaptureState, at: datetime, *, reason: CaptureReason | None = None
+    ) -> None:
+        reason_only = state == self._last_state and reason != self._capture_reason
         self.journal.set_capture_state(state, at)
         self._last_state = state
+        self._capture_reason = reason
+        # Journal emits state changes. A new explanation for the same state
+        # must also refresh clients, without creating a new historical gap.
+        if reason_only:
+            self.bus.publish(StatusChanged("sense", "capture_reason_changed"))
 
     def _gap(
-        self, state: CaptureState, at: datetime, facts: ScreenState | None = None
+        self,
+        state: CaptureState,
+        at: datetime,
+        facts: ScreenState | None = None,
+        *,
+        reason: CaptureReason | None = None,
     ) -> None:
         if state == "away" and self._last_state != "away" and facts:
             at -= timedelta(milliseconds=facts.idle_ms)
@@ -145,7 +166,7 @@ class Sense:
         self._last_thumb = None
         self._last_window = None
         self._pending_overlay_resume = state == "overlay"
-        self._state(state, at)
+        self._state(state, at, reason=reason)
 
     def _failed(
         self, at: datetime, sequence: int, status: str, *, captured: bool = False
@@ -163,7 +184,7 @@ class Sense:
         self._last_observed_at = None
         self._last_thumb = None
         if self._last_state == "running":
-            self._state("withheld", at)
+            self._state("withheld", at, reason="observation_unavailable")
 
     async def poll(self, at: datetime | None = None) -> None:
         if self._closed:
@@ -171,24 +192,24 @@ class Sense:
         at = at or datetime.now(timezone.utc)
         self._last_poll = at
         facts = self.screen.state()
-        state = gate(facts, self._privacy)
-        if state != "running":
-            self._gap(state, at, facts)
+        decision = gate(facts, self._privacy)
+        if decision.state != "running":
+            self._gap(decision.state, at, facts, reason=decision.reason)
             return
         try:
             thumbnail = self.screen.thumbnail(facts)
         except Exception:
-            self._gap("locked", at)
+            self._gap("locked", at, reason="screen_unavailable")
             self.bus.publish(StatusChanged("sense", "screen_unavailable"))
             return
         if black(thumbnail):
-            self._gap("locked", at)
+            self._gap("locked", at, reason="screen_unavailable")
             return
         try:
             questions = self._question_provider()
         except Exception:
             # A transient source reconciliation failure is not an empty question set.
-            self._gap("withheld", at)
+            self._gap("withheld", at, reason="observation_unavailable")
             self.bus.publish(StatusChanged("sense", "questions_unavailable"))
             return
         epoch_changed = self._epoch != self.journal.epoch
@@ -275,7 +296,7 @@ class Sense:
                 epoch != self.journal.epoch
                 or consent != self._generation
                 or continuity != self._continuity
-                or gate(before, self._privacy) != "running"
+                or gate(before, self._privacy).state != "running"
             ):
                 return None
             # Resolve current questions only after admission and consent checks,
@@ -297,7 +318,7 @@ class Sense:
             if (
                 epoch != self.journal.epoch
                 or consent != self._generation
-                or gate(after, self._privacy) != "running"
+                or gate(after, self._privacy).state != "running"
                 or before.active != after.active
                 or before.windows != after.windows
             ):
@@ -357,9 +378,11 @@ class Sense:
             self._failed(at, sequence, "frame_discarded", captured=admitted)
             return
         current = self.screen.state()
-        state = gate(current, self._privacy)
-        if state != "running":
-            self._gap(state, self._last_poll or at, current)
+        decision = gate(current, self._privacy)
+        if decision.state != "running":
+            self._gap(
+                decision.state, self._last_poll or at, current, reason=decision.reason
+            )
             self.bus.publish(StatusChanged("sense", "frame_discarded"))
             return
         observation = self.journal.add_observation(

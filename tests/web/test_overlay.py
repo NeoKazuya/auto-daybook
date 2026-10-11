@@ -69,6 +69,7 @@ async def test_real_overlay_layout_status_and_sse_roundtrip(layout, tmp_path):
 
     from daybook.act import MusicStatus, Overlay, OverlayRequest
     from daybook.model import ScriptedGateway
+    from daybook.sense import CaptureStatus
     from daybook.web import Services
     from daybook.web._live import LiveAPI
 
@@ -80,6 +81,7 @@ async def test_real_overlay_layout_status_and_sse_roundtrip(layout, tmp_path):
             Services,
             SimpleNamespace(
                 overlay=overlay,
+                sense=SimpleNamespace(status=CaptureStatus("running")),
                 gateway=ScriptedGateway([]),
                 music=SimpleNamespace(status=lambda: MusicStatus()),
                 journal=SimpleNamespace(

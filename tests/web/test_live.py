@@ -27,7 +27,7 @@ from daybook.journal import (
 )
 from daybook.mind import Mind
 from daybook.model import ScriptedGateway
-from daybook.sense import PrivacySettings, Screen, Sense
+from daybook.sense import CaptureStatus, PrivacySettings, Screen, Sense
 from daybook.skills import (
     NeedsReview,
     Skill,
@@ -149,10 +149,11 @@ def live(tmp_path):
     )
     book = Book(catalog)
     book.save("stand-after-meeting", w.DRAFT_TEXT)
-    sense = SimpleNamespace(privacy=PrivacySettings())
+    sense = SimpleNamespace(privacy=PrivacySettings(), status=CaptureStatus("running"))
 
     def set_privacy(settings):
         sense.privacy = settings
+        sense.status = CaptureStatus("paused" if settings.paused else "running")
         journal.set_capture_state(
             "paused" if settings.paused else "running", datetime.now(UTC)
         )
@@ -614,3 +615,34 @@ def test_conditional_privacy_preserves_intervening_exclusion_without_writes(
         assert retried.json()["paused"] is True
         assert retried.json()["exclude_titles"] == edited["exclude_titles"]
         assert "expected" not in retried.json()
+
+
+async def test_capture_reason_explains_daybook_without_disclosing_titles(
+    live, tmp_path
+):
+    from daybook.sense import Rect, ScreenState, VisibleWindow
+
+    title = "Daybook · confidential journal"
+    window = WindowInfo("Firefox", title)
+    screen = SimpleNamespace(
+        state=lambda: ScreenState(
+            window, (VisibleWindow("1", window, Rect(0, 0, 100, 100)),), False, 0
+        )
+    )
+    sense = Sense(
+        cast(Screen, screen),
+        live.services.journal,
+        live.services.gateway,
+        live.services.bus,
+        tmp_path,
+        lambda _: None,
+    )
+    await sense.poll()
+    services = replace(live.services, sense=sense)
+    app = create_app(token="test-token", origin="http://testserver", services=services)
+    with TestClient(app) as client:
+        result = client.get("/api/status")
+    assert result.json()["capture"] == "withheld"
+    assert result.json().get("capture_reason") == "daybook_visible"
+    assert title not in result.text
+    assert "Firefox" not in result.text

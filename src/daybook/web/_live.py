@@ -328,11 +328,13 @@ class LiveAPI:
     @property
     def status(self) -> w.StatusResponse:
         overlay = self.services.overlay.state
+        capture = self.services.sense.status
         return w.StatusResponse(
             gateway=w.GatewayStatus.model_validate(self.services.gateway.status()),
             music=w.MusicStatus.model_validate(self.services.music.status()),
             overlay=w.OverlayState.model_validate(overlay) if overlay else None,
-            capture=self.services.journal.portal.now().capture,
+            capture=capture.state,
+            capture_reason=capture.reason,
             shell_connected=self.shells > 0,
             mock=False,
         )

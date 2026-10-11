@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, Mapping
+from typing import Callable, Literal, Mapping
 
 from daybook.act import Actions, Catalog
 from daybook.events import Bus
@@ -121,7 +121,9 @@ def parse_skill(
 def evaluate(
     rule: Rule, history: list[SignalReading], *, max_gap: float = 300, now: datetime
 ) -> Occurrence | None:
-    raise NotImplementedError
+    from ._evaluate import match
+
+    return match(rule, history, max_gap=max_gap, now=now)
 
 
 async def draft_skill(
@@ -139,32 +141,43 @@ class SkillBook:
         portal: Portal,
         catalog: Catalog,
         bus: Bus,
+        *,
+        clear_readings: Callable[[str], None],
     ) -> None:
-        raise NotImplementedError
+        from ._book import Book
+
+        self._book = Book(home, builtin, database, portal, catalog, bus, clear_readings)
 
     def entries(self) -> list[SkillEntry]:
-        raise NotImplementedError
+        return self._book.entries()
 
     def active_signals(self) -> tuple[Signal, ...]:
-        raise NotImplementedError
+        return self._book.active_signals()
 
     def parse(self, id: str, text: str) -> Skill | list[SkillError]:
-        raise NotImplementedError
+        from ._book import valid_id
+
+        valid_id(id)
+        return parse_skill(
+            text,
+            source=SkillSource(self._book.home / f"{id}.skill.md", "user"),
+            catalog=self._book.catalog,
+        )
 
     def save(self, id: str, text: str) -> SkillEntry:
-        raise NotImplementedError
+        return self._book.save(id, text)
 
     def approve(self, id: str, hash: str) -> SkillEntry:
-        raise NotImplementedError
+        return self._book.approve(id, hash)
 
     def enable(self, id: str) -> SkillEntry:
-        raise NotImplementedError
+        return self._book.enable(id)
 
     def disable(self, id: str) -> SkillEntry:
-        raise NotImplementedError
+        return self._book.disable(id)
 
     def delete(self, id: str) -> None:
-        raise NotImplementedError
+        self._book.delete(id)
 
     async def react(self, tick: Tick) -> None:
-        raise NotImplementedError
+        await self._book.react(tick)

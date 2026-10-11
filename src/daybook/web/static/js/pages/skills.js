@@ -69,7 +69,10 @@ async function render(root, params) {
   function row(s, i) {
     const st = STATUS[s.status] ?? STATUS.invalid;
     return h(`div.row.clickable${s.id === selected ? '.selected' : ''}${s.status === 'disabled' ? '.dim' : ''}`,
-      { onclick: () => { selected = s.id; notice = null; draw(); history.replaceState(null, '', `#/skills?id=${s.id}`); },
+      { onclick: () => {
+          if (s.id === selected) return;
+          if (getDraft()) { toast('Save your edits before choosing another skill.', 'error'); return; }
+          selected = s.id; notice = null; draw(); history.replaceState(null, '', `#/skills?id=${s.id}`); },
         role: 'button', tabindex: 0, onkeydown: (e) => e.key === 'Enter' && e.currentTarget.click() },
       h('div.row-main',
         h(`span.check${st.check}`, icon(st.mark)),

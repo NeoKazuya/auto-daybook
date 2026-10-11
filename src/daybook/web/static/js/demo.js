@@ -302,10 +302,16 @@ export async function handle(method, path, body) {
       return ok();
     case 'GET /privacy':
       return privacyOut();
-    case 'PUT /privacy':
-      Object.assign(db.privacy, body);
+    case 'PUT /privacy': {
+      const { expected, ...next } = body;
+      if (expected && ['paused', 'exclude_apps', 'exclude_titles'].some((key) =>
+        JSON.stringify(expected[key]) !== JSON.stringify(db.privacy[key]))) {
+        throw fail(409, 'privacy_conflict');
+      }
+      Object.assign(db.privacy, next);
       emit('CaptureStateChanged', { state: captureState() });
       return privacyOut();
+    }
     case 'POST /tick':
       emit('TickRecorded', { tick: `t${Date.now()}` });
       return { recorded: true, tick: `t${Date.now()}` };

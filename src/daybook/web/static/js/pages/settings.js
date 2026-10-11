@@ -52,16 +52,24 @@ async function render(root) {
 
   // PUT /api/privacy replaces the whole resource, so saves run one at a time and each
   // patch is computed from a fresh GET (pass a function of it), never from a copy
-  // taken when the control was clicked. This also preserves changes from other tabs.
+  // taken when the control was clicked. A conditional PUT rejects intervening edits;
+  // conflicts reapply the original operation to a fresh snapshot, up to three tries.
   let queue = Promise.resolve();
   function save(patch, message) {
     queue = queue.then(async () => {
       let saved = false;
       try {
-        privacy = await api.privacy();
-        const next = typeof patch === 'function' ? patch(privacy) : patch;
-        privacy = await api.setPrivacy({ ...privacy, ...next });
-        saved = true;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          privacy = await api.privacy();
+          const next = typeof patch === 'function' ? patch(privacy) : patch;
+          try {
+            privacy = await api.setPrivacy({ ...privacy, ...next }, privacy);
+            saved = true;
+            break;
+          } catch (err) {
+            if (err.status !== 409 || err.code !== 'privacy_conflict' || attempt === 2) throw err;
+          }
+        }
         if (message) toast(message);
       } catch (err) {
         toast(`Couldn't save: ${err.message}`, 'error');

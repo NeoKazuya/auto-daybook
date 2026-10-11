@@ -56,7 +56,7 @@ const answer = { type: 'answer', text: 'You spent 4 minutes on journal tests', c
 const draft = { type: 'draft', summary: 'Stand after meetings', entry: { id: 'stand-after-meeting' } };
 async function setup({ developer = false } = {}) {
   let request = async path => path.startsWith('/api/timeline') ? { segments: [{id:'s1', title:'Old title'}] } : {};
-  const streams = [], channels = [], calls = [];
+  const streams = [], channels = [], calls = [], toasts = [];
   const context = vm.createContext({
     URLSearchParams, Date, console, setTimeout, clearTimeout,
     document: { querySelector: () => ({content:'test-token'}), activeElement:null },
@@ -70,7 +70,7 @@ async function setup({ developer = false } = {}) {
     ribbon:(p,x)=>h('header',x), panel:(title,icon,tools,...body)=>h('section',title,tools,body),
     split:(a,b)=>h('div',a,b), emptyState:(i,...x)=>h('div',x), errorState:e=>h('div',e.message),
     skeletons:()=>h('div','loading'), stat:(i,...x)=>h('div',x), longDay:()=>'', dayStamp:()=>'', clock:x=>x, duration:x=>String(x)+'s', folio:x=>x,
-    busy:async(button,fn)=>fn(), confirmDialog:async()=>true, toast:()=>{} };
+    busy:async(button,fn)=>fn(), confirmDialog:async()=>true, toast:(...args)=>toasts.push(args) };
   async function load(path) {
     if(cache.has(path)) return cache.get(path);
     let mod;
@@ -89,7 +89,7 @@ async function setup({ developer = false } = {}) {
     const root=h('main'); root.document=context.document; const hooks=await m.namespace.default.render(root,new URLSearchParams(params));
     return {root,hooks,ask:async message=>{const input=walk(root).find(x=>x.spec.startsWith('input')); input.value=message; walk(root).find(x=>x.spec.startsWith('form')).onsubmit({preventDefault(){}}); await settle();}};
   }
-  return {api:apiModule.namespace.api,subscribe:apiModule.namespace.subscribe,page,streams,channels,calls,setRequest:fn=>{request=fn;}};
+  return {api:apiModule.namespace.api,subscribe:apiModule.namespace.subscribe,page,streams,channels,calls,toasts,setRequest:fn=>{request=fn;}};
 }
 test('forget clears cached recall while keeping draft across navigation', async()=>{
   const x=await setup();
@@ -405,4 +405,98 @@ test('successful Save preserves newer text entered while PUT is pending',async()
   await save.onclick({currentTarget:save}); await settle();
   assert.equal(skill.text,'newer unsaved edit'); assert.equal(skill.hash,'saved-second');
   assert.ok(!walk(p.root).find(n=>n.textContent==='Approve & enable').disabled);
+});
+
+test('selected skill row keeps the editor; another row cannot discard unsaved edits',async()=>{
+  const x=await setup({developer:true});
+  const base={goal:'Goal.',status:'needs_review',origin:'user',signals:[],allow:[],rules:[],errors:[]};
+  x.setRequest(()=>({entries:[{...base,id:'stand',name:'Stand',hash:'one',text:'original'},{...base,id:'stretch',name:'Stretch',hash:'two',text:'other skill'}],catalog:[]}));
+  const p=await x.page('skills','id=stand');
+  const editor=walk(p.root).find(n=>n.spec.startsWith('textarea'));
+  editor.value='unsaved draft'; editor.oninput(); editor.focus(); editor.setSelectionRange(3,6);
+  const row=name=>walk(p.root).find(n=>n.role==='button'&&n.textContent.includes(name));
+  row('Stand').onclick();
+  assert.equal(walk(p.root).find(n=>n.spec.startsWith('textarea')).value,'unsaved draft');
+  assert.equal(walk(p.root).find(n=>n.spec.startsWith('textarea')),editor);
+  assert.equal(editor.value,'unsaved draft'); assert.equal(editor.selectionStart,3);
+  row('Stretch').onclick();
+  assert.equal(walk(p.root).find(n=>n.spec.startsWith('textarea')).value,'unsaved draft');
+  assert.equal(walk(p.root).find(n=>n.textContent==='Approve & enable').disabled,true);
+  assert.ok(x.toasts.some(([message])=>/save.*edit.*before.*skill/i.test(message)));
+  editor.value='original'; editor.oninput(); row('Stretch').onclick();
+  assert.equal(walk(p.root).find(n=>n.spec.startsWith('textarea')).value,'other skill');
+});
+test('Contents names the actual stopped capture state in empty and populated views',async()=>{
+  for(const [state,label] of [['paused','Paused'],['locked','Screen locked'],['away','Away'],['withheld','Private window'],['overlay','Overlay']]) {
+    for(const populated of [false,true]) {
+      const x=await setup();
+      x.setRequest(path=>path.startsWith('/api/timeline')?{segments:populated?[{id:'s1',title:'Work',kind:'coding',active:60,started_at:'2026-10-11T08:00:00Z'}]:[],capture_spans:[]}:path==='/api/skills'?{entries:[]}:path==='/api/status'?{capture:state,gateway:{reachable:true,calls_per_minute:0}}:{totals:[]});
+      const p=await x.page('contents');
+      assert.match(p.root.textContent,new RegExp(label,'i'));
+      if(state!=='paused') assert.doesNotMatch(p.root.textContent,/Capture is paused/);
+    }
+  }
+});
+
+test('interleaved browser privacy edits retry the original operation without losing exclusions',async()=>{
+  const a=await setup(),b=await setup(), reads=defer();
+  let privacy={paused:false,exclude_apps:[],exclude_titles:[]}, interleave=false, arrivals=0, conflicts=0;
+  const writes=[];
+  const request=async(path,options)=>{
+    if(path==='/api/privacy') {
+      if(options.method==='GET') {
+        const snapshot=structuredClone(privacy);
+        if(interleave&&++arrivals<=2) { if(arrivals===2) reads.resolve(); await reads.promise; }
+        return {...snapshot,keep_frames:false,screenshots_stored:'none',deletion_pending:false};
+      }
+      const body=JSON.parse(options.body); writes.push(body);
+      if(body.expected&&JSON.stringify(body.expected)!==JSON.stringify(privacy)) {
+        conflicts++; return new Response(JSON.stringify({detail:'privacy_conflict'}),{status:409});
+      }
+      privacy={paused:body.paused,exclude_apps:body.exclude_apps,exclude_titles:body.exclude_titles};
+      return structuredClone(privacy);
+    }
+    if(path==='/api/status')return {gateway:{},music:{},capture:'running'};
+    return {totals:[]};
+  };
+  a.setRequest(request);b.setRequest(request);
+  const pa=await a.page('settings'),pb=await b.page('settings'); interleave=true;
+  const add=(p,name)=>{const form=walk(p.root).find(n=>n.spec==='form.excl-form');form.querySelector('input').value=name;form.onsubmit({preventDefault(){}});};
+  add(pa,'Code');add(pb,'Firefox');await settle();
+  assert.deepEqual(privacy.exclude_apps,['Code','Firefox']);
+  assert.equal(conflicts,1);assert.equal(writes.length,3);
+  assert.ok(writes.every(body=>Object.keys(body.expected).sort().join(',')==='exclude_apps,exclude_titles,paused'));
+  assert.deepEqual(writes[2].expected.exclude_apps,['Code']);
+});
+test('privacy conflicts stop after three attempts, preserving the pending input; other failures do not retry',async()=>{
+  for(const [code,status,attempts] of [['privacy_conflict',409,3],['invalid_token_or_origin',403,1]]) {
+    const x=await setup();let writes=0,gets=0,privacy={paused:false,exclude_apps:['KeePassXC'],exclude_titles:[]};
+    x.setRequest((path,options)=>{
+      if(path==='/api/privacy') {
+        if(options.method==='GET') {gets++;return structuredClone(privacy);}
+        writes++;privacy={...privacy,exclude_apps:['KeePassXC','Remote-'+writes]};
+        return new Response(JSON.stringify({detail:code}),{status});
+      }
+      if(path==='/api/status')return {gateway:{},music:{},capture:'running'};
+      return {totals:[]};
+    });
+    const p=await x.page('settings'),form=walk(p.root).find(n=>n.spec==='form.excl-form');
+    form.querySelector('input').value='Code';form.onsubmit({preventDefault(){}});await settle();
+    assert.equal(writes,attempts);assert.equal(gets,attempts+1);
+    assert.equal(walk(p.root).find(n=>n.spec==='form.excl-form').querySelector('input').value,'Code');
+    assert.ok(!privacy.exclude_apps.includes('Code'));
+    assert.ok(x.toasts.some(([message])=>/Couldn't save/.test(message)));
+  }
+});
+test('demo conditional privacy writes reject stale snapshots without storing expected',async()=>{
+  const context=vm.createContext({Date,URL,setInterval:()=>{},setTimeout:fn=>fn()});
+  const module=new vm.SourceTextModule(await readFile('src/daybook/web/static/js/demo.js','utf8'),{context});
+  await module.link(()=>{throw Error('unexpected import');});await module.evaluate();
+  const call=module.namespace.handle,current=await call('GET','/api/privacy');
+  const values=p=>({paused:p.paused,exclude_apps:[...p.exclude_apps],exclude_titles:[...p.exclude_titles]});
+  const expected=values(current);
+  const saved=await call('PUT','/api/privacy',{...values(current),paused:true,expected});
+  assert.equal(saved.paused,true);assert.equal(Object.hasOwn(saved,'expected'),false);
+  await assert.rejects(call('PUT','/api/privacy',{...values(saved),paused:false,expected}),e=>e.status===409&&e.detail==='privacy_conflict');
+  assert.equal((await call('GET','/api/privacy')).paused,true);
 });

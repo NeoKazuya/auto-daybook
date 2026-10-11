@@ -57,6 +57,7 @@ const MESSAGES = {
   invalid_request: 'Daybook rejected that request.',
   invalid_time_range: 'That time range isn’t valid.',
   invalid_token_or_origin: 'This page’s session expired. Reload the page.',
+  privacy_conflict: 'Privacy settings changed in another window. Try again.',
   stale_approval: 'The skill changed since you reviewed it. The new version is shown; review it again.',
   needs_review: 'This version hasn’t been reviewed yet. Approve it first.',
   active_signal_limit: 'Too many active skill questions (12 at most). Disable another skill first.',
@@ -89,6 +90,9 @@ async function call(method, path, body) {
   return data;
 }
 
+// One projection is shared by the new settings and their expected snapshot.
+const privacyValues = (p) => ({ paused: p.paused, exclude_apps: p.exclude_apps, exclude_titles: p.exclude_titles });
+
 const q = (params) => {
   const s = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== '')).toString();
   return s ? `?${s}` : '';
@@ -114,8 +118,10 @@ export const api = {
   deleteSkill: (id) => call('DELETE', `/api/skills/${id}`),
   privacy: () => call('GET', '/api/privacy'),
   // PrivacyPut forbids unknown fields, so only send what the server accepts.
-  setPrivacy: (p) => call('PUT', '/api/privacy', supports.monitoringRules ? p
-    : { paused: p.paused, exclude_apps: p.exclude_apps, exclude_titles: p.exclude_titles }),
+  setPrivacy: (p, expected) => call('PUT', '/api/privacy', {
+    ...(supports.monitoringRules ? p : privacyValues(p)),
+    ...(expected ? { expected: privacyValues(expected) } : {}),
+  }),
   tick: () => call('POST', '/api/tick'),
   search: async (text, from, to, limit) => (await call('GET', `/api/search${q({ q: text, from, to, limit })}`)).hits,
   totals: async (by, from, to) => (await call('GET', `/api/totals${q({ by, from, to })}`)).totals,

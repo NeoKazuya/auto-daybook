@@ -31,7 +31,8 @@ async function render(root) {
   return { onEvent: refresh };
 }
 
-const CAPTURE = { running: 'Recording', paused: 'Paused', locked: 'Screen locked', away: 'Away', withheld: 'Private window', overlay: 'Overlay up' };
+const CAPTURE = { running: 'Recording', ...GAP_LABEL };
+const stoppedMessage = (state) => (CAPTURE[state] ?? state) + '. Nothing is being written.';
 
 // `kinds` is null when the server has no totals route yet; totals are never summed here.
 function view(tl, kinds, skills, status) {
@@ -49,7 +50,7 @@ function view(tl, kinds, skills, status) {
     return [stats, emptyState('contents', 'No notes yet',
       status.capture === 'running'
         ? 'Daybook is watching. The first chapter appears a few seconds after you start working.'
-        : 'Capture is paused. Turn it back on in Settings or from the tray to start taking notes.')];
+        : stoppedMessage(status.capture))];
   }
 
   // Interleave segments and capture gaps by start time.
@@ -89,7 +90,7 @@ function view(tl, kinds, skills, status) {
 
 function nowCard(open, status) {
   if (status.capture !== 'running') {
-    return h('p.muted', { style: 'margin:0' }, 'Capture is paused. Nothing is being written.');
+    return h('p.muted', { style: 'margin:0' }, stoppedMessage(status.capture));
   }
   if (!open) return h('p.muted', { style: 'margin:0' }, 'Between chapters. A new one starts on the next change.');
   return h('a', { href: `#/daily?seg=${open.id}`, style: 'display:flex;flex-direction:column;gap:0.35rem' },

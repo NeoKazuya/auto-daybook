@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -11,6 +12,7 @@ from daybook.journal import (
     Continue,
     Journal,
     ObservationDraft,
+    SegmentAssignment,
     SignalId,
     Start,
     Tick,
@@ -27,6 +29,23 @@ from daybook.model import (
     ScriptedGateway,
 )
 from daybook.skills import Signal, SkillBook
+
+
+class BatchGateway(ScriptedGateway):
+    async def call(self, priority, prompt):
+        built = await prompt() if callable(prompt) else prompt
+        if built is None:
+            return None
+        if self.replies and isinstance(self.replies[0], str):
+            answer = json.loads(self.replies[0])
+            for group in answer.get("segments", []):
+                if group["observations"] == ["$batch"]:
+                    group["observations"] = re.findall(
+                        r"^([0-9a-f]{32}) ", built.user, re.M
+                    )
+            self.replies[0] = json.dumps(answer)
+        return await super().call(priority, built)
+
 
 NOW = datetime.now(timezone.utc) + timedelta(seconds=1)
 SIGNALS = (
@@ -70,7 +89,7 @@ SEGMENT = {
 )
 def test_parse_signal_coercion_missing_extra_and_bounds(raw, expected):
     tick = parse_tick(
-        {"signals": raw},
+        {"segments": [], "signals": raw},
         signals=SIGNALS,
         at=NOW,
         epoch=3,
@@ -80,7 +99,7 @@ def test_parse_signal_coercion_missing_extra_and_bounds(raw, expected):
     )
     assert tuple(r.value for r in tick.readings) == expected
     assert all(r.tick == tick.id for r in tick.readings)
-    assert tick.segment is None
+    assert tick.segments == ()
 
 
 @pytest.mark.parametrize(
@@ -94,7 +113,11 @@ def test_parse_signal_coercion_missing_extra_and_bounds(raw, expected):
 )
 def test_segment_decisions(open, mode, ids, type_):
     tick = parse_tick(
-        {"segment": {**SEGMENT, "mode": mode}},
+        {
+            "segments": [{**SEGMENT, "mode": mode, "observations": list(ids)}]
+            if ids
+            else []
+        },
         signals=(),
         at=NOW,
         epoch=0,
@@ -102,7 +125,7 @@ def test_segment_decisions(open, mode, ids, type_):
         observations=ids,
         has_open_segment=open,
     )
-    assert isinstance(tick.segment, type_)
+    assert isinstance(tick.segments[0].decision if tick.segments else None, type_)
 
 
 class SpyBook(SkillBook):
@@ -143,10 +166,10 @@ def runtime(tmp_path):
     journal.close()
 
 
-def reply(segment=SEGMENT):
+def reply(segment=SEGMENT, ids=("$batch",)):
     return json.dumps(
         {
-            "segment": segment,
+            "segments": [{**segment, "observations": list(ids)}] if segment else [],
             "signals": {"test.focused": True, "test.mood": "focus", "test.level": 3.0},
         }
     )
@@ -154,10 +177,10 @@ def reply(segment=SEGMENT):
 
 async def test_scripted_full_tick_then_still_screen_readings(runtime):
     journal, clock, observation, skills = runtime
-    gateway = ScriptedGateway([reply(), reply(None)])
+    gateway = BatchGateway([reply(), reply(None)])
     mind = Mind(journal, gateway, skills, clock=clock)
     first = await mind.tick_now()
-    assert first and isinstance(first.segment, Start)
+    assert first and isinstance(first.segments[0].decision, Start)
     assert journal.portal.now().segment
     assert skills.fired == [first]
     assert gateway.priorities == [Priority.TICK]
@@ -166,7 +189,7 @@ async def test_scripted_full_tick_then_still_screen_readings(runtime):
     clock.advance(30)
     journal.extend_observation(observation.id, clock())
     second = await mind.tick_now()
-    assert second and not second.observations and second.segment is None
+    assert second and not second.observations and not second.segments
     assert (
         len(
             journal.portal.readings(
@@ -180,7 +203,7 @@ async def test_scripted_full_tick_then_still_screen_readings(runtime):
 
 async def test_schedule_debounce_spacing_and_evidence(runtime):
     journal, clock, observation, skills = runtime
-    gateway = ScriptedGateway([reply(), reply(None), reply(None)])
+    gateway = BatchGateway([reply(), reply(None), reply(None)])
 
     async def sleep(seconds):
         clock.advance(seconds)
@@ -201,7 +224,7 @@ async def test_schedule_debounce_spacing_and_evidence(runtime):
 
 async def test_no_evidence_or_paused_means_no_model_call(runtime):
     journal, clock, observation, skills = runtime
-    gateway = ScriptedGateway([reply(), reply()])
+    gateway = BatchGateway([reply(), reply()])
     mind = Mind(journal, gateway, skills, clock=clock)
     assert await mind.tick_now()
     clock.advance(90)
@@ -215,7 +238,7 @@ async def test_no_evidence_or_paused_means_no_model_call(runtime):
 async def test_stale_epoch_drops_tick_and_no_reaction(runtime):
     journal, clock, observation, skills = runtime
 
-    class ForgetGateway(ScriptedGateway):
+    class ForgetGateway(BatchGateway):
         async def call(self, priority, prompt):
             journal.forget_all()
             return await super().call(priority, prompt)
@@ -229,7 +252,7 @@ async def test_stale_epoch_drops_tick_and_no_reaction(runtime):
 
 async def test_model_failure_does_not_retry_until_spacing(runtime):
     journal, clock, observation, skills = runtime
-    gateway = ScriptedGateway([ModelUnavailable("offline"), reply()])
+    gateway = BatchGateway([ModelUnavailable("offline"), reply()])
     mind = Mind(journal, gateway, skills, clock=clock)
     assert await mind.tick_now() is None
     clock.advance(1)
@@ -244,13 +267,13 @@ def test_dynamic_schema_rejects_wrong_enum_and_constrains_each_signal():
 
     model = output_model(SIGNALS)
     values = {"test.focused": None, "test.mood": "focus", "test.level": None}
-    assert model.model_validate({"segment": None, "signals": values})
+    assert model.model_validate({"segments": [], "signals": values})
     with pytest.raises(ValidationError):
         model.model_validate(
-            {"segment": None, "signals": {**values, "test.mood": "unlisted"}}
+            {"segments": [], "signals": {**values, "test.mood": "unlisted"}}
         )
     with pytest.raises(ValidationError):
-        model.model_validate({"segment": None, "signals": {**values, "test.level": 11}})
+        model.model_validate({"segments": [], "signals": {**values, "test.level": 11}})
     assert (
         "test.focused"
         in model.model_json_schema()["$defs"]["TickSignals"]["properties"]
@@ -261,7 +284,7 @@ async def test_app_switch_nudge_during_model_call_is_preserved(runtime):
     journal, clock, observation, skills = runtime
     mind = None
 
-    class SwitchGateway(ScriptedGateway):
+    class SwitchGateway(BatchGateway):
         async def call(self, priority, prompt):
             clock.advance(10)
             journal.extend_observation(observation.id, clock())
@@ -289,7 +312,7 @@ async def test_app_switch_nudge_during_model_call_is_preserved(runtime):
 
 async def test_gap_over_five_minutes_closes_segment_without_model(runtime):
     journal, clock, observation, skills = runtime
-    gateway = ScriptedGateway([reply()])
+    gateway = BatchGateway([reply()])
     mind = Mind(journal, gateway, skills, clock=clock)
     assert await mind.tick_now()
     journal.set_capture_state("paused", clock())
@@ -314,7 +337,7 @@ async def test_bounded_prompt_assigns_only_oldest_included_batch(runtime):
         )
         assert observation
         all_ids.append(observation.id)
-    gateway = ScriptedGateway([reply(), reply(), reply(), reply()])
+    gateway = BatchGateway([reply(), reply(), reply(), reply()])
     mind = Mind(journal, gateway, skills, clock=clock)
     first_tick = await mind.tick_now()
     assert first_tick and 0 < len(first_tick.observations) < len(all_ids)
@@ -337,7 +360,11 @@ async def test_contiguous_mixed_capture_states_close_five_minute_gap(runtime):
             journal.epoch,
             clock(),
             (observation.id,),
-            Start("Work", "coding", "Implement"),
+            (
+                SegmentAssignment(
+                    (observation.id,), Start("Work", "coding", "Implement")
+                ),
+            ),
             (),
         )
     )
@@ -346,7 +373,7 @@ async def test_contiguous_mixed_capture_states_close_five_minute_gap(runtime):
     clock.advance(240)
     journal.set_capture_state("locked", clock())
     clock.advance(241)
-    mind = Mind(journal, ScriptedGateway([]), skills, clock=clock)
+    mind = Mind(journal, BatchGateway([]), skills, clock=clock)
     assert await mind.tick_now() is None
     assert journal.portal.now().segment is None
 
@@ -361,12 +388,16 @@ async def test_restart_does_not_call_model_for_persisted_evidence_without_signal
             journal.epoch,
             clock(),
             (observation.id,),
-            Start("Work", "coding", "Implement"),
+            (
+                SegmentAssignment(
+                    (observation.id,), Start("Work", "coding", "Implement")
+                ),
+            ),
             (),
         )
     )
     clock.advance(30)
-    gateway = ScriptedGateway([reply(None)])
+    gateway = BatchGateway([reply(None)])
     mind = Mind(journal, gateway, skills, clock=clock)
     assert await mind.tick_now() is None
     clock.advance(30)
@@ -377,41 +408,15 @@ async def test_restart_does_not_call_model_for_persisted_evidence_without_signal
     assert len(gateway.prompts) == 1
 
 
-async def test_null_segment_batch_does_not_block_later_backlog(runtime):
-    journal, clock, first, skills = runtime
-    for index in range(10):
-        clock.advance(10)
-        assert journal.add_observation(
-            ObservationDraft(clock(), WindowInfo("Code", f"task-{index}"), "x" * 1000),
-            journal.epoch,
-        )
-    old = journal.portal.observations(TimeRange(NOW, clock() + timedelta(seconds=1)))[
-        :4
-    ]
-    earlier = Tick(
-        clock(), journal.epoch, old[-1].last_seen_at, tuple(o.id for o in old), None, ()
-    )
-    # Historical committed ticks may have no segment even though their batch is consumed.
-    assert journal.record_tick(earlier)
-    gateway = ScriptedGateway([reply()])
-    mind = Mind(journal, gateway, skills, clock=clock)
-    clock.advance(30)
-    later = await mind.tick_now()
-    assert later and later.evidence_until > earlier.evidence_until
-    assert not set(later.observations).intersection(earlier.observations)
-
-
-async def test_null_segment_observation_can_be_retried_after_extension(runtime):
+async def test_rejected_assignment_does_not_consume_evidence(runtime):
     journal, clock, observation, skills = runtime
-    assert journal.record_tick(
-        Tick(clock(), journal.epoch, clock(), (observation.id,), None, ())
+    assert not journal.record_tick(
+        Tick(clock(), journal.epoch, clock(), (observation.id,), (), ())
     )
-    gateway = ScriptedGateway([reply()])
-    mind = Mind(journal, gateway, skills, clock=clock)
-    clock.advance(30)
-    journal.extend_observation(observation.id, clock())
-    later = await mind.tick_now()
-    assert later and later.observations == (observation.id,)
+    assert journal.portal.latest_tick_evidence_until() is None
+    gateway = BatchGateway([reply()])
+    tick = await Mind(journal, gateway, skills, clock=clock).tick_now()
+    assert tick and tick.observations == (observation.id,)
     assert journal.portal.now().segment
 
 
@@ -420,16 +425,16 @@ def test_output_requires_every_signal_but_allows_explicit_unknown():
 
     model = output_model(SIGNALS)
     with pytest.raises(ValidationError):
-        model.model_validate({"segment": None, "signals": {"test.focused": None}})
+        model.model_validate({"segments": [], "signals": {"test.focused": None}})
     assert model.model_validate(
-        {"segment": None, "signals": {str(s.id): None for s in SIGNALS}}
+        {"segments": [], "signals": {str(s.id): None for s in SIGNALS}}
     )
 
 
 async def test_periodic_cadence_counts_from_call_start_not_finish(runtime):
     journal, clock, observation, skills = runtime
 
-    class DelayedGateway(ScriptedGateway):
+    class DelayedGateway(BatchGateway):
         async def call(self, priority, prompt):
             clock.advance(20)
             journal.extend_observation(observation.id, clock())
@@ -456,14 +461,18 @@ def test_segment_output_depends_on_new_evidence():
     from daybook.mind._tick import output_model
 
     values = {str(signal.id): None for signal in SIGNALS}
-    new = output_model(SIGNALS, has_observations=True)
-    assert new.model_validate({"segment": SEGMENT, "signals": values})
+    new = output_model(SIGNALS, observations=("o",))
+    assert new.model_validate(
+        {"segments": [{**SEGMENT, "observations": ["o"]}], "signals": values}
+    )
     with pytest.raises(ValidationError):
-        new.model_validate({"segment": None, "signals": values})
-    still = output_model(SIGNALS, has_observations=False)
-    assert still.model_validate({"segment": None, "signals": values})
+        new.model_validate({"segments": [], "signals": values})
+    still = output_model(SIGNALS, observations=())
+    assert still.model_validate({"segments": [], "signals": values})
     with pytest.raises(ValidationError):
-        still.model_validate({"segment": SEGMENT, "signals": values})
+        still.model_validate(
+            {"segments": [{**SEGMENT, "observations": ["o"]}], "signals": values}
+        )
 
 
 async def test_backlog_batches_do_not_span_long_capture_gap(runtime):
@@ -477,7 +486,7 @@ async def test_backlog_batches_do_not_span_long_capture_gap(runtime):
         journal.epoch,
     )
     assert after
-    gateway = ScriptedGateway([reply(), reply()])
+    gateway = BatchGateway([reply(), reply()])
     mind = Mind(journal, gateway, skills, clock=clock)
     first = await mind.tick_now()
     assert first and first.observations == (before.id,)
@@ -485,7 +494,7 @@ async def test_backlog_batches_do_not_span_long_capture_gap(runtime):
     clock.advance(30)
     second = await mind.tick_now()
     assert second and second.observations == (after.id,)
-    assert isinstance(second.segment, Start)
+    assert isinstance(second.segments[0].decision, Start)
     segments = journal.portal.segments(TimeRange(NOW, clock() + timedelta(seconds=1)))
     assert len(segments) == 2
     assert [tuple(o.id for o in segment.observations) for segment in segments] == [
@@ -500,7 +509,7 @@ async def test_resume_waits_for_fresh_observation_before_readings_and_actions(ru
     journal.set_capture_state("paused", clock())
     clock.advance(10)
     journal.set_capture_state("running", clock())
-    gateway = ScriptedGateway([reply()])
+    gateway = BatchGateway([reply()])
     mind = Mind(journal, gateway, skills, clock=clock)
     # Sense publishes running before its asynchronous observation finishes.
     assert await mind.tick_now() is None
@@ -520,7 +529,7 @@ async def test_resume_waits_for_fresh_observation_before_readings_and_actions(ru
 async def test_in_flight_tick_is_discarded_after_pause_and_resume(runtime):
     journal, clock, observation, skills = runtime
 
-    class ResumeGateway(ScriptedGateway):
+    class ResumeGateway(BatchGateway):
         async def call(self, priority, prompt):
             clock.advance(1)
             journal.set_capture_state("paused", clock())
@@ -557,7 +566,7 @@ async def test_kind_transition_preserves_prior_durations_and_same_kind_continues
     assert first
     reading = {**SEGMENT, "kind": "reading", "title": "Reading research"}
     changed = {**SEGMENT, "kind": next_kind}
-    gateway = ScriptedGateway([reply(reading), reply(changed), reply(None)])
+    gateway = BatchGateway([reply(reading), reply(changed), reply(None)])
     mind = Mind(journal, gateway, skills, clock=clock)
     try:
         clock.advance(30)
@@ -584,14 +593,14 @@ async def test_kind_transition_preserves_prior_durations_and_same_kind_continues
         assert tick
         totals = journal.portal.totals(TimeRange(NOW, clock() + timedelta(seconds=1)))
         assert {total.label: total.active for total in totals} == expected_totals
-        assert isinstance(tick.segment, decision_type)
+        assert isinstance(tick.segments[0].decision, Continue)
         current = journal.portal.now().segment
         assert current
         assert (current.id == original.id) is (next_kind == "reading")
         clock.advance(30)
         journal.extend_observation(second.id, clock())
         still = await mind.tick_now()
-        assert still and not still.observations and still.segment is None
+        assert still and not still.observations and not still.segments
         after = journal.portal.now().segment
         assert after and after.id == current.id
     finally:
@@ -619,7 +628,7 @@ async def test_queued_tick_rejects_replaced_current_but_keeps_extensions(
         else:
             tick_started.set()
             await release_tick.wait()
-            content = reply()
+            content = reply(ids=(observation.id,))
         return httpx.Response(
             200, json={"choices": [{"message": {"content": content}}]}
         )
@@ -692,7 +701,7 @@ async def test_evidence_readiness_failure_recovers_without_consuming_attempt(
         return True
 
     monkeypatch.setattr(skills, "active_signals", active_signals)
-    gateway = ScriptedGateway([reply()])
+    gateway = BatchGateway([reply()])
     mind = Mind(journal, gateway, skills, clock=clock, evidence_ready=ready)
     assert await mind.tick_now() is None
     assert not gateway.prompts and not skills.fired
@@ -714,9 +723,35 @@ async def test_evidence_callback_epoch_change_is_checked_after_callback(
             journal.clear_skill_readings("test")
         return True
 
-    gateway = ScriptedGateway([reply()])
+    gateway = BatchGateway([reply()])
     mind = Mind(journal, gateway, skills, clock=clock, evidence_ready=ready)
     assert await mind.tick_now() is None
     assert len(gateway.prompts) == (0 if reconcile_call == 2 else 1)
     assert not skills.fired and not journal.portal.now().readings
     assert journal.portal.latest_tick_evidence_until() is None
+
+
+async def test_many_small_observations_bound_response_groups_and_drain_backlog(runtime):
+    journal, clock, first, skills = runtime
+    ids = [first.id]
+    for i in range(17):
+        clock.advance(10)
+        note = journal.add_observation(
+            ObservationDraft(clock(), WindowInfo("App", str(i)), "Task"), journal.epoch
+        )
+        assert note
+        ids.append(note.id)
+    gateway = BatchGateway([reply(), reply(), reply()])
+    mind = Mind(journal, gateway, skills, clock=clock)
+    assigned = []
+    while len(assigned) < len(ids):
+        tick = await mind.tick_now()
+        assert tick and 1 <= len(tick.observations) <= 8
+        assigned.extend(tick.observations)
+        clock.advance(30)
+    assert assigned == ids
+    assert len(gateway.prompts) == 3
+    assert all(prompt.max_tokens == 4096 for prompt in gateway.prompts)
+    # Historical bounded groups do not substitute for the newest signal facts.
+    assert "CURRENT evidence;" in gateway.prompts[0].user
+    assert "App / 16: Task" in gateway.prompts[0].user

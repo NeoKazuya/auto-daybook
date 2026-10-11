@@ -9,6 +9,7 @@ from daybook.events import Bus, StatusChanged
 from daybook.journal import (
     Journal,
     ObservationDraft,
+    SegmentAssignment,
     SignalId,
     SignalReading,
     Start,
@@ -38,7 +39,7 @@ def history(tmp_path):
             journal.epoch,
             AT + timedelta(minutes=2),
             (note.id,),
-            Start("Coding", "coding", "Repair tests"),
+            (SegmentAssignment((note.id,), Start("Coding", "coding", "Repair tests")),),
             (
                 SignalReading(
                     SignalId("test", "focused"), True, AT + timedelta(minutes=2), ""
@@ -118,7 +119,11 @@ def test_normal_capture_tick_and_skill_readings_do_not_invalidate_recall(history
                 journal.epoch,
                 AT + timedelta(minutes=4),
                 (note.id,),
-                Start("Reading", "reading", "Reference"),
+                (
+                    SegmentAssignment(
+                        (note.id,), Start("Reading", "reading", "Reference")
+                    ),
+                ),
                 (),
             )
         )

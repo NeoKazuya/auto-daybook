@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import signal
 import stat
 import sys
@@ -332,17 +333,23 @@ async def test_concrete_replay_composes_owners_and_never_starts_real_effects(
         }
         await services.sense.poll()
         await services.sense.wait_idle()
-        assert services.journal.portal.now().observation is not None
+        observation = services.journal.portal.now().observation
+        assert observation is not None
         assert gateway.priorities == [daybook.model.Priority.OBSERVE]
         gateway.replies.append(
             json.dumps(
                 {
-                    "segment": {
-                        "mode": "start",
-                        "title": "Implement example",
-                        "kind": "coding",
-                        "intent": "Likely implementing a function.",
-                    },
+                    "segments": [
+                        {
+                            **{
+                                "mode": "start",
+                                "title": "Implement example",
+                                "kind": "coding",
+                                "intent": "Likely implementing a function.",
+                            },
+                            "observations": [observation.id],
+                        }
+                    ],
                     "signals": {
                         str(signal.id): None
                         for signal in services.skills.active_signals()
@@ -503,7 +510,20 @@ def test_tick_once_requires_running_daemon_without_inference_or_history_writes(
     before = hashlib.sha256((tmp_path / "journal.db").read_bytes()).hexdigest()
     gateway = ScriptedGateway(
         [
-            '{"segment":{"mode":"start","title":"Code","kind":"coding","intent":"Likely coding."},"signals":{"music.mood":null}}'
+            json.dumps(
+                {
+                    "segments": [
+                        {
+                            "observations": [note.id],
+                            "mode": "start",
+                            "title": "Code",
+                            "kind": "coding",
+                            "intent": "Likely coding.",
+                        }
+                    ],
+                    "signals": {"music.mood": None},
+                }
+            )
         ]
     )
     constructed: list[bool] = []
@@ -1219,12 +1239,19 @@ async def test_newly_approved_questions_wait_for_fresh_observation_before_tick(
                 self.replies.append(
                     json.dumps(
                         {
-                            "segment": {
-                                "mode": "start",
-                                "title": "Code",
-                                "kind": "coding",
-                                "intent": "Likely working.",
-                            },
+                            "segments": [
+                                {
+                                    **{
+                                        "mode": "start",
+                                        "title": "Code",
+                                        "kind": "coding",
+                                        "intent": "Likely working.",
+                                    },
+                                    "observations": re.findall(
+                                        r"^([0-9a-f]{32}) ", built.user, re.M
+                                    ),
+                                }
+                            ],
                             "signals": {
                                 str(s.id): "result is marked complete" in current
                                 for s in services.skills.active_signals()
@@ -1325,16 +1352,29 @@ async def test_question_disable_discards_queued_or_inflight_public_tick(
             if stage == "inflight":
                 entered.set()
                 await release.wait()
+            queued = self.replies[0]
+            assert isinstance(queued, str)
+            answer = json.loads(queued)
+            for group in answer["segments"]:
+                group["observations"] = re.findall(
+                    r"^([0-9a-f]{32}) ", built.user, re.M
+                )
+            self.replies[0] = json.dumps(answer)
             return await super().call(priority, built)
 
     answer = json.dumps(
         {
-            "segment": {
-                "mode": "start",
-                "title": "Code",
-                "kind": "coding",
-                "intent": "Working.",
-            },
+            "segments": [
+                {
+                    **{
+                        "mode": "start",
+                        "title": "Code",
+                        "kind": "coding",
+                        "intent": "Working.",
+                    },
+                    "observations": ["$batch"],
+                }
+            ],
             "signals": {"result-check.complete": True},
         }
     )

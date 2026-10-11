@@ -363,26 +363,45 @@ class Journal:
                 "SELECT 1 FROM ticks WHERE evidence_until=?", (evidence,)
             ).fetchone():
                 return False
+            flattened = tuple(
+                id for assignment in tick.segments for id in assignment.observations
+            )
+            if (
+                flattened != tick.observations
+                or len(set(flattened)) != len(flattened)
+                or any(not group.observations for group in tick.segments)
+            ):
+                return False
+            rows = []
+            for id in flattened:
+                row = self._db.execute(
+                    "SELECT id, started_at FROM observations WHERE id=? AND segment IS NULL AND started_at<=?",
+                    (id, evidence),
+                ).fetchone()
+                if row is None:
+                    return False
+                rows.append((row["started_at"], row["id"]))
+            if rows != sorted(rows):
+                return False
             self._db.execute(
                 "INSERT INTO ticks VALUES(?, ?, ?, ?)",
                 (tick.id, at, evidence, tick.epoch),
             )
-            ids = [
-                id
-                for id in dict.fromkeys(tick.observations)
-                if self._db.execute(
-                    "SELECT 1 FROM observations WHERE id=? AND segment IS NULL AND started_at<=?",
-                    (id, evidence),
-                ).fetchone()
-            ]
-            if ids and tick.segment is not None:
-                decision = tick.segment
+            for assignment in tick.segments:
+                decision = assignment.decision
                 if decision.kind not in KINDS:
                     raise ValueError("unknown activity kind")
                 current = self._db.execute(
                     "SELECT * FROM segments WHERE open=1"
                 ).fetchone()
-                if isinstance(decision, Start) or current is None:
+                # A kind change cannot relabel prior time, including when an
+                # external caller passes Continue. User-authored text stays owned
+                # by the user; a different new activity gets its own segment.
+                if (
+                    isinstance(decision, Start)
+                    or current is None
+                    or decision.kind != current["kind"]
+                ):
                     self._db.execute("UPDATE segments SET open=0 WHERE open=1")
                     if current is not None:
                         events.append(SegmentChanged(current["id"]))
@@ -398,7 +417,7 @@ class Journal:
                             "UPDATE segments SET title=?, kind=?, intent=? WHERE id=?",
                             (decision.title, decision.kind, decision.intent, id),
                         )
-                for observation in ids:
+                for observation in assignment.observations:
                     self._db.execute(
                         "UPDATE observations SET segment=? WHERE id=?",
                         (id, observation),

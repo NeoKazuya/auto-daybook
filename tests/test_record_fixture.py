@@ -114,7 +114,7 @@ def test_gx10_recordings_round_trip_privacy_and_labels(monkeypatch, name, polici
         assert source["machine"] == "GX10" and source["frame_policy"] == policy
         stamps.append(datetime.fromisoformat(source["recorded_at"]))
         facts = screen.state()
-        capture = gate(facts, PrivacySettings())
+        capture = gate(facts, PrivacySettings()).state
         assert (
             capture
             == {
@@ -137,7 +137,9 @@ def test_gx10_recordings_round_trip_privacy_and_labels(monkeypatch, name, polici
     for row in labels:
         assert {"at", "kind", "mood", "focused", "in_meeting"} <= row.keys()
         clock[0] = 1000 + row["at"]
-        assert gate(screen.state(), PrivacySettings()) == row.get("capture", "running")
+        assert gate(screen.state(), PrivacySettings()).state == row.get(
+            "capture", "running"
+        )
     if name == "focus-streak":
         assert steps[-1]["at"] >= 180
         assert (stamps[-1] - stamps[0]).total_seconds() >= 180

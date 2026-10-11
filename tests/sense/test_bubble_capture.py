@@ -183,7 +183,7 @@ def test_unexpected_bubble_focus_fails_closed(x11):
     x11.control.active = 2
     facts = x11.screen.state()
     assert facts.active is None
-    assert gate(facts, PrivacySettings()) == "locked"
+    assert gate(facts, PrivacySettings()).state == "locked"
 
 
 @pytest.mark.parametrize("cover,expected", [(BUBBLE, "withheld"), (CODE, "running")])
@@ -198,7 +198,7 @@ def test_bubble_cannot_cover_and_unblock_an_excluded_window(cover, expected):
         False,
         0,
     )
-    assert gate(facts, PrivacySettings()) == expected
+    assert gate(facts, PrivacySettings()).state == expected
 
 
 @pytest.mark.parametrize("method", ["thumbnail", "grab"])
@@ -343,7 +343,7 @@ async def test_sense_rejects_pixels_not_bound_to_outer_gated_window_facts(
     # Outer reads A/A are admitted Code facts; the image transaction sees stable
     # B/B with an excluded window. Stability alone must not admit those pixels.
     admitted = x11.screen.state()
-    assert gate(admitted, PrivacySettings()) == "running"
+    assert gate(admitted, PrivacySettings()).state == "running"
     calls = 0
 
     def outer_state():

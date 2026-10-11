@@ -57,7 +57,17 @@ async function show() {
 
 const CAPTURE_LABEL = {
   running: 'Recording', paused: 'Paused', locked: 'Screen locked', away: 'Away',
-  withheld: 'Private window', overlay: 'Overlay up',
+  withheld: 'Capture temporarily unavailable', overlay: 'Overlay up',
+};
+
+const CAPTURE_REASON = {
+  daybook_visible: {
+    label: 'Daybook is visible',
+    hint: 'Capture is withheld while Daybook is visible to keep your journal and settings out of observations.',
+  },
+  excluded_window: { label: 'An excluded window is visible' },
+  screen_unavailable: { label: 'Screen temporarily unavailable' },
+  observation_unavailable: { label: 'Observation temporarily unavailable' },
 };
 
 let latestStatusRefresh = null;
@@ -72,8 +82,9 @@ async function refreshStatus() {
     ribbon.captureState = s.capture;
     document.querySelectorAll('.state-pip').forEach((el) => { el.dataset.state = s.capture; });
     const g = s.gateway;
+    const reason = CAPTURE_REASON[s.capture_reason];
     footer.replaceChildren(
-      h('span.item', h(`span.dot${s.capture === 'running' ? '.live' : ''}`), CAPTURE_LABEL[s.capture] ?? s.capture),
+      h('span.item', { title: reason?.hint }, h(`span.dot${s.capture === 'running' ? '.live' : ''}`), reason?.label ?? CAPTURE_LABEL[s.capture] ?? s.capture),
       h('span.sep'),
       h('span.item', icon('cpu'), g.model, h(`span.dot${g.reachable ? '.ok' : '.bad'}`), g.reachable ? 'reachable' : 'offline'),
       h('span.sep'),

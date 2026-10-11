@@ -469,6 +469,7 @@ class MockAPI:
                 w.CaptureSpan(state=next_state, start=now, end=None)
             )
         self.status.capture = next_state
+        self.status.capture_reason = None
         if body.paused and self.status.overlay:
             self.dismiss(self.status.overlay.id)
         self.bus.publish(events.CaptureStateChanged(self.status.capture))

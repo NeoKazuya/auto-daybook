@@ -5,6 +5,12 @@ from ._screen import ReplayScreen as ReplayScreen
 from ._screen import X11Screen as X11Screen
 from ._sense import Sense as Sense
 from ._types import (
+    CaptureReason as CaptureReason,
+)
+from ._types import (
+    CaptureStatus as CaptureStatus,
+)
+from ._types import (
     PrivacySettings as PrivacySettings,
 )
 from ._types import (

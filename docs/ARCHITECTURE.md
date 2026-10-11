@@ -268,6 +268,8 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
 - windows whose title contains `Private Browsing` or `Incognito`
 - the app's own web UI (title contains `Daybook ·`)
 
+**Current capture explanation:** Sense owns a transient `CaptureStatus(state, reason)`. The same gate that decides capture returns the safe reason: `daybook_visible`, `excluded_window`, `screen_unavailable`, `observation_unavailable`, or null. The exclusion classifier performs matching and visibility once; any visible part of Daybook still withholds capture, and another visible excluded window takes explanation priority. Screen/observation failures keep their existing capture states but no longer imply a private window or a confirmed lock. Reasons contain no window titles, app names, matching patterns, or raw errors. They are not persisted in capture spans. A reason-only change emits `StatusChanged("sense", "capture_reason_changed")` so clients refresh even when the capture state stays the same.
+
 Our fullscreen overlay is recognized by `_NET_WM_PID` matching the shell process that `daybookd` spawned, with WM_CLASS `daybook-shell` as a backup check. Only the dedicated WM_CLASS `daybook-bubble` is exempt from this fullscreen identity. Its visible rectangle is blacked out in RAM before thumbnail or JPEG resizing, while capture of the underlying app continues. Bubbles must not take keyboard focus; an unexpectedly focused bubble yields no admitted active window.
 
 **Screens:**
@@ -451,7 +453,7 @@ Tab navigation supports Firefox/LibreWolf and Chrome/Chromium/Brave/Edge with th
 
 **Owns** the HTTP contract and the static UI. It is plain HTML with ES modules and no build step. Each route calls one method on the module that owns the data, and holds no logic.
 
-**Wire models.** `daybook/web/wire.py` defines every request and response body, and every SSE event payload, as pydantic models, each with one realistic example. It's the only place the wire format is defined. Domain types are converted into these models there, and FastAPI publishes them at `/openapi.json`. Changing `wire.py` is shared-contract work.
+**Wire models.** `daybook/web/wire.py` defines every request and response body, and every SSE event payload, as pydantic models, each with one realistic example. It's the only place the wire format is defined. Domain types are converted into these models there, and FastAPI publishes them at `/openapi.json`. Changing `wire.py` is shared-contract work. The status response includes nullable `capture_reason` from Sense; clients use fixed explanatory text and fall back to the capture state. “Daybook is visible” explains that capture is withheld to keep the journal and settings out of observations; it does not imply the user toggled Pause.
 
 **Mock API.** `daybook run --mock-api` serves every route from the wire models' examples, keeps edits in memory, and emits a scripted stream of sample events on `/api/events` every few seconds. It needs no model, screen, journal, or skills, so the UI can be built and tested before the backend exists, and against the same contract.
 

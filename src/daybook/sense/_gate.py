@@ -2,9 +2,16 @@
 
 from fnmatch import fnmatchcase
 
-from daybook.journal import CaptureState, WindowInfo
+from daybook.journal import WindowInfo
 
-from ._types import PrivacySettings, Rect, ScreenState
+from ._types import (
+    DAYBOOK_TITLE_PATTERN,
+    CaptureReason,
+    CaptureStatus,
+    PrivacySettings,
+    Rect,
+    ScreenState,
+)
 
 
 def is_bubble(info: WindowInfo) -> bool:
@@ -42,18 +49,22 @@ def _subtract(rect: Rect, cover: Rect) -> list[Rect]:
     return [p for p in pieces if p.width > 0 and p.height > 0]
 
 
-def excluded_visible(state: ScreenState, privacy: PrivacySettings) -> bool:
+def visible_exclusion(
+    state: ScreenState, privacy: PrivacySettings
+) -> CaptureReason | None:
+    reason: CaptureReason | None = None
     for i, window in enumerate(state.windows):
-        excluded = any(
+        app_excluded = any(
             fnmatchcase(window.info.app.lower(), pattern.lower())
             for pattern in privacy.exclude_apps
         )
-        excluded |= any(
-            fnmatchcase(window.info.title.lower(), pattern.lower())
+        title_matches = tuple(
+            pattern.lower()
             for pattern in privacy.exclude_titles
+            if fnmatchcase(window.info.title.lower(), pattern.lower())
         )
         if (
-            not excluded
+            not (app_excluded or title_matches)
             or window.rect.width <= 0
             or window.rect.height <= 0
             or window.opacity <= 0
@@ -69,24 +80,31 @@ def excluded_visible(state: ScreenState, privacy: PrivacySettings) -> bool:
             if not remaining:
                 break
         if remaining:
-            return True
-    return False
+            if app_excluded or any(
+                pattern != DAYBOOK_TITLE_PATTERN.lower() for pattern in title_matches
+            ):
+                return "excluded_window"
+            reason = "daybook_visible"
+    return reason
 
 
-def gate(state: ScreenState, privacy: PrivacySettings) -> CaptureState:
+def gate(state: ScreenState, privacy: PrivacySettings) -> CaptureStatus:
     if state.locked is not False:
-        return "locked"
+        return CaptureStatus(
+            "locked", "screen_unavailable" if state.locked is None else None
+        )
     if privacy.paused:
-        return "paused"
+        return CaptureStatus("paused")
     if state.active is None:
-        return "locked"
+        return CaptureStatus("locked", "screen_unavailable")
     if state.overlay:
-        return "overlay"
+        return CaptureStatus("overlay")
     if state.idle_ms >= 300_000 and not state.microphone_active:
-        return "away"
-    if excluded_visible(state, privacy):
-        return "withheld"
-    return "running"
+        return CaptureStatus("away")
+    reason = visible_exclusion(state, privacy)
+    if reason is not None:
+        return CaptureStatus("withheld", reason)
+    return CaptureStatus("running")
 
 
 def black(thumbnail: bytes) -> bool:

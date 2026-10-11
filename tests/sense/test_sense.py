@@ -29,7 +29,7 @@ from daybook.sense import (
     VisibleWindow,
     gate,
 )
-from daybook.sense._gate import black, changed, excluded_visible
+from daybook.sense._gate import black, changed, visible_exclusion
 from daybook.skills import SkillBook
 
 BASE = datetime.now(timezone.utc)
@@ -85,7 +85,7 @@ def state(**updates):
     ],
 )
 def test_gate(facts, privacy, expected):
-    assert gate(facts, privacy) == expected
+    assert gate(facts, privacy).state == expected
 
 
 @pytest.mark.parametrize(
@@ -114,7 +114,7 @@ def test_gate(facts, privacy, expected):
 )
 def test_visible_union_and_transparency(cover, expected):
     facts = state(windows=(VisibleWindow("2", PASSWORD, RECT), *cover))
-    assert excluded_visible(facts, PrivacySettings()) is expected
+    assert (visible_exclusion(facts, PrivacySettings()) is not None) is expected
 
 
 def test_black_and_change():
@@ -421,7 +421,7 @@ def test_replay_speed_step_and_image(tmp_path, monkeypatch):
     active = screen.state().active
     assert active is not None and active.app == "Evince"
     now[0] = 100000
-    assert gate(screen.state(), PrivacySettings()) == "withheld"
+    assert gate(screen.state(), PrivacySettings()).state == "withheld"
     assert not list(tmp_path.iterdir())
     with pytest.raises(ValueError):
         ReplayScreen(folder, speed=0)
@@ -502,7 +502,7 @@ def test_x11_server_title_bar_is_part_of_visibility(monkeypatch):
         facts,
         windows=(*facts.windows, VisibleWindow("cover", CODE, Rect(0, 30, 100, 100))),
     )
-    assert gate(covered_client, PrivacySettings()) == "withheld"
+    assert gate(covered_client, PrivacySettings()).state == "withheld"
 
 
 async def test_older_active_observe_failure_trims_original_change(tmp_path):

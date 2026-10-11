@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
-from daybook.journal import WindowInfo
+from daybook.journal import CaptureState, WindowInfo
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,21 @@ class ScreenState:
     overlay: bool = False
 
 
+CaptureReason = Literal[
+    "daybook_visible",
+    "excluded_window",
+    "screen_unavailable",
+    "observation_unavailable",
+]
+DAYBOOK_TITLE_PATTERN = "*Daybook ·*"
+
+
+@dataclass(frozen=True)
+class CaptureStatus:
+    state: CaptureState
+    reason: CaptureReason | None = None
+
+
 @dataclass(frozen=True)
 class PrivacySettings:
     paused: bool = False
@@ -42,7 +57,7 @@ class PrivacySettings:
     exclude_titles: tuple[str, ...] = (
         "*Private Browsing*",
         "*Incognito*",
-        "*Daybook ·*",
+        DAYBOOK_TITLE_PATTERN,
     )
 
 

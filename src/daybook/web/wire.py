@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from daybook import events
 from daybook.journal import ActivityKind, CaptureState
+from daybook.sense import CaptureReason
 from daybook.skills import SkillEntry
 
 # A deliberate tray Quit stops the daemon; every other Shell exit is restarted.
@@ -337,6 +338,7 @@ class StatusResponse(WireModel):
     music: MusicStatus
     overlay: OverlayState | None
     capture: CaptureState
+    capture_reason: CaptureReason | None
     shell_connected: bool
     mock: bool
 
@@ -705,6 +707,7 @@ _example(
     music=_music,
     overlay=None,
     capture="running",
+    capture_reason=None,
     shell_connected=False,
     mock=True,
 )

@@ -241,7 +241,7 @@ async function render(root) {
 
   function developerPanel() {
     return panel('Developer', 'edit', h('span.tag.quiet', 'This browser'),
-      setting('Developer mode', 'Shows each skill’s questions to the model, its permissions, and its raw file (with live error checking and Save edits) on the review card.',
+      setting('Developer mode', 'Shows each skill’s raw file on the review card, with live error checking and Save edits.',
         toggle(getPref('developer'), 'Developer mode', (v) => {
           setPref('developer', v);
           toast(v ? 'Developer mode on.' : 'Developer mode off.');

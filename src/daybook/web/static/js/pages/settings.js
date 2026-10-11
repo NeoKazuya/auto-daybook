@@ -74,7 +74,8 @@ async function render(root) {
       } catch (err) {
         toast(`Couldn't save: ${err.message}`, 'error');
       }
-      draw(!saved);
+      draw(true);
+      return saved;
     });
     return queue;
   }
@@ -223,7 +224,16 @@ async function render(root) {
     return h('form.excl-form', { onsubmit: (e) => {
       e.preventDefault();
       const v = value.value.trim();
-      if (v) busy(add, async () => onAdd(match ? match.value : 'app', v));
+      if (v) busy(add, async () => {
+        const raw = value.value;
+        const matchOn = match ? match.value : 'app';
+        const saved = await onAdd(matchOn, v);
+        if (saved === true) {
+          const current = root.querySelector('input[list="' + listId + '"]');
+          const currentMatch = current?.closest('form').querySelector('select');
+          if (current?.value === raw && (currentMatch ? currentMatch.value : 'app') === matchOn) current.value = '';
+        }
+      });
     } }, match, value, add, h('datalist', { id: listId }, knownApps.map((a) => h('option', { value: a }))));
   }
 

@@ -41,9 +41,10 @@ async function render(root, params) {
   async function refresh() {
     try {
       data = await api.timeline(from, to);
-      draw();
+      if (!editing.size) draw();
     } catch (err) {
-      list.replaceChildren(errorState(err, refresh));
+      if (editing.size) toast("Couldn't refresh timeline: " + err.message, 'error');
+      else list.replaceChildren(errorState(err, refresh));
     }
   }
 
@@ -90,7 +91,7 @@ async function render(root, params) {
       isOpen ? h('div.seg-body',
         s.observations.map(observation),
         h('div.seg-actions',
-          btn('Edit segment', { icon: 'edit', onclick: () => { editing.add(s.id); draw(); } }),
+          btn('Edit segment', { icon: 'edit', onclick: () => beginEdit(s.id) }),
           btn('Delete segment', { icon: 'trash', kind: 'danger', onclick: () => removeSegment(s) }))) : null);
     return h(`div.entry${s.open ? '.open' : ''}`, h('span.stamp', clock(s.started_at)), card);
   }
@@ -105,41 +106,64 @@ async function render(root, params) {
           ? observationForm(o)
           : [h('div.obs-seen', o.seen), o.visible_text && h('div.obs-text', o.visible_text)]),
       editingThis ? h('span') : h('div.obs-actions',
-        btn('', { icon: 'edit', kind: 'ghost', title: 'Edit this note', onclick: () => { editing.add(o.id); draw(); } }),
+        btn('', { icon: 'edit', kind: 'ghost', title: 'Edit this note', onclick: () => beginEdit(o.id) }),
         btn('', { icon: 'trash', kind: 'ghost', title: 'Delete this note', onclick: () => removeObservation(o) })));
+  }
+
+  function canLeaveEditor() {
+    if (!editing.size) return true;
+    toast('Save or cancel your current edit first.', 'error');
+    return false;
+  }
+
+  function beginEdit(id) {
+    if (!canLeaveEditor()) return;
+    editing.add(id);
+    draw();
+  }
+
+  async function saveEdit(id, controls, change, message) {
+    for (const control of controls) control.disabled = true;
+    try {
+      await change();
+      editing.delete(id);
+      if (message) toast(message);
+      await refresh();
+    } finally {
+      for (const control of controls) control.disabled = false;
+    }
   }
 
   function segmentForm(s) {
     const title = h('input.input', { value: s.title, 'aria-label': 'Title' });
     const intent = h('input.input', { value: s.intent, 'aria-label': 'Intent' });
-    const save = btn('Save', { kind: 'primary', onclick: () => busy(save, async () => {
-      await api.editSegment(s.id, { title: title.value.trim(), intent: intent.value.trim() });
-      editing.delete(s.id);
-      toast('Saved. Daybook won’t overwrite your wording.');
-      await refresh();
-    }) });
+    const cancel = btn('Cancel', { kind: 'ghost', onclick: () => { editing.delete(s.id); draw(); } });
+    const save = btn('Save', { kind: 'primary', onclick: () => busy(save, () =>
+      saveEdit(s.id, [title, intent, cancel],
+        () => api.editSegment(s.id, { title: title.value.trim(), intent: intent.value.trim() }),
+        'Saved. Daybook won’t overwrite your wording.')) });
     return h('div.edit-form',
       h('label.label', 'Title'), title,
       h('label.label', 'Intent'), intent,
-      h('div.row-btns', btn('Cancel', { kind: 'ghost', onclick: () => { editing.delete(s.id); draw(); } }), save));
+      h('div.row-btns', cancel, save));
   }
 
   function observationForm(o) {
     const seen = h('textarea.textarea', { style: 'min-height:5rem;font-family:var(--serif);font-size:1rem', 'aria-label': 'What was on screen' }, o.seen);
     const text = h('textarea.textarea', { style: 'min-height:4rem', maxlength: 300, 'aria-label': 'Captured on-screen text' }, o.visible_text);
-    const save = btn('Save', { kind: 'primary', onclick: () => busy(save, async () => {
-      await api.editObservation(o.id, { seen: seen.value.trim(), visible_text: text.value.trim() });
-      editing.delete(o.id);
-      await refresh();
-    }) });
+    const cancel = btn('Cancel', { kind: 'ghost', onclick: () => { editing.delete(o.id); draw(); } });
+    const save = btn('Save', { kind: 'primary', onclick: () => busy(save, () =>
+      saveEdit(o.id, [seen, text, cancel],
+        () => api.editObservation(o.id, { seen: seen.value.trim(), visible_text: text.value.trim() }))) });
     return h('div', { style: 'display:flex;flex-direction:column;gap:0.5rem;margin-top:0.4rem' },
       h('label.label', 'What was on screen'), seen,
       h('label.label', 'Captured text (up to 300 characters)'), text,
       h('div.row-btns', { style: 'display:flex;gap:0.5rem;justify-content:flex-end' },
-        btn('Cancel', { kind: 'ghost', onclick: () => { editing.delete(o.id); draw(); } }), save));
+        cancel, save));
   }
 
   async function removeSegment(s) {
+    if (!canLeaveEditor()) return;
     const ok = await confirmDialog({
       title: 'Delete segment and its source notes',
       body: `“${s.title}” and its ${s.observations.length} notes will be removed from the timeline and from search. This can't be undone.`,
@@ -156,6 +180,7 @@ async function render(root, params) {
   }
 
   async function removeObservation(o) {
+    if (!canLeaveEditor()) return;
     const ok = await confirmDialog({
       title: 'Delete this note',
       body: 'The note is removed from the timeline and from search. If it was part of a summary Daybook wrote, that summary is cleared too.',
@@ -172,6 +197,7 @@ async function render(root, params) {
   }
 
   function toggle(id) {
+    if (!canLeaveEditor()) return;
     expanded.has(id) ? expanded.delete(id) : expanded.add(id);
     draw();
   }

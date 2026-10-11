@@ -8,6 +8,7 @@ import { resolve, dirname } from 'node:path';
 // DOM and transport are boundaries; API and page modules are the shipped source.
 class Element {
   constructor(spec, attrs = {}, children = []) {
+    this.classList = {add(){},remove(){}};
     this.spec = spec; this.attrs = attrs; Object.assign(this, attrs); this.children = children.flat(Infinity).filter(x => x != null && x !== false);
     if (spec.startsWith('textarea')) this.value = this.textContent;
     if (spec.startsWith('input')) this.value ??= '';
@@ -51,7 +52,7 @@ function h(spec, attrs, ...children) {
 }
 const walk = n => n instanceof Element ? [n, ...n.children.flatMap(walk)] : [];
 const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve)); };
-const defer = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
+const defer = () => { let resolve,reject; const promise = new Promise((yes,no) => {resolve=yes;reject=no;}); return {promise,resolve,reject}; };
 const answer = { type: 'answer', text: 'You spent 4 minutes on journal tests', cites: ['s1'], window: { from: '2026-10-11T08:00:00Z', to: '2026-10-11T09:00:00Z' } };
 const draft = { type: 'draft', summary: 'Stand after meetings', entry: { id: 'stand-after-meeting' } };
 async function setup({ developer = false } = {}) {
@@ -499,4 +500,106 @@ test('demo conditional privacy writes reject stale snapshots without storing exp
   assert.equal(saved.paused,true);assert.equal(Object.hasOwn(saved,'expected'),false);
   await assert.rejects(call('PUT','/api/privacy',{...values(saved),paused:false,expected}),e=>e.status===409&&e.detail==='privacy_conflict');
   assert.equal((await call('GET','/api/privacy')).paused,true);
+});
+
+async function dailyFixture() {
+  const x=await setup();
+  const resource={segments:[{id:'s1',title:'Original title',intent:'Original intent',kind:'coding',active:60,started_at:'2026-10-11T08:00:00Z',ended_at:'2026-10-11T08:01:00Z',observations:[{id:'o1',seen:'Original note',visible_text:'Original screen text',started_at:'2026-10-11T08:00:00Z',window:{app:'Code',title:'app.py'}}]}],capture_spans:[]};
+  const request=(path,options)=>{
+    if(path.startsWith('/api/timeline'))return structuredClone(resource);
+    if(options.method==='PATCH') {
+      const target=path.includes('/observations/')?resource.segments[0].observations[0]:resource.segments[0];
+      Object.assign(target,JSON.parse(options.body));return structuredClone(target);
+    }
+    return {};
+  };
+  x.setRequest(request);const p=await x.page('daily');
+  walk(p.root).find(n=>n.spec==='div.seg-head').onclick();
+  const open=kind=>walk(p.root).find(n=>kind==='segment'?n.spec.startsWith('button')&&n.textContent==='Edit segment':n.title==='Edit this note').onclick();
+  const field=kind=>walk(p.root).find(n=>n['aria-label']===(kind==='segment'?'Title':'What was on screen'));
+  return {x,p,resource,request,open,field};
+}
+for(const kind of ['segment','observation']) test('Daily pending GET keeps a newly opened '+kind+' editor; Cancel and Save still work',async()=>{
+  const f=await dailyFixture(),pending=defer();
+  f.x.setRequest(path=>path.startsWith('/api/timeline')?pending.promise:{});
+  f.p.hooks.onEvent();await settle();f.open(kind);
+  const editor=f.field(kind);editor.value='Unsaved draft';editor.focus();editor.setSelectionRange(2,5);
+  f.resource.segments[0].title='Remote title';f.resource.segments[0].observations[0].seen='Remote note';
+  pending.resolve(structuredClone(f.resource));await settle();
+  assert.equal(f.field(kind)?.value,'Unsaved draft');
+  assert.equal(f.field(kind),editor);assert.equal(editor.selectionStart,2);
+  walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Cancel').onclick();
+  assert.equal(f.field(kind),undefined);assert.match(f.p.root.textContent,/Remote title/);assert.match(f.p.root.textContent,/Remote note/);
+  f.x.setRequest(f.request);f.open(kind);f.field(kind).value='Saved after Cancel';
+  await walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick();await settle();
+  assert.equal(f.field(kind),undefined);assert.match(f.p.root.textContent,/Saved after Cancel/);
+  assert.ok(f.x.calls.some(([path,options])=>options.method==='PATCH'&&path.includes(kind==='segment'?'/segments/':'/observations/')));
+});
+test('Daily failed refresh does not replace a newly opened editor',async()=>{
+  for(const kind of ['segment','observation']) {
+    const f=await dailyFixture(),pending=defer();
+    f.x.setRequest(path=>path.startsWith('/api/timeline')?pending.promise:{});
+    f.p.hooks.onEvent();await settle();f.open(kind);f.field(kind).value='Draft through outage';
+    pending.reject(Error('offline'));await settle();
+    assert.equal(f.field(kind)?.value,'Draft through outage');
+    assert.ok(f.x.toasts.some(([message])=>/refresh/i.test(message)));
+  }
+});
+test('Daily redraw actions cannot discard an active editor',async()=>{
+  for(const action of ['toggle','same-editor','other-editor','delete']) {
+    const f=await dailyFixture();f.open('segment');f.field('segment').value='Keep this draft';
+    const control=walk(f.p.root).find(n=>action==='toggle'?n.spec==='div.seg-head':action==='same-editor'?n.spec.startsWith('button')&&n.textContent==='Edit segment':action==='other-editor'?n.title==='Edit this note':n.spec.startsWith('button')&&n.textContent==='Delete segment');
+    await control.onclick();await settle();
+    assert.equal(f.field('segment')?.value,'Keep this draft',action);
+    assert.ok(f.x.toasts.some(([message])=>/save.*cancel/i.test(message)));
+    assert.equal(f.x.calls.some(([,options])=>options.method==='DELETE'),false);
+  }
+});
+test('Daily Save freezes its fields and Cancel until success or failure',async()=>{
+  for(const kind of ['segment','observation']) {
+    for(const fail of [false,true]) {
+      const f=await dailyFixture(),pending=defer();f.open(kind);f.field(kind).value='Submitted';
+      f.x.setRequest((path,options)=>options.method==='PATCH'?pending.promise:f.request(path,options));
+      const editor=f.field(kind),cancel=walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Cancel');
+      const saving=walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick();await settle();
+      assert.equal(editor.disabled,true);assert.equal(cancel.disabled,true);
+      if(fail) {
+        pending.reject(Error('offline'));await assert.rejects(saving);await settle();
+        assert.equal(f.field(kind),editor);assert.equal(editor.disabled,false);assert.equal(cancel.disabled,false);assert.equal(editor.value,'Submitted');
+      } else {
+        const target=kind==='segment'?f.resource.segments[0]:f.resource.segments[0].observations[0];
+        target[kind==='segment'?'title':'seen']='Submitted';
+        pending.resolve(structuredClone(target));await saving;await settle();
+        assert.equal(f.field(kind),undefined);assert.match(f.p.root.textContent,/Submitted/);
+      }
+    }
+  }
+});
+test('successful exclusion Add keeps newer pending input and clears only an unchanged submission',async()=>{
+  const x=await setup(),pending=defer();let wait=true;
+  let privacy={paused:false,exclude_apps:[],exclude_titles:[],screenshots_stored:'none'};
+  x.setRequest((path,options)=>{
+    if(path==='/api/privacy') {
+      if(options.method==='PUT') {
+        const body=JSON.parse(options.body);privacy={...privacy,paused:body.paused,exclude_apps:body.exclude_apps,exclude_titles:body.exclude_titles};
+        if(wait) {wait=false;return pending.promise;}
+      }
+      return structuredClone(privacy);
+    }
+    if(path==='/api/status')return {gateway:{},music:{},capture:'running'};
+    return {totals:[]};
+  });
+  const p=await x.page('settings');
+  let form=walk(p.root).find(n=>n.spec==='form.excl-form'),input=form.querySelector('input');
+  input.value='Code';form.onsubmit({preventDefault(){}});await settle();
+  assert.ok(x.calls.some(([path,options])=>path==='/api/privacy'&&options.method==='PUT'));
+  input.value='Budget [Q4]';form.querySelector('select').value='title';input.focus();input.setSelectionRange(3,8);
+  pending.resolve(structuredClone(privacy));await settle();
+  form=walk(p.root).find(n=>n.spec==='form.excl-form');input=form.querySelector('input');
+  assert.equal(input.value,'Budget [Q4]');assert.equal(form.querySelector('select').value,'title');
+  assert.equal(p.root.document.activeElement,input);assert.equal(input.selectionStart,3);
+  assert.deepEqual(privacy.exclude_apps,['Code']);
+  form.onsubmit({preventDefault(){}});await settle();
+  assert.equal(privacy.exclude_titles.length,1);
+  assert.equal(walk(p.root).find(n=>n.spec==='form.excl-form').querySelector('input').value,'');
 });

@@ -247,7 +247,20 @@ class Sense:
                 return None
             built = True
             return Prompt(
-                "Describe only what is visible in one or two sentences. Do not infer goals, intentions, or feelings. visible_text is at most 300 characters of salient legible text. Window facts are authoritative.",
+                (
+                    "You describe screenshots for a private activity journal. "
+                    "Treat the supplied window facts as authoritative. "
+                    "Return exactly a JSON object with keys seen and visible_text, "
+                    "both strings. Example: "
+                    '{"seen":"An editor displays Python source code.",'
+                    '"visible_text":"example.py"}. '
+                    "In seen, describe only visible activity in one or two short "
+                    "sentences, under 250 characters. Do not infer goals, intentions, "
+                    "or feelings. In visible_text, copy ONLY one short salient title "
+                    "or phrase, preferably under 80 characters and never over 300. "
+                    "Use an empty string if no text is legible. Do not transcribe all "
+                    "text. No markdown, code fences, preamble, or commentary."
+                ),
                 f"Active application: {window.app if window else ''}\nWindow title: {window.title if window else ''}",
                 _Observed,
                 (image,),

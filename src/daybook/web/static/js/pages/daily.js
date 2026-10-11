@@ -28,7 +28,10 @@ async function render(root, params) {
   root.append(
     ribbon(page, [
       h('span.pill', 'LEAF', h('b', dayStamp(day))),
-      h('button.pill', { type: 'button', onclick: (e) => busy(e.currentTarget, async () => { await api.tick(); toast('Tick requested. New notes appear in a few seconds.'); }) },
+      h('button.pill', { type: 'button', onclick: (e) => busy(e.currentTarget, async () => {
+        const r = await api.tick();
+        toast(r?.recorded ? 'Tick recorded. New notes appear in a few seconds.' : 'Nothing new to note right now. Daybook may be paused, have ticked moments ago, or have no new screen notes.');
+      }) },
         icon('bolt'), 'Tick now'),
     ]),
     panel(isToday ? "Today's entries" : `Entries for ${dayStamp(day)}`, 'calendar', count, list));

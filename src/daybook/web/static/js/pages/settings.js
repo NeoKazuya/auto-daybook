@@ -86,9 +86,16 @@ async function render(root) {
       return h('button.day', {
         type: 'button', 'aria-pressed': String(pressed), disabled: !sch.enabled,
         onclick: () => {
-          const next = pressed ? sch.days.filter((d) => d !== n) : [...sch.days, n];
-          if (!next.length) { toast('Pick at least one day, or turn off set hours.', 'error'); return; }
-          save((p) => ({ schedule: { ...p.schedule, days: next } }));
+          // Toggle against the latest saved days, so quick clicks don't undo each other.
+          save((p) => {
+            const days = p.schedule.days;
+            const next = days.includes(n) ? days.filter((d) => d !== n) : [...days, n];
+            if (!next.length) {
+              toast('Pick at least one day, or turn off set hours.', 'error');
+              return {};
+            }
+            return { schedule: { ...p.schedule, days: next } };
+          });
         },
       }, name);
     }));
@@ -255,8 +262,9 @@ async function render(root) {
   function modelPanel() {
     const g = status.gateway;
     const tick = btn('Tick now', { icon: 'bolt', onclick: (e) => busy(e.currentTarget, async () => {
-      await api.tick();
-      toast('Tick requested. New notes and skill reactions follow in a few seconds.');
+      const r = await api.tick();
+      toast(r?.recorded ? 'Tick recorded. New notes and skill reactions follow in a few seconds.'
+        : 'Nothing new to note right now. Daybook may be paused, have ticked moments ago, or have no new screen notes.');
     }) });
     const music = status.music;
     return panel('Model', 'cpu', h(`span.tag${g.reachable ? '' : '.danger'}`, g.reachable ? 'Reachable' : 'Offline'),

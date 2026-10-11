@@ -76,6 +76,28 @@ class TimelineResponse(WireModel):
     capture_spans: list[CaptureSpan]
 
 
+class SearchHit(WireModel):
+    segment_id: str | None
+    observation_id: str | None
+    at: datetime
+    kind: ActivityKind | None
+    title: str
+    snippet: str
+
+
+class SearchResponse(WireModel):
+    hits: list[SearchHit]
+
+
+class Total(WireModel):
+    label: str
+    active: float
+
+
+class TotalsResponse(WireModel):
+    totals: list[Total]
+
+
 class NowResponse(WireModel):
     capture: CaptureState
     segment: Segment | None
@@ -462,6 +484,19 @@ _reading = _example(
     tick="tick-1",
 )
 _example(TimelineResponse, segments=[_segment], capture_spans=[_span])
+_search_hit = _example(
+    SearchHit,
+    segment_id="s-code",
+    observation_id="o-code",
+    at=_observation["started_at"],
+    kind="coding",
+    title="Fixing journal tests",
+    snippet="test_forget_range",
+)
+_example(SearchResponse, hits=[_search_hit])
+_total = _example(Total, label="coding", active=240)
+_example(TotalsResponse, totals=[_total])
+
 _example(
     NowResponse,
     capture="running",

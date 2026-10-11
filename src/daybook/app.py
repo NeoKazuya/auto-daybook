@@ -37,6 +37,7 @@ from fastapi import FastAPI
 from daybook.act import Overlay
 from daybook.model import ModelConfig
 from daybook.sense import Screen, ScreenState
+from daybook.web.wire import SHELL_QUIT_EXIT_CODE
 
 if TYPE_CHECKING:
     from daybook.journal import Journal
@@ -247,9 +248,11 @@ class ShellSupervisor:
         environment: dict[str, str],
         on_pid: Callable[[int | None], None],
         *,
+        on_quit: Callable[[], None],
         retry_seconds: float = 1,
     ) -> None:
         self.command, self.environment, self.on_pid = command, environment, on_pid
+        self.on_quit = on_quit
         self.retry_seconds = retry_seconds
 
     async def run(self) -> None:
@@ -264,6 +267,10 @@ class ShellSupervisor:
                 )
                 self.on_pid(process.pid)
                 code = await process.wait()
+                if code == SHELL_QUIT_EXIT_CODE:
+                    LOG.info("shell_quit")
+                    self.on_quit()
+                    return
                 LOG.warning("shell_exited code=%s", code)
             except OSError:
                 LOG.warning("shell_unavailable")
@@ -547,6 +554,10 @@ async def run_daemon(config: Config, args: argparse.Namespace) -> None:
                 services = runtime.services
                 app = create_app(token=token, origin=origin, services=services)
                 server = http_server(app, config)
+
+                def quit_daemon() -> None:
+                    server.should_exit = True
+
                 async with asyncio.TaskGroup() as group:
                     tasks = [
                         group.create_task(services.sense.run()),
@@ -565,6 +576,7 @@ async def run_daemon(config: Config, args: argparse.Namespace) -> None:
                             runtime.screen.set_shell_pid
                             if runtime.screen
                             else lambda _: None,
+                            on_quit=quit_daemon,
                         )
                         tasks.append(group.create_task(shell.run()))
                     elif effects:

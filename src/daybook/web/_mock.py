@@ -7,6 +7,7 @@ import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import HTTPException
 
@@ -15,6 +16,7 @@ from daybook.act import OverlayRequest, build_catalog
 from daybook.skills import Skill, SkillEntry, SkillSource, parse_skill
 
 from . import wire as w
+from ._window import time_range
 
 
 class MockAPI:
@@ -41,11 +43,13 @@ class MockAPI:
     def get_timeline(
         self, start: datetime | None, end: datetime | None
     ) -> w.TimelineResponse:
+        window = time_range(start, end)
+
         def overlaps(a: datetime | None, b: datetime | None) -> bool:
             return (
                 a is not None
-                and (end is None or a <= end)
-                and (start is None or b is None or b >= start)
+                and a < window.end
+                and (b is None or b > window.start or a >= window.start)
             )
 
         return w.TimelineResponse(
@@ -55,6 +59,98 @@ class MockAPI:
             capture_spans=[
                 s for s in self.timeline.capture_spans if overlaps(s.start, s.end)
             ],
+        )
+
+    def search(
+        self, text: str, start: datetime | None, end: datetime | None, limit: int
+    ) -> w.SearchResponse:
+        window = time_range(start, end)
+        words = re.findall(r"\w+", text.casefold())
+        if not words:
+            return w.SearchResponse(hits=[])
+        hits: list[w.SearchHit] = []
+        for segment in self.get_timeline(window.start, window.end).segments:
+            observations = [
+                observation
+                for observation in segment.observations
+                if observation.started_at < window.end
+                and (
+                    observation.last_seen_at > window.start
+                    or observation.started_at >= window.start
+                )
+            ]
+            if observations and all(
+                word in (segment.title + " " + segment.intent).casefold()
+                for word in words
+            ):
+                hits.append(
+                    w.SearchHit(
+                        segment_id=segment.id,
+                        observation_id=None,
+                        at=min(
+                            max(observation.started_at, window.start)
+                            for observation in observations
+                        ),
+                        kind=segment.kind,
+                        title=segment.title,
+                        snippet=segment.title + " " + segment.intent,
+                    )
+                )
+            for observation in observations:
+                snippet = "\n".join(
+                    (
+                        observation.window.title,
+                        observation.seen,
+                        observation.visible_text,
+                    )
+                )
+                if all(word in snippet.casefold() for word in words):
+                    hits.append(
+                        w.SearchHit(
+                            segment_id=segment.id,
+                            observation_id=observation.id,
+                            at=max(observation.started_at, window.start),
+                            kind=segment.kind,
+                            title=segment.title,
+                            snippet=snippet,
+                        )
+                    )
+        return w.SearchResponse(hits=hits[:limit])
+
+    def totals(
+        self,
+        by: Literal["kind", "app", "title"],
+        start: datetime | None,
+        end: datetime | None,
+    ) -> w.TotalsResponse:
+        window = time_range(start, end)
+        sums: dict[str, float] = {}
+        for segment in self.get_timeline(window.start, window.end).segments:
+            for observation in segment.observations:
+                seconds = max(
+                    0.0,
+                    (
+                        min(observation.last_seen_at, window.end)
+                        - max(observation.started_at, window.start)
+                    ).total_seconds(),
+                )
+                if seconds == 0:
+                    continue
+                label = (
+                    observation.window.app
+                    if by == "app"
+                    else segment.title
+                    if by == "title"
+                    else segment.kind
+                )
+                sums[label] = sums.get(label, 0.0) + seconds
+        return w.TotalsResponse(
+            totals=[
+                w.Total(label=label, active=seconds)
+                for label, seconds in sorted(
+                    sums.items(), key=lambda item: (-item[1], item[0])
+                )
+            ]
         )
 
     def now(self) -> w.NowResponse:
@@ -83,23 +179,30 @@ class MockAPI:
 
     def edit_segment(self, id: str, patch: w.SegmentPatch) -> w.Segment:
         segment = self.segment(id)
+        before = segment.model_dump()
         for field, value in patch.model_dump(exclude_none=True).items():
             setattr(segment, field, value)
         segment.authored = "user"
         self.bus.publish(events.SegmentChanged(id))
+        if segment.model_dump() != before:
+            self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return segment
 
     def edit_observation(self, id: str, patch: w.ObservationPatch) -> w.Observation:
         observation = self.observation(id)
+        before = observation.model_dump()
         for field, value in patch.model_dump(exclude_none=True).items():
             setattr(observation, field, value)
         self.bus.publish(events.SegmentChanged(observation.segment or ""))
+        if observation.model_dump() != before:
+            self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return observation
 
     def forget_segment(self, id: str) -> w.MutationResponse:
         self.segment(id)
         self.timeline.segments = [s for s in self.timeline.segments if s.id != id]
         self.bus.publish(events.SegmentChanged(id))
+        self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return w.MutationResponse()
 
     def forget_observation(self, id: str) -> w.MutationResponse:
@@ -108,6 +211,7 @@ class MockAPI:
             segment = self.segment(observation.segment)
             segment.observations = [o for o in segment.observations if o.id != id]
             self._shrink(segment)
+        self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return w.MutationResponse()
 
     def _shrink(self, segment: w.Segment) -> None:
@@ -124,6 +228,7 @@ class MockAPI:
         self.bus.publish(events.SegmentChanged(segment.id))
 
     def forget(self, window: w.TimeWindow | None) -> w.MutationResponse:
+        changed = False
         for segment in list(self.timeline.segments):
             before = len(segment.observations)
             segment.observations = [
@@ -133,7 +238,10 @@ class MockAPI:
                 and not (o.started_at < window.end and o.last_seen_at >= window.start)
             ]
             if before != len(segment.observations):
+                changed = True
                 self._shrink(segment)
+        if changed:
+            self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return w.MutationResponse()
 
     def skills(self) -> w.SkillsResponse:

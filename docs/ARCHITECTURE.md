@@ -297,7 +297,7 @@ Our fullscreen overlay is recognized by `_NET_WM_PID` matching the shell process
 
 **Tick prompt** (text only, ~1.5–3K tokens):
 
-- the rules for segments: partition the supplied observation IDs into contiguous chronological activity groups; the first group may `Continue` the previously open segment for the same task, while every later group starts a new segment at a task or activity-kind boundary; state intent briefly, and hedge when unsure
+- the rules for segments: partition the supplied observation IDs into contiguous chronological groups sharing both activity kind and concrete task, splitting kind changes even within one project or goal; the first group may `Continue` the previously open segment for the same task, while every later group starts a new segment at a task or activity-kind boundary; state intent briefly, and hedge when unsure
 - `portal.context(last 30 min, detail="segments")` for continuity
 - the open segment and its last 3 observations
 - the new observations, with times and window facts, or, if there are none, a note that the screen has stayed the same since `<time>`

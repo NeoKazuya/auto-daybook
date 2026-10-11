@@ -200,7 +200,7 @@ def parse(
                     "is",
                     signal=match[1],
                     value=yaml.safe_load(match[2]),
-                    seconds=duration(match[3]),
+                    seconds=duration(match[3], zero=True),
                 )
             else:
                 raise ValueError("expected updates, becomes, is … for, or every")

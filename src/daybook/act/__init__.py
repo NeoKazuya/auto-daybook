@@ -198,10 +198,6 @@ class Overlay:
 
     def shell_connected(self, connected: bool) -> None:
         self._connected = connected
-        if not connected and self._state is not None:
-            self.bus.publish(OverlayHidden(self._state.id))
-            self._state = None
-            self._cancel_timer()
 
     def _cancel_timer(self) -> None:
         timer, self._timer = self._timer, None
@@ -295,8 +291,8 @@ class MusicPlayer:
     ) -> Outcome:
         return await self._player.play(mood, skill, min_dwell)
 
-    async def stop(self) -> Outcome:
-        return await self._player.stop()
+    async def stop(self, *, skill: str | None = None) -> Outcome:
+        return await self._player.stop(skill)
 
     def status(self) -> MusicStatus:
         return self._player.current
@@ -322,7 +318,7 @@ def bind_handlers(
         )
 
     async def stop(skill: str, args: Mapping[str, object]) -> Outcome:
-        return await music.stop()
+        return await music.stop(skill=skill)
 
     async def show(skill: str, args: Mapping[str, object]) -> Outcome:
         return await overlay.show(

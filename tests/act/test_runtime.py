@@ -61,6 +61,9 @@ async def test_overlay_roundtrip_replacement_stale_dismiss_and_disconnect():
         await overlay.hide(first)
         assert overlay.state and overlay.state.owner == "other"
         overlay.shell_connected(False)
+        assert overlay.state and overlay.state.owner == "other"
+        overlay.shell_connected(True)
+        await overlay.hide()
         assert isinstance(queue.get_nowait(), OverlayHidden)
         assert overlay.state is None
     await overlay.close()
@@ -199,3 +202,103 @@ async def test_real_mpv_ipc_transcript_and_restart(tmp_path):
         ["loadfile", "focus/track.mp3", "replace"],
     ]
     await mpv.close()
+
+
+async def test_overlay_survives_disconnect_and_reconnect():
+    overlay = Overlay(Bus())
+    overlay.shell_connected(True)
+    await overlay.show(OverlayRequest("Rest", "Stand"), "break")
+    before = overlay.state
+    overlay.shell_connected(False)
+    assert overlay.state == before
+    overlay.shell_connected(True)
+    assert overlay.state == before
+    await overlay.close()
+
+
+async def test_stop_action_cannot_silence_another_overlay_owner(library, tmp_path):
+    bus = Bus()
+    overlay = Overlay(bus)
+    overlay.shell_connected(True)
+    player = MusicPlayer(library, tmp_path / "home", bus, overlay)
+    await overlay.show(OverlayRequest("Rest", "Stand"), "break")
+    await player.play_mood("break", skill="break", min_dwell=0)
+    catalog = build_catalog(
+        library.moods, bind_handlers(player, overlay, FakeDesktop())
+    )
+    outcome = await catalog.allowed(("music.stop",), "other").run("music.stop")
+    assert outcome.detail == "overlay_owned" and player.status().playing
+    assert (await player.stop()).ok  # direct manual stop remains available to the user
+    await player.close()
+    await overlay.close()
+
+
+async def test_player_observes_track_changes_and_recovers_dead_child(
+    library, tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from daybook.act import _music
+
+    second = library.root / "focus/second.mp3"
+    second.write_bytes(b"fixture")
+    library = replace(
+        library,
+        tracks=(
+            *library.tracks,
+            MusicTrack(
+                "focus/second.mp3",
+                "Second track",
+                "artist",
+                "CC BY 4.0",
+                "https://example.com",
+            ),
+        ),
+    )
+    peers = []
+
+    class FakeMpv:
+        def __init__(self, home):
+            self.socket = tmp_path / "mpv.sock"
+            self.socket.touch()
+            self.process = SimpleNamespace(returncode=None)
+            self.commands = []
+            self.path = None
+            peers.append(self)
+
+        async def command(self, *args):
+            if self.process is None or self.process.returncode is not None:
+                self.process = SimpleNamespace(returncode=None)
+                self.socket.touch()
+            self.commands.append(args)
+            if args[0] == "loadfile" and args[2] == "replace":
+                self.path = args[1]
+            return self.path if args[0] == "get_property" else None
+
+        async def close(self):
+            self.process = None
+            self.socket.unlink(missing_ok=True)
+
+    monkeypatch.setattr(_music, "Mpv", FakeMpv)
+    original_sleep = asyncio.sleep
+
+    async def fast_sleep(seconds):
+        await original_sleep(0 if seconds == 0.125 else 0.001)
+
+    monkeypatch.setattr(_music.asyncio, "sleep", fast_sleep)
+    bus = Bus()
+    player = MusicPlayer(
+        library, tmp_path / "home", bus, Overlay(bus), real_effects=True
+    )
+    assert (await player.play_mood("focus", skill="music")).ok
+    peer = peers[0]
+    peer.path = str(second)
+    await original_sleep(0.015)
+    assert player.status().title == "Second track"
+    count = sum(c[0] == "loadfile" for c in peer.commands)
+    peer.process.returncode = 1
+    await original_sleep(0.015)
+    assert sum(c[0] == "loadfile" for c in peer.commands) > count
+    assert player.status().playing
+    await player.close()
+    assert peer.process is None

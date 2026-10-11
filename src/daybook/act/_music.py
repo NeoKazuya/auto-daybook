@@ -111,7 +111,7 @@ class Mpv:
             await asyncio.sleep(0.05)
         raise OSError("mpv unavailable")
 
-    async def command(self, *args: object) -> None:
+    async def command(self, *args: object) -> object:
         await self.start()
         reader, writer = await asyncio.open_unix_connection(self.socket)
         self.sequence += 1
@@ -129,7 +129,7 @@ class Mpv:
                 if reply.get("request_id") == id:
                     if reply.get("error") != "success":
                         raise OSError("mpv command failed")
-                    return
+                    return reply.get("data")
         finally:
             writer.close()
             await writer.wait_closed()
@@ -162,6 +162,8 @@ class Player:
         self.last_changes: dict[str, float] = {}
         self.transcript: list[tuple[object, ...]] = []
         self.lock = asyncio.Lock()
+        self.playlist: tuple[MusicTrack, ...] = ()
+        self.monitor: asyncio.Task[None] | None = None
 
     async def command(self, *args: object) -> None:
         self.transcript.append(args)
@@ -228,12 +230,19 @@ class Player:
                 self.bus.publish(MusicChanged(None, None))
                 return Outcome("music.play_mood", False, "player_unavailable")
             self.last_changes[skill] = time.monotonic()
+            self.playlist = tuple(tracks)
             self.current = MusicStatus(mood, tracks[0].title, True)
+            if self.real_effects and self.monitor is None:
+                self.monitor = asyncio.create_task(self.watch())
             self.bus.publish(MusicChanged(mood, tracks[0].title))
             return Outcome("music.play_mood", True)
 
-    async def stop(self) -> Outcome:
+    async def stop(self, skill: str | None = None) -> Outcome:
         async with self.lock:
+            overlay = self.overlay.state
+            if skill is not None and overlay is not None and overlay.owner != skill:
+                return Outcome("music.stop", True, "overlay_owned")
+            self.playlist = ()
             try:
                 if self.current.playing:
                     await self.command("stop")
@@ -243,7 +252,60 @@ class Player:
             self.bus.publish(MusicChanged(None, None))
             return Outcome("music.stop", True)
 
+    async def watch(self) -> None:
+        while True:
+            await asyncio.sleep(1)
+            async with self.lock:
+                if not self.playlist:
+                    continue
+                try:
+                    dead = (
+                        self.mpv.process is None
+                        or self.mpv.process.returncode is not None
+                        or not self.mpv.socket.exists()
+                    )
+                    if dead:
+                        await self.mpv.close()
+                        await self.command("set_property", "loop-playlist", "inf")
+                        for index, track in enumerate(self.playlist):
+                            await self.command(
+                                "loadfile",
+                                str(self.library.root / track.file),
+                                "replace" if index == 0 else "append",
+                            )
+                        await self.command("set_property", "volume", 100)
+                        await self.command("set_property", "pause", False)
+                    path = await self.mpv.command("get_property", "path")
+                    title = next(
+                        (
+                            t.title
+                            for t in self.playlist
+                            if str(self.library.root / t.file) == path
+                        ),
+                        self.current.title,
+                    )
+                    updated = MusicStatus(self.current.mood, title, True)
+                    if updated != self.current:
+                        self.current = updated
+                        self.bus.publish(MusicChanged(updated.mood, updated.title))
+                except (OSError, ValueError, TimeoutError):
+                    await self.mpv.close()
+                    self.current = MusicStatus(
+                        self.current.mood, self.current.title, False
+                    )
+                    self.bus.publish(
+                        MusicChanged(self.current.mood, self.current.title)
+                    )
+
     async def close(self) -> None:
+        self.playlist = ()
+        task, self.monitor = self.monitor, None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         if self.real_effects:
             await self.mpv.close()
         self.current = MusicStatus()

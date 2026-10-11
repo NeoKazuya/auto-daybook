@@ -8,10 +8,12 @@ Runs locally on an ASUS GX10 (NVIDIA GB10, 128 GB) with [`nvidia/Qwen3.8-Flash-N
 
 Every 5 seconds Daybook checks the active window. When the screen changes, it sends one screenshot to the model and saves an observation: the app and window title from X11, plus a short description of what's visible. At this step the model describes the screen and doesn't guess what you're trying to do.
 
-About every 90 seconds, a text-only model call (the tick) does two things:
+Two separate text-only model calls use those observations:
 
-1. It groups new observations into activity segments, such as "Fixing the journal test" (coding), and writes a guess at your intent. The UI labels that guess as inferred.
-2. It answers every question the enabled skills ask, such as "Is the user doing focused work?" (yes/no) or "Which music fits right now?" (a mood).
+1. **Skill checks** answer every enabled skill's question from the current screen evidence, such as "Is the user doing focused work?" (yes/no) or "Which music fits right now?" (a mood). Checks run as fresh evidence becomes available, with at least 10 seconds between model attempts. They use a short response with reasoning disabled and don't wait for history grouping.
+2. **History ticks** group new observations into activity segments, such as "Fixing the journal test" (coding), and write a guess at your intent. The UI labels that guess as inferred. The default interval is 90 seconds, configurable down to 30 seconds; switching apps can bring a tick forward.
+
+The 10-second minimum is a check interval, not a guaranteed action time. Capturing a changed screen, waiting for the model, and any delay specified in the skill's actions all contribute to the response time.
 
 Skills never call the model. Plain Python code checks each skill's rules against the stored answers and runs the actions that skill is allowed to use. Ten skills cost the same number of model calls as one, and the same answers always trigger the same rules.
 

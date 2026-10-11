@@ -89,17 +89,19 @@ Every action used in `do` must appear in `allow`. Parameter values are checked a
 - an action is used in `do` but missing from `allow`
 - an `allow` entry isn't in the catalog
 - an argument doesn't fit its parameter's type
-- a signal limit is exceeded (more than 4 in the skill, or more than 12 across active skills)
+- the skill has more than 4 signals
 - a hook step appears in a skill that isn't a built-in (any user or chat-made skill), or has no matching function in `<id>.hook.py`
 
 An invalid file is still saved, and shows as **invalid** in the UI so it can be fixed.
+
+One limit spans skills, so it's checked when a skill is approved or enabled rather than when one file is parsed: at most 12 signals across all active skills.
 
 ## Approval
 
 - **Approved and enabled are separate.** A skill runs only when it's enabled *and* `sha256(skill file + hook file)` is approved. Disabling a skill keeps its approval, so turning it back on needs no new review.
 - **Edits reset approval.** Any edit, whether by hand, in the UI editor, or by the generator, returns the skill to **needs review**.
 - **Stale approvals are refused.** "Approve & enable" posts the hash the user reviewed. If the file changed since, the server refuses and shows the new text.
-- **Built-in exception.** A skill in `skills/builtin/` counts as approved while its file is identical to the committed version, because it was reviewed through the repo's PR process. A locally modified built-in needs review like any other skill. Built-ins other than `music` start disabled.
+- **Built-in exception.** A skill in `skills/builtin/` counts as approved while its files are identical to `origin/main`, because changes there reach `main` only through a reviewed PR. A built-in that differs, even if committed on a feature branch, needs review like any other skill. Built-ins other than `music` start disabled.
 
 ## Writing good signals
 

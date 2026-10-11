@@ -99,7 +99,7 @@ All notes live in one SQLite file, `$DAYBOOK_HOME/journal.db`, in WAL mode with 
 
 | Type | Fields | Rules |
 |---|---|---|
-| `Observation` | `id`, `started_at`, `last_seen_at`, `window: WindowInfo(app, title)`, `seen` (1–2 sentences), `visible_text` (≤300 chars), `segment` (or none) | **What was on screen.** `window` comes from X11, not the model. `seen` describes only what's visible and never guesses intent. While the screen stays unchanged, sense moves `last_seen_at` forward without a model call. `active = last_seen_at − started_at + one poll interval`. `segment is None` means it hasn't been rolled up yet |
+| `Observation` | `id`, `started_at`, `last_seen_at`, `window: WindowInfo(app, title)`, `seen` (1–2 sentences), `visible_text` (≤300 chars), `segment` (or none) | **What was on screen.** `window` comes from X11, not the model. `seen` describes only what's visible and never guesses intent. While the screen stays unchanged, sense moves `last_seen_at` forward without a model call. `active = last_seen_at − started_at`. A new observation's `started_at` is the poll at which it was triggered, and the previous observation is extended to that same poll, so consecutive observations meet exactly and nothing is counted twice. `segment is None` means it hasn't been rolled up yet |
 | `Segment` | `id`, `title`, `kind: ActivityKind`, `intent`, `authored: model\|user`, `open`; derived: `started_at`, `ended_at`, `active`, `observations` | **The interpretation.** Times are derived from member observations at read time and never stored, so deleting an observation shrinks its segment. Once a user edits the text, `authored = user` and ticks never overwrite it |
 | `SignalReading` | `signal: SignalId(skill, name)`, `value: bool\|str\|float\|None`, `at`, `tick` | One row per signal per tick. `None` means the model couldn't tell or answered outside the type. "Held for 50 minutes" is computed from readings, so it survives a restart |
 | `CaptureSpan` | `state: running\|paused\|locked\|away\|withheld\|overlay`, `start`, `end` | Why capture was or wasn't happening. The timeline shows gaps honestly, and recall won't invent activity inside them |
@@ -239,7 +239,7 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
    - any excluded window has a visible part on screen → `WITHHELD`. "Visible" is computed from the stacking order (`_NET_CLIENT_LIST_STACKING`) and window geometry: an excluded window counts only if its rectangle isn't fully covered by the windows above it. A password manager or the Daybook UI hidden behind VS Code doesn't block capture
 2. **Thumbnail.** Grab a 32×18 grayscale thumbnail. If it's black → `LOCKED`.
 3. **Keep time continuous, but never across a gap.** If the previous poll was also `RUNNING`, extend the latest observation (`extend_observation`) whether or not the screen changed, so totals don't lose the seconds between a change and the next model call. If the previous poll was in any other state, don't extend: the next observation starts fresh, and step 4 skips the cooldown. When `AWAY` begins, the latest observation is trimmed back to the last input time (`trim_observation`), so the idle minutes don't count as activity.
-4. **New observation** if the window changed, the thumbnail differs by 3% or more, or capture just resumed after a gap. At least 10 s must have passed since the last observe; an app switch or a resume skips that wait. Call the gateway with an OBSERVE builder. The builder rechecks the gate, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it re-lists the windows.** If the window set changed, it discards the frame.
+4. **New observation** if the window changed, the thumbnail differs by 3% or more, or capture just resumed after a gap. At least 10 s must have passed since the last observe; an app switch or a resume skips that wait. Call the gateway with an OBSERVE builder. The builder rechecks the gate, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it reruns the full gate** (lock, pause, overlay, away, and the stacking, geometry, and visibility check for exclusions) against the post-grab state. If any check fails, or the window set or stacking changed, it discards the frame.
 5. **Write the result.** `add_observation(draft, epoch)`, then `mind.nudge(app_switched)`. A result is discarded if the consent generation changed while it was in flight (see [§7](#7-privacy)), and the journal rejects it if a forget happened since the call started.
 
 **Observe prompt:** describe only what's visible, in 1–2 sentences, plus up to 300 characters of salient on-screen text. No guesses about goals or feelings; that's the tick's job. The window app and title are given to the model as facts.
@@ -309,20 +309,22 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
 **Owns** the skill files (`skills/builtin/` in the repo, `$DAYBOOK_HOME/skills/` for user skills), the `skill_state` and `firings` tables, the only parser, the trigger evaluator, and the chat skill generator. The full format is in [skills.md](skills.md).
 
-- **`parse_skill(text, catalog, hook_text) -> Skill | [SkillError]`.** The only parser. The loader, the UI editor's live check, the CLI, and the generator all use it. It checks that:
+- **`parse_skill(text, *, source, catalog, hook_text) -> Skill | [SkillError]`.** The only parser of a single file. The loader, the UI editor's live check, the CLI, and the generator all use it. `source` is a `SkillSource(path, origin: builtin|user, trusted: bool)` built by `SkillBook`; `trusted` is true only for a built-in that matches the reviewed revision (see Approval below). It checks that:
+  - `id` matches the file name in `source.path`
   - every `do` action is in `allow`
   - every allowed action is in the catalog
   - arguments match the catalog's parameter types, including catalog types such as `music.mood`
   - every referenced signal is declared
-  - a skill has at most 4 signals, and there are at most 12 active signals overall
-  - a hook step appears only in a built-in skill (loaded from `skills/builtin/` and unmodified from the committed version), and has a matching function in `<id>.hook.py`. Hooks in user or chat-made skills are parse errors, and `.hook.py` files outside `skills/builtin/` are never loaded
+  - a skill has at most 4 signals
+  - a hook step appears only when `source.trusted` is true, and has a matching function in `<id>.hook.py`. Hooks in user or chat-made skills are parse errors, and `.hook.py` files outside `skills/builtin/` are never loaded
 - **`evaluate(rule, history, max_gap=5 min, now) -> Occurrence | None`.** Pure. It covers the four trigger forms and the keys that make firing idempotent.
 - **Approval and enablement** (stored separately, in `skill_state`).
   - A skill is active only if it is enabled *and* `sha256(skill file + hook file)` is approved.
   - `approve(id, hash)` approves that exact hash and enables the skill. `disable(id)` and `enable(id)` flip only `enabled`. Enabling a skill whose current hash isn't approved is refused, so it has to be reviewed.
+  - **Cross-skill limit.** `SkillBook` (not the parser) enforces at most 12 active signals in total: `approve` and `enable` are refused with a clear error if they would exceed it, and `entries()` reports the current total.
   - Any edit, whether by hand, in the UI, or by the generator, returns it to "needs review".
   - Approving an outdated hash fails with `StaleApproval`.
-  - A built-in skill in `skills/builtin/` counts as approved only while its file is identical to the committed version (`git diff --quiet HEAD -- <file>` and no untracked changes). A locally modified built-in loses that exception and needs review like any other skill. New installs start with only `music` enabled; every other built-in starts approved but disabled.
+  - A built-in skill in `skills/builtin/` counts as approved (and `trusted`, so its hooks may run) only while its skill file and hook file match the **reviewed revision**: the blobs on `origin/main` as of the last fetch (`git ls-tree origin/main skills/builtin/`). Changes to `skills/builtin/` are shared-contract work under [CONTRIBUTING.md](../CONTRIBUTING.md), so they reach `main` only after review. A built-in that differs from `origin/main`, including one committed on a feature branch, loses the exception and needs review like any other skill. Without a `git` checkout, no built-in is trusted. New installs start with only `music` enabled; every other built-in starts approved but disabled.
 - **`react(tick)`.** For each active skill and each rule:
   1. evaluate the rule
   2. check its cooldown
@@ -488,7 +490,7 @@ Each control is enforced at one boundary:
 | Control | Enforced by | How |
 |---|---|---|
 | Pause / resume | `sense` | `privacy.json` is the persisted switch. Pausing:<ul><li>increments the **consent generation**</li><li>makes the gateway drop pending OBSERVE work</li><li>discards any model result started under an older generation before it reaches the journal</li><li>hides the overlay</li><li>stops skills from reacting</li></ul>Music keeps playing; the user stops it separately |
-| Exclusions | `sense.gate` | Checked against every viewable window before any pixels are read, and rechecked after the grab. Withheld time is a `WITHHELD` capture span. Excluded window titles are never stored or logged. Changing exclusions increments the consent generation |
+| Exclusions | `sense.gate` | Checked against the visible part of every window before any pixels are read, and the full gate runs again after the grab. Withheld time is a `WITHHELD` capture span. Excluded window titles are never stored or logged. Changing exclusions increments the consent generation |
 | Locked screen | `sense.gate` | `LockedHint`, an empty active window, an unreadable state, or a black thumbnail all count as locked. Fails closed |
 | Away | `sense.gate` | 5 minutes without input is `AWAY`: no capture, no ticks, and the idle stretch is trimmed from the last observation |
 | Screenshots | `sense` + `model` | Frames exist only as bytes inside the observe builder and the HTTP request. Nothing is queued or written to disk. `debug.keep_frames` is off by default and shown in the UI if turned on |
@@ -525,7 +527,7 @@ pyproject.toml            # Python 3.12, uv; deps: fastapi, uvicorn, httpx, pyda
 src/daybook/
   app.py  events.py
   journal/  model/  sense/  mind/  skills/  act/  chat/  web/ (static/)  shell/ (overlay.qml)
-skills/builtin/           # music, break, break-demo (approved while unmodified from the committed version)
+skills/builtin/           # music, break, break-demo (approved while identical to origin/main)
 fixtures/replay/<scenario>/   # recorded steps: frame PNGs, window.json, lock flags, expected labels
 scripts/check.sh          # the local checks
 scripts/check_boundaries.py

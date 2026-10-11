@@ -50,7 +50,7 @@ When your person asks for something:
 ### 2. Build
 
 - Stay inside the task and its area of the code.
-- If the task needs a change to a shared contract, it is **shared-contract work**. It waits for review before merging (step 5). Shared contracts include types or schema used across modules, API shapes between frontend and backend, auth, secrets handling, and build or deploy config.
+- If the task needs a change to a shared contract, it is **shared-contract work**. It waits for review before merging (step 5). Shared contracts include types or schema used across modules, API shapes between frontend and backend, auth, secrets handling, build or deploy config, and anything under `skills/builtin/` (built-in skills and their Python hooks run without in-app review).
 - For shared-contract work, read [docs/agents/design-red-flags.md](docs/agents/design-red-flags.md) first. Write the caller's usage before the types. Give each piece of state one owner. Move every caller to the new shape and delete the old one in the same PR.
 
 ### 3. Verify

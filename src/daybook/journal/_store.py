@@ -670,6 +670,17 @@ class Journal:
                     ).fetchone()
                 ):
                     continue
+                # The user asking again overrides their own earlier dismissal;
+                # a refreshed screen does not.
+                if draft.source is None:
+                    revived = self._db.execute(
+                        "UPDATE upcoming SET dismissed=0, source=NULL, added_at=?, kind=? "
+                        "WHERE key=? AND due_at=? AND dismissed=1 RETURNING *",
+                        (added_at, draft.kind, key, stamp(draft.due_at)),
+                    ).fetchone()
+                    if revived is not None:
+                        added.append(self._row_upcoming(revived))
+                        continue
                 id = uuid4().hex
                 inserted = self._db.execute(
                     "INSERT OR IGNORE INTO upcoming VALUES(?, ?, ?, ?, ?, ?, 0, ?)",

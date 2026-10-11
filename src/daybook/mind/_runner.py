@@ -325,10 +325,12 @@ class Runner:
         epoch = None
         for note_epoch, note in batch:
             text = f"{note.window.app} / {note.window.title}: {note.seen} {note.visible_text}"
-            # Refreshes of an unchanged screen repeat the same text.
-            if text in self.scanned or not dated(text):
+            # Refreshes of an unchanged screen repeat the same text. "Tomorrow"
+            # means another date on another day, so the key includes the day.
+            key = f"{self.clock().astimezone().date()} {text}"
+            if key in self.scanned or not dated(text):
                 continue
-            self.scanned[text] = None
+            self.scanned[key] = None
             if len(self.scanned) > 200:
                 del self.scanned[next(iter(self.scanned))]
             notes[note.id] = text[:1500]

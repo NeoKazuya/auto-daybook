@@ -114,18 +114,21 @@ def test_items_dedupe_by_title_and_due_and_sort_soonest_first(journal):
 
 
 def test_dismissed_item_is_not_re_added_from_the_same_screen(journal):
+    source = note(journal, "Standup tomorrow 9:00")
     due = NOW + timedelta(hours=3)
-    [item] = journal.add_upcoming(
-        [UpcomingDraft("Standup", due)], journal.epoch, at=NOW
-    )
+    screen = UpcomingDraft("Standup", due, source.id)
+    [item] = journal.add_upcoming([screen], journal.epoch, at=NOW)
     journal.dismiss_upcoming(item.id)
     assert journal.portal.upcoming(NOW) == []
-    assert (
-        journal.add_upcoming([UpcomingDraft("Standup", due)], journal.epoch, at=NOW)
-        == []
-    )
+    assert journal.add_upcoming([screen], journal.epoch, at=NOW) == []
     with pytest.raises(KeyError):
         journal.dismiss_upcoming(item.id)
+    # The user asking for it again overrides their dismissal and owns it now.
+    [again] = journal.add_upcoming(
+        [UpcomingDraft("standup", due, kind="event")], journal.epoch, at=NOW
+    )
+    assert (again.id, again.source, again.kind) == (item.id, None, "event")
+    assert [i.id for i in journal.portal.upcoming(NOW)] == [item.id]
 
 
 def test_forgetting_notes_removes_their_items_and_stale_results(journal):
@@ -190,6 +193,10 @@ def test_events_start_rather_than_fall_due():
         ("12:30:45 INFO server started", False),
         ("def main(): pass", False),
         ("No calendar or specific deadlines are visible.", False),
+        ("Assignment due in 3 days", True),
+        ("Quiz 4 · 2 days left", True),
+        ("Project report due next week", True),
+        ("Uploaded 3 days ago", False),
     ],
 )
 def test_dated_gate_needs_a_date_not_just_a_clock_time(text, expected):
@@ -313,6 +320,28 @@ async def test_dated_notes_are_scanned_once_after_the_tick(journal):
     assert gateway.priorities == [Priority.TICK, Priority.TICK]
     # Nothing new: no further call.
     await mind.scan_upcoming()
+    assert len(gateway.prompts) == 2
+
+
+async def test_same_relative_wording_is_rescanned_on_a_later_day(journal):
+    journal.set_capture_state("running", NOW)
+    clock = [NOW]
+    text = "Standup tomorrow at 9:00"
+    gateway = ScriptedGateway(['{"items": []}', '{"items": []}'])
+    mind = Mind(
+        journal,
+        gateway,
+        cast(SkillBook, Book()),
+        clock=lambda: clock[0],
+        upcoming=True,
+    )
+    runner = mind._runner
+    for day in (0, 0, 1):
+        clock[0] = NOW + timedelta(days=day)
+        runner.unscanned.append(
+            (journal.epoch, note(journal, text, at=clock[0] + timedelta(seconds=day)))
+        )
+        await mind.scan_upcoming()
     assert len(gateway.prompts) == 2
 
 

@@ -11,13 +11,16 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from daybook.journal import UpcomingDraft
 from daybook.model import ModelGateway, Priority, Prompt
 
-# Cheap gate before a model call: text that names a date, not just a clock time,
-# so chat timestamps and log lines alone don't cost a call. Words like "deadline"
-# don't count: notes often say none is visible.
+# Cheap gate before a model call: text that names a date or a countdown ("due in
+# 3 days", "2 days left"), not just a clock time, so chat timestamps and log lines
+# alone don't cost a call. Words like "deadline" don't count: notes often say none
+# is visible.
 DATED = re.compile(
     r"\b(?:january|february|march|april|june|july|august|september|october"
     r"|november|december|monday|tuesday|wednesday|thursday|friday|saturday"
-    r"|sunday|today|tonight|tomorrow"
+    r"|sunday|today|tonight|tomorrow|next\s+week"
+    r"|(?:in|due)\s+\d+\s+(?:days?|weeks?|hours?)\b"
+    r"|\d+\s+(?:days?|weeks?|hours?)\s+(?:left|remaining)\b"
     r"|(?:jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)\.?\s+\d{1,2}\b"
     r"|\d{1,2}/\d{1,2}(?:/\d{2,4})?|\d{4}-\d{2}-\d{2})",
     re.IGNORECASE,

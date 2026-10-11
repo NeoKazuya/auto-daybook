@@ -85,3 +85,57 @@ def test_record_tool_has_no_application_dependency():
         node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
     ]
     assert all(module is None or not module.startswith("daybook") for module in imports)
+
+
+@pytest.mark.parametrize(
+    "name,policies",
+    [
+        ("coding-reading", ["actual"] * 4),
+        ("meeting-work", ["actual"] * 4),
+        ("focus-streak", ["actual"] * 8),
+        ("lock-exclusion", ["black-locked", "actual", "black-private", "actual"]),
+    ],
+)
+def test_gx10_recordings_round_trip_privacy_and_labels(monkeypatch, name, policies):
+    from datetime import datetime
+
+    from daybook.sense import PrivacySettings, ReplayScreen, gate
+
+    folder = PATH.parents[1] / "fixtures/replay" / name
+    steps = json.loads((folder / "steps.json").read_text())
+    clock = [1000.0]
+    monkeypatch.setattr("daybook.sense._screen.time.monotonic", lambda: clock[0])
+    screen = ReplayScreen(folder)
+    stamps = []
+    for step, policy in zip(steps, policies, strict=True):
+        clock[0] = 1000 + step["at"]
+        directory = folder / step["directory"]
+        source = json.loads((directory / "source.json").read_text())
+        assert source["machine"] == "GX10" and source["frame_policy"] == policy
+        stamps.append(datetime.fromisoformat(source["recorded_at"]))
+        capture = gate(screen.state(), PrivacySettings())
+        assert (
+            capture
+            == {
+                "actual": "running",
+                "black-locked": "locked",
+                "black-private": "withheld",
+            }[policy]
+        )
+        with Image.open(directory / "frame.png") as frame:
+            assert frame.mode == "RGB" and list(frame.size) == source["size"]
+            if policy != "actual":
+                assert frame.getextrema() == ((0, 0),) * 3
+        # Runtime replay can decode the permitted frame in memory.
+        if capture == "running":
+            assert len(screen.thumbnail()) == 32 * 18
+            assert screen.grab().startswith(b"\xff\xd8")
+    labels = json.loads((folder / "labels.json").read_text())
+    assert labels
+    for row in labels:
+        assert {"at", "kind", "mood", "focused", "in_meeting"} <= row.keys()
+        clock[0] = 1000 + row["at"]
+        assert gate(screen.state(), PrivacySettings()) == row.get("capture", "running")
+    if name == "focus-streak":
+        assert steps[-1]["at"] >= 180
+        assert (stamps[-1] - stamps[0]).total_seconds() >= 180

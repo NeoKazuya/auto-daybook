@@ -620,11 +620,11 @@ async def test_pausing_during_the_wait_stops_the_close(tmp_path):
     portal = Portal_()
     closed = []
 
-    async def wait(skill, args):
+    async def wait(context, args):
         portal.capture = "paused"  # the user pauses Daybook mid-wait
         return Outcome("wait", True)
 
-    async def close(skill, args):
+    async def close(context, args):
         closed.append(args)
         return Outcome("desktop.close_tab", True)
 
@@ -685,7 +685,7 @@ async def test_xdo_close_tab_targets_only_the_checked_window(monkeypatch):
             return screen["class"]
         return None
 
-    async def command(action, *args):
+    async def command(action, *args, can_act=None):
         ran.append(args)
         return _desktop.Outcome(action, True)
 

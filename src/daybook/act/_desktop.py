@@ -13,10 +13,14 @@ from urllib.parse import urlparse
 
 from daybook.journal import Outcome
 
-from . import TAB_TARGETS
+from . import TAB_TARGETS, CanAct
 
 
-async def command(action: str, *args: str) -> Outcome:
+async def command(action: str, *args: str, can_act: CanAct | None = None) -> Outcome:
+    # Only suppress a helper before it starts. An already-started helper may
+    # finish; revocation never rolls back desktop state or kills an application.
+    if can_act is not None and not can_act():
+        return Outcome(action, False, "skill_inactive")
     try:
         process = await asyncio.create_subprocess_exec(
             *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
@@ -32,7 +36,7 @@ async def command(action: str, *args: str) -> Outcome:
         return Outcome(action, False, "command_unavailable")
 
 
-async def open_url(url: str) -> Outcome:
+async def open_url(url: str, *, can_act: CanAct | None = None) -> Outcome:
     if urlparse(url).scheme not in (
         "http",
         "https",
@@ -40,7 +44,7 @@ async def open_url(url: str) -> Outcome:
         "mailto",
     ) or url.startswith("-"):
         return Outcome("desktop.open_url", False, "invalid_url")
-    return await command("desktop.open_url", "xdg-open", url)
+    return await command("desktop.open_url", "xdg-open", url, can_act=can_act)
 
 
 @dataclass(frozen=True)
@@ -113,7 +117,7 @@ def resolve(app: str) -> tuple[Application | None, str]:
     return (matches[0], "") if matches else (None, "")
 
 
-async def launch(app: str) -> Outcome:
+async def launch(app: str, *, can_act: CanAct | None = None) -> Outcome:
     if not app.strip() or any(ord(c) < 32 or ord(c) == 127 for c in app):
         return Outcome("desktop.launch", False, "invalid_app")
     installed, error = resolve(app)
@@ -123,7 +127,7 @@ async def launch(app: str) -> Outcome:
         app = installed.id
     elif not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", app):
         return Outcome("desktop.launch", False, "app_not_found")
-    return await command("desktop.launch", "gtk-launch", app)
+    return await command("desktop.launch", "gtk-launch", app, can_act=can_act)
 
 
 async def find_window(app: str, title: str = "*") -> tuple[str | None, str]:
@@ -162,11 +166,15 @@ async def find_window(app: str, title: str = "*") -> tuple[str | None, str]:
     return matches[0], ""
 
 
-async def focus(app: str, title: str = "*") -> Outcome:
+async def focus(
+    app: str, title: str = "*", *, can_act: CanAct | None = None
+) -> Outcome:
     window, error = await find_window(app, title)
     if window is None:
         return Outcome("desktop.focus", False, error)
-    return await command("desktop.focus", "xdotool", "windowactivate", "--sync", window)
+    return await command(
+        "desktop.focus", "xdotool", "windowactivate", "--sync", window, can_act=can_act
+    )
 
 
 async def output(*args: str) -> str | None:
@@ -223,7 +231,9 @@ def tab_family(wm_class: str) -> str | None:
     return None
 
 
-async def tab_window(action: str, app: str) -> tuple[str, str] | Outcome:
+async def tab_window(
+    action: str, app: str, *, can_act: CanAct | None = None
+) -> tuple[str, str] | Outcome:
     if app.casefold() == "active":
         window = await output("xdotool", "getactivewindow")
         if not window or not window.isdigit():
@@ -241,7 +251,9 @@ async def tab_window(action: str, app: str) -> tuple[str, str] | Outcome:
     if family is None:
         return Outcome(action, False, "unsupported_browser")
     if app.casefold() != "active":
-        activated = await command(action, "xdotool", "windowactivate", "--sync", window)
+        activated = await command(
+            action, "xdotool", "windowactivate", "--sync", window, can_act=can_act
+        )
         if not activated.ok:
             return activated
     if await output("xdotool", "getactivewindow") != window:
@@ -249,15 +261,21 @@ async def tab_window(action: str, app: str) -> tuple[str, str] | Outcome:
     return window, family
 
 
-async def tab_command(action: str, window: str, *args: str) -> Outcome:
+async def tab_command(
+    action: str, window: str, *args: str, can_act: CanAct | None = None
+) -> Outcome:
     # Abort if the user left the checked window; activate its ID before input.
     # These sequential X11 operations still have a small focus-change race.
     if await output("xdotool", "getactivewindow") != window:
         return Outcome(action, False, "window_not_active")
-    return await command(action, "xdotool", "windowactivate", "--sync", window, *args)
+    return await command(
+        action, "xdotool", "windowactivate", "--sync", window, *args, can_act=can_act
+    )
 
 
-async def open_tab(url: str, app: str = "active") -> Outcome:
+async def open_tab(
+    url: str, app: str = "active", *, can_act: CanAct | None = None
+) -> Outcome:
     action = "desktop.open_tab"
     try:
         parsed = urlparse(url)
@@ -269,7 +287,7 @@ async def open_tab(url: str, app: str = "active") -> Outcome:
         or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url)
     ):
         return Outcome(action, False, "invalid_url")
-    target = await tab_window(action, app)
+    target = await tab_window(action, app, can_act=can_act)
     if isinstance(target, Outcome):
         return target
     window, _ = target
@@ -279,17 +297,19 @@ async def open_tab(url: str, app: str = "active") -> Outcome:
         ("type", "--clearmodifiers", "--delay", "0", "--", url),
         ("key", "--clearmodifiers", "Return"),
     ):
-        result = await tab_command(action, window, *args)
+        result = await tab_command(action, window, *args, can_act=can_act)
         if not result.ok:
             return result
     return result
 
 
-async def switch_tab(tab: str, app: str = "active") -> Outcome:
+async def switch_tab(
+    tab: str, app: str = "active", *, can_act: CanAct | None = None
+) -> Outcome:
     action = "desktop.switch_tab"
     if tab not in TAB_TARGETS:
         return Outcome(action, False, "invalid_tab")
-    target = await tab_window(action, app)
+    target = await tab_window(action, app, can_act=can_act)
     if isinstance(target, Outcome):
         return target
     window, family = target
@@ -297,7 +317,9 @@ async def switch_tab(tab: str, app: str = "active") -> Outcome:
     if key is None:
         # Firefox uses Alt+digits on Linux; Chromium uses Ctrl+digits.
         key = f"{'alt' if family == 'firefox' else 'ctrl'}+{'9' if tab == 'last' else tab}"
-    return await tab_command(action, window, "key", "--clearmodifiers", key)
+    return await tab_command(
+        action, window, "key", "--clearmodifiers", key, can_act=can_act
+    )
 
 
 def literals(pattern: str) -> str:
@@ -331,7 +353,7 @@ def specific(pattern: str) -> bool:
     return len(literals(pattern).strip()) >= 3
 
 
-async def close_tab(title: str) -> Outcome:
+async def close_tab(title: str, *, can_act: CanAct | None = None) -> Outcome:
     """Press Ctrl+W in the active window, only if it's a known browser and its
     title matches `title` (case-insensitive glob). The keystroke is bound to the
     window that passed the check: one xdotool call re-activates that window ID
@@ -364,4 +386,5 @@ async def close_tab(title: str) -> Outcome:
         "key",
         "--clearmodifiers",
         "ctrl+w",
+        can_act=can_act,
     )

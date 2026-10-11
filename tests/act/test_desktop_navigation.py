@@ -65,7 +65,7 @@ def screen(monkeypatch):
             return state["class"]
         raise AssertionError(args)
 
-    async def command(action, *args):
+    async def command(action, *args, can_act=None):
         state["commands"].append(args)
         if args[:3] == ("xdotool", "windowactivate", "--sync"):
             state["active"] = args[3]
@@ -247,8 +247,8 @@ async def test_focus_change_after_new_tab_prevents_typing_into_another_app(
 ):
     original = _desktop.command
 
-    async def moving(action, *args):
-        result = await original(action, *args)
+    async def moving(action, *args, can_act=None):
+        result = await original(action, *args, can_act=can_act)
         screen["active"] = "100"
         return result
 

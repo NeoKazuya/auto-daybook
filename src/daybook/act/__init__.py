@@ -69,7 +69,18 @@ class NotAllowed(Exception):
     pass
 
 
-Handler = Callable[[str, Mapping[str, object]], Awaitable[Outcome]]
+CanAct = Callable[[], bool]
+
+
+@dataclass(frozen=True)
+class ActionContext:
+    """The caller owns eligibility; an action checks it before starting an effect."""
+
+    skill: str
+    can_act: CanAct
+
+
+Handler = Callable[[ActionContext, Mapping[str, object]], Awaitable[Outcome]]
 
 
 class Catalog:
@@ -83,8 +94,14 @@ class Catalog:
         self.moods = dict(moods)
         self.handlers = dict(handlers or {})
 
-    def allowed(self, allow: tuple[str, ...], skill: str = "manual") -> Actions:
-        return Actions(self, allow, skill)
+    def allowed(
+        self,
+        allow: tuple[str, ...],
+        skill: str = "manual",
+        *,
+        can_act: CanAct | None = None,
+    ) -> Actions:
+        return Actions(self, allow, skill, can_act=can_act)
 
     def describe_for_prompt(self) -> str:
         return (
@@ -97,8 +114,25 @@ class Catalog:
 
 
 class Actions:
-    def __init__(self, catalog: Catalog, allow: tuple[str, ...], skill: str) -> None:
-        self.catalog, self.allow, self.skill = catalog, allow, skill
+    def __init__(
+        self,
+        catalog: Catalog,
+        allow: tuple[str, ...],
+        skill: str,
+        *,
+        can_act: CanAct | None = None,
+    ) -> None:
+        self.catalog, self.allow = catalog, allow
+        self._eligible = can_act
+        self._revoked = False
+        self.context = ActionContext(skill, self.can_act)
+
+    def can_act(self) -> bool:
+        # Once a denial is observed, this capability stays revoked. A subsequent
+        # tick creates a new Actions; a delayed hook cannot revive the old one.
+        if not self._revoked and self._eligible is not None:
+            self._revoked = not self._eligible()
+        return not self._revoked
 
     async def run(self, action: str, **parameters: object) -> Outcome:
         if action not in self.allow:
@@ -112,7 +146,9 @@ class Actions:
             from ._validation import parameters as validate
 
             checked = validate(self.catalog.specs[action], parameters)
-            return await handler(self.skill, checked)
+            if not self.can_act():
+                return Outcome(action, False, "skill_inactive")
+            return await handler(self.context, checked)
         except ValueError:
             return Outcome(action, False, "invalid_parameters")
         except Exception:
@@ -199,75 +235,97 @@ def build_catalog(
 
 
 class DesktopControl(Protocol):
-    async def open_url(self, url: str) -> Outcome: ...
-    async def launch(self, app: str) -> Outcome: ...
-    async def focus(self, app: str, title: str = "*") -> Outcome: ...
-    async def open_tab(self, url: str, app: str = "active") -> Outcome: ...
-    async def switch_tab(self, tab: str, app: str = "active") -> Outcome: ...
-    async def close_tab(self, title: str) -> Outcome: ...
+    async def open_url(self, url: str, *, can_act: CanAct | None = None) -> Outcome: ...
+    async def launch(self, app: str, *, can_act: CanAct | None = None) -> Outcome: ...
+    async def focus(
+        self, app: str, title: str = "*", *, can_act: CanAct | None = None
+    ) -> Outcome: ...
+    async def open_tab(
+        self, url: str, app: str = "active", *, can_act: CanAct | None = None
+    ) -> Outcome: ...
+    async def switch_tab(
+        self, tab: str, app: str = "active", *, can_act: CanAct | None = None
+    ) -> Outcome: ...
+    async def close_tab(
+        self, title: str, *, can_act: CanAct | None = None
+    ) -> Outcome: ...
 
 
 class XdoDesktop:
-    async def open_url(self, url: str) -> Outcome:
+    async def open_url(self, url: str, *, can_act: CanAct | None = None) -> Outcome:
         from ._desktop import open_url
 
-        return await open_url(url)
+        return await open_url(url, can_act=can_act)
 
-    async def launch(self, app: str) -> Outcome:
+    async def launch(self, app: str, *, can_act: CanAct | None = None) -> Outcome:
         from ._desktop import launch
 
-        return await launch(app)
+        return await launch(app, can_act=can_act)
 
-    async def focus(self, app: str, title: str = "*") -> Outcome:
+    async def focus(
+        self, app: str, title: str = "*", *, can_act: CanAct | None = None
+    ) -> Outcome:
         from ._desktop import focus
 
-        return await focus(app, title)
+        return await focus(app, title, can_act=can_act)
 
-    async def open_tab(self, url: str, app: str = "active") -> Outcome:
+    async def open_tab(
+        self, url: str, app: str = "active", *, can_act: CanAct | None = None
+    ) -> Outcome:
         from ._desktop import open_tab
 
-        return await open_tab(url, app)
+        return await open_tab(url, app, can_act=can_act)
 
-    async def switch_tab(self, tab: str, app: str = "active") -> Outcome:
+    async def switch_tab(
+        self, tab: str, app: str = "active", *, can_act: CanAct | None = None
+    ) -> Outcome:
         from ._desktop import switch_tab
 
-        return await switch_tab(tab, app)
+        return await switch_tab(tab, app, can_act=can_act)
 
-    async def close_tab(self, title: str) -> Outcome:
+    async def close_tab(self, title: str, *, can_act: CanAct | None = None) -> Outcome:
         from ._desktop import close_tab
 
-        return await close_tab(title)
+        return await close_tab(title, can_act=can_act)
 
 
 class FakeDesktop:
-    """Development desktop; records requests without launching anything."""
+    """Development desktop; records permitted requests without launching anything."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
 
-    async def open_url(self, url: str) -> Outcome:
-        self.calls.append(("open_url", url))
-        return Outcome("desktop.open_url", True, "fake")
+    def _record(
+        self, action: str, *args: str, can_act: CanAct | None = None
+    ) -> Outcome:
+        if can_act is not None and not can_act():
+            return Outcome(f"desktop.{action}", False, "skill_inactive")
+        self.calls.append((action, *args))
+        return Outcome(f"desktop.{action}", True, "fake")
 
-    async def launch(self, app: str) -> Outcome:
-        self.calls.append(("launch", app))
-        return Outcome("desktop.launch", True, "fake")
+    async def open_url(self, url: str, *, can_act: CanAct | None = None) -> Outcome:
+        return self._record("open_url", url, can_act=can_act)
 
-    async def focus(self, app: str, title: str = "*") -> Outcome:
-        self.calls.append(("focus", app, title))
-        return Outcome("desktop.focus", True, "fake")
+    async def launch(self, app: str, *, can_act: CanAct | None = None) -> Outcome:
+        return self._record("launch", app, can_act=can_act)
 
-    async def open_tab(self, url: str, app: str = "active") -> Outcome:
-        self.calls.append(("open_tab", url, app))
-        return Outcome("desktop.open_tab", True, "fake")
+    async def focus(
+        self, app: str, title: str = "*", *, can_act: CanAct | None = None
+    ) -> Outcome:
+        return self._record("focus", app, title, can_act=can_act)
 
-    async def switch_tab(self, tab: str, app: str = "active") -> Outcome:
-        self.calls.append(("switch_tab", tab, app))
-        return Outcome("desktop.switch_tab", True, "fake")
+    async def open_tab(
+        self, url: str, app: str = "active", *, can_act: CanAct | None = None
+    ) -> Outcome:
+        return self._record("open_tab", url, app, can_act=can_act)
 
-    async def close_tab(self, title: str) -> Outcome:
-        self.calls.append(("close_tab", title))
-        return Outcome("desktop.close_tab", True, "fake")
+    async def switch_tab(
+        self, tab: str, app: str = "active", *, can_act: CanAct | None = None
+    ) -> Outcome:
+        return self._record("switch_tab", tab, app, can_act=can_act)
+
+    async def close_tab(self, title: str, *, can_act: CanAct | None = None) -> Outcome:
+        return self._record("close_tab", title, can_act=can_act)
 
 
 class Overlay:
@@ -478,19 +536,19 @@ def bind_handlers(
 ) -> Mapping[str, Handler]:
     from ._validation import duration
 
-    async def play(skill: str, args: Mapping[str, object]) -> Outcome:
+    async def play(context: ActionContext, args: Mapping[str, object]) -> Outcome:
         return await music.play_mood(
             str(args["mood"]),
-            skill=skill,
+            skill=context.skill,
             min_dwell=duration(args.get("min_dwell", "60s")),
         )
 
-    async def stop(skill: str, args: Mapping[str, object]) -> Outcome:
-        return await music.stop(skill=skill)
+    async def stop(context: ActionContext, args: Mapping[str, object]) -> Outcome:
+        return await music.stop(skill=context.skill)
 
     warned: dict[str, float] = {}  # skill -> monotonic time of its last shown overlay
 
-    async def show(skill: str, args: Mapping[str, object]) -> Outcome:
+    async def show(context: ActionContext, args: Mapping[str, object]) -> Outcome:
         outcome = await overlay.show(
             OverlayRequest(
                 str(args["title"]),
@@ -500,49 +558,60 @@ def bind_handlers(
                 cast(Literal["calm", "alert"], args.get("style", "calm")),
                 cast(Literal["fullscreen", "bubble"], args.get("layout", "fullscreen")),
             ),
-            skill,
+            context.skill,
         )
         # Only the latest attempt counts: a failed warning withdraws an earlier one.
         if outcome.ok:
-            warned[skill] = time.monotonic()
+            warned[context.skill] = time.monotonic()
         else:
-            warned.pop(skill, None)
+            warned.pop(context.skill, None)
         return outcome
 
-    async def hide(skill: str, args: Mapping[str, object]) -> Outcome:
+    async def hide(context: ActionContext, args: Mapping[str, object]) -> Outcome:
         return await overlay.hide()
 
-    async def notify(skill: str, args: Mapping[str, object]) -> Outcome:
+    async def notify(context: ActionContext, args: Mapping[str, object]) -> Outcome:
         if not real_effects:
             return Outcome("notify.send", True, "fake")
         from ._desktop import command
 
         return await command(
-            "notify.send", "notify-send", "--", str(args["title"]), str(args["body"])
+            "notify.send",
+            "notify-send",
+            "--",
+            str(args["title"]),
+            str(args["body"]),
+            can_act=context.can_act,
         )
 
-    async def open_url(skill: str, args: Mapping[str, object]) -> Outcome:
-        return await desktop.open_url(str(args["url"]))
+    async def open_url(context: ActionContext, args: Mapping[str, object]) -> Outcome:
+        return await desktop.open_url(str(args["url"]), can_act=context.can_act)
 
-    async def launch(skill: str, args: Mapping[str, object]) -> Outcome:
-        return await desktop.launch(str(args["app"]))
+    async def launch(context: ActionContext, args: Mapping[str, object]) -> Outcome:
+        return await desktop.launch(str(args["app"]), can_act=context.can_act)
 
-    async def focus(skill: str, args: Mapping[str, object]) -> Outcome:
-        return await desktop.focus(str(args["app"]), str(args["title"]))
+    async def focus(context: ActionContext, args: Mapping[str, object]) -> Outcome:
+        return await desktop.focus(
+            str(args["app"]), str(args["title"]), can_act=context.can_act
+        )
 
-    async def open_tab(skill: str, args: Mapping[str, object]) -> Outcome:
-        return await desktop.open_tab(str(args["url"]), str(args["app"]))
+    async def open_tab(context: ActionContext, args: Mapping[str, object]) -> Outcome:
+        return await desktop.open_tab(
+            str(args["url"]), str(args["app"]), can_act=context.can_act
+        )
 
-    async def switch_tab(skill: str, args: Mapping[str, object]) -> Outcome:
-        return await desktop.switch_tab(str(args["tab"]), str(args["app"]))
+    async def switch_tab(context: ActionContext, args: Mapping[str, object]) -> Outcome:
+        return await desktop.switch_tab(
+            str(args["tab"]), str(args["app"]), can_act=context.can_act
+        )
 
-    async def close_tab(skill: str, args: Mapping[str, object]) -> Outcome:
-        shown = warned.pop(skill, None)  # one warning authorizes one close
+    async def close_tab(context: ActionContext, args: Mapping[str, object]) -> Outcome:
+        shown = warned.pop(context.skill, None)  # one warning authorizes one close
         if shown is None or time.monotonic() - shown > CLOSE_TAB_WARNING_WINDOW:
             return Outcome("desktop.close_tab", False, "no_warning_shown")
-        return await desktop.close_tab(str(args["title"]))
+        return await desktop.close_tab(str(args["title"]), can_act=context.can_act)
 
-    async def wait(skill: str, args: Mapping[str, object]) -> Outcome:
+    async def wait(context: ActionContext, args: Mapping[str, object]) -> Outcome:
         # Only sleeps: SkillBook.react re-checks eligibility before the next step,
         # so pausing Daybook or disabling the skill during the wait stops it.
         await asyncio.sleep(duration(args["for"]))

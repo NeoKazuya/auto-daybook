@@ -115,6 +115,42 @@ async function setup({ developer = false, manualTimers = false, demo = false } =
     runNextTimer:()=>{const timer=timers.find(t=>!t.cancelled&&!t.ran);assert.ok(timer,'a debounce is pending');assert.equal(timer.delay,350);timer.ran=true;return timer.fn();},
     setRequest:fn=>{request=fn;}};
 }
+test('prefilled composer opens with the caret after the supplied text', async () => {
+  const x = await setup();
+  for (const message of ['/skill ', '/ask ', '/skill remind me to stand']) {
+    const { root } = await x.page('board', new URLSearchParams({ q: message }).toString());
+    const input = root.querySelector('input');
+    assert.equal(input.value, message);
+    assert.equal(root.document.activeElement, input);
+    assert.equal(input.selectionStart, message.length);
+    assert.equal(input.selectionEnd, message.length);
+  }
+});
+
+test('composer prefix buttons focus the input with the caret after its text', async () => {
+  const x = await setup();
+  const { root } = await x.page('board');
+  const input = root.querySelector('input');
+  for (const [before, prefix, expected] of [
+    ['', '/skill', '/skill '],
+    ['/skill ', '/skill', '/skill '],
+    ['/skill ', '/ask', '/ask '],
+    ['remind me to stand', '/skill', '/skill remind me to stand'],
+    ['/ask remind me to stand', '/skill', '/skill remind me to stand'],
+    ['/skill remember 日本語 📚', '/ask', '/ask remember 日本語 📚'],
+  ]) {
+    input.value = before;
+    input.setSelectionRange(0, 0);
+    const button = walk(root).find(n => n.spec === 'button' && n.textContent.startsWith(prefix));
+    button.focus();
+    button.onclick();
+    assert.equal(input.value, expected);
+    assert.equal(root.document.activeElement, input);
+    assert.equal(input.selectionStart, expected.length);
+    assert.equal(input.selectionEnd, expected.length);
+  }
+});
+
 test('forget clears cached recall while keeping draft across navigation', async()=>{
   const x=await setup();
   x.setRequest(async path=>path==='/api/chat'?draft:{});

@@ -661,7 +661,7 @@ Close Instagram.
     when = datetime.now(timezone.utc) + timedelta(seconds=1)
     reading = SignalReading(SignalId("nudge", "on_instagram"), True, when, "t1")
     portal.history.append(reading)
-    await book.react(Tick(when, 0, when, (), None, (reading,)))
+    await book.react(Tick(when, 0, when, (), (), (reading,)))
     assert portal.capture == "paused", "the rule fired and its wait step ran"
     assert closed == []
 

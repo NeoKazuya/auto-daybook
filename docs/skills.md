@@ -74,6 +74,8 @@ The action catalog in [ARCHITECTURE.md §6.7](ARCHITECTURE.md#67-act-actions-mus
 
 For short, casual reminders, use `overlay.show` with `layout: bubble` and conversational `body` text; use `layout: fullscreen` for a reminder that covers the screen. Omitting layout retains fullscreen behavior. Bubble rectangles are masked from capture in RAM; fullscreen pauses capture. The catalog supplies the valid layout values and defaults.
 
+To act on something only after warning about it, show the warning first, then `wait`, then act: for example `overlay.show` (a bubble), `wait: { for: 5s }`, `desktop.close_tab: { title: "*Instagram*" }`. `desktop.close_tab` refuses unless the same skill's warning was actually shown, and a pause or disable during the `wait` stops the close. The built-in `instagram-nudge` skill shows the pattern.
+
 Every action used in `do` must appear in `allow`. Parameter values are checked against the catalog when the file is parsed; for example, `mood` must be a mood in the library.
 
 ## Validation

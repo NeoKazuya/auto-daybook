@@ -73,8 +73,8 @@ def resolve_window(message: str, now: datetime) -> TimeRange:
             return TimeRange(
                 day.astimezone(UTC), (day + timedelta(days=1)).astimezone(UTC)
             )
-        except ValueError:
-            pass
+        except ValueError as exc:
+            raise ValueError(f"Invalid calendar date: {dated[1]}") from exc
     if "this week" in text or "last week" in text:
         monday = midnight - timedelta(days=midnight.weekday())
         start = monday - timedelta(days=7) if "last week" in text else monday
@@ -124,6 +124,7 @@ class _RecallStep(_Recall):
     queries: list[str] = Field(default_factory=list, max_length=3)
     read_ids: list[str] = Field(default_factory=list, max_length=8)
     follow_up: bool = False
+    follow_up_turn: int | None = Field(default=None, ge=0, le=3)
     all_history: bool = False
     neighbors: Literal["none", "next", "previous", "both"] = "none"
 
@@ -309,7 +310,10 @@ class Chat:
     async def _recall(
         self, message: str, history: tuple[RecallTurn, ...]
     ) -> Answer | Plain:
-        initial_window = resolve_window(message, _local_now())
+        try:
+            initial_window = resolve_window(message, _local_now())
+        except ValueError:
+            return Plain("That date is not valid. Please use a real calendar date.")
         explicit_window = bool(
             re.search(
                 r"\b(today|yesterday|this morning|this week|last week|\d{4}-\d{2}-\d{2}|last\s+(?:\d+|an?|one)\s+(?:minutes?|mins?|hours?|hrs?|days?|weeks?))\b",
@@ -390,6 +394,7 @@ class Chat:
                 "question": message,
                 "history": [
                     {
+                        "turn": index,
                         "question": t.question[:2000],
                         "cites": list(t.cites[:8]),
                         "window": {
@@ -397,7 +402,7 @@ class Chat:
                             "to": t.window.end.isoformat(),
                         },
                     }
-                    for t in history
+                    for index, t in enumerate(history)
                 ],
                 "window": {
                     "from": window.start.isoformat(),
@@ -463,9 +468,10 @@ class Chat:
                                 "return empty text plus up to 3 short targeted FTS queries (words within one query are ANDed) "
                                 "and/or up to 8 read_ids from supplied hits/notes/segments. Prefer reading exact observation hits for details. "
                                 "Use alternative or more specific queries if initial matches are weak; do not repeat searches. "
-                                "Set follow_up=true only when this question refers to a prior question; use neighbors=next/previous/both "
+                                "Set follow_up=true only when this question refers to a prior question and set follow_up_turn to its history turn index. "
+                                "Use neighbors=next/previous/both "
                                 "to read what happened around its cited notes. Set all_history=true to search older notes if no explicit date was requested. "
-                                "You have at most two retrieval rounds. Return JSON with text,cites,queries,read_ids,follow_up,all_history,neighbors."
+                                "You have at most two retrieval rounds. Return JSON with text,cites,queries,read_ids,follow_up,follow_up_turn,all_history,neighbors."
                             )
                         ),
                         user=_recall_payload(payload),
@@ -479,17 +485,26 @@ class Chat:
                     break
                 if reply is None:
                     raise ModelUnavailable
+                prior = None
+                if isinstance(reply, _RecallStep) and reply.follow_up and history:
+                    index = reply.follow_up_turn
+                    prior = (
+                        history[index]
+                        if index is not None and index < len(history)
+                        else history[-1]
+                    )
                 rescope = (
                     isinstance(reply, _RecallStep)
                     and reply.follow_up
-                    and history
+                    and prior is not None
                     and not explicit_window
-                    and window != history[-1].window
+                    and window != prior.window
                 )
                 if rescope:
                     # The model has resolved the reference. Its first answer was
                     # based on today's totals, so require a scoped second pass.
-                    window = history[-1].window
+                    assert prior is not None
+                    window = prior.window
                     segments = portal.segments(window)
                     payload["window"] = {
                         "from": window.start.isoformat(),
@@ -562,8 +577,8 @@ class Chat:
                 parents.update({h.id: h.segment for h in new_hits if h.segment})
                 available = valid | set(ids) | {h.id for h in hits + new_hits}
                 selected = [id for id in reply.read_ids if id in available]
-                if reply.follow_up and history:
-                    selected.extend(history[-1].cites[:8])
+                if prior is not None:
+                    selected.extend(prior.cites[:8])
                 selected.extend(h.id for h in new_hits)
                 more = portal.read_notes(
                     list(dict.fromkeys(selected))[:16],

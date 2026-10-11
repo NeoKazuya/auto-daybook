@@ -145,7 +145,7 @@ async def test_followup_reads_next_observation_and_keeps_prior_question_only(jou
     payload = json.loads(gateway.prompts[1].user)
     assert "Rebuilt successfully" in payload["notes"]
     assert payload["history"][0]["question"] == history[0].question
-    assert set(payload["history"][0]) == {"question", "cites", "window"}
+    assert set(payload["history"][0]) == {"turn", "question", "cites", "window"}
 
 
 @pytest.mark.asyncio
@@ -441,3 +441,46 @@ async def test_older_only_citation_window_does_not_include_unrelated_days(journa
     )
     assert isinstance(answer, Answer)
     assert answer.window == TimeRange(at, at + timedelta(minutes=1))
+
+
+@pytest.mark.asyncio
+async def test_followup_can_return_to_an_earlier_history_turn(journal):
+    at = datetime.now(UTC) - timedelta(days=5)
+    _, compiler = note(journal, at, "Compiler", "Changed parser")
+    _, botany = note(journal, at + timedelta(days=2), "Botany", "Compared leaves")
+    compiler_window = TimeRange(at, at + timedelta(minutes=1))
+    history = (
+        RecallTurn("Compiler progress?", (compiler,), compiler_window, journal.epoch),
+        RecallTurn(
+            "Botany progress?",
+            (botany,),
+            TimeRange(at + timedelta(days=2), at + timedelta(days=2, minutes=1)),
+            journal.epoch,
+        ),
+    )
+    gateway = ScriptedGateway(
+        [
+            reply("", follow_up=True, follow_up_turn=0),
+            reply("Changed parser.", [compiler], follow_up=True, follow_up_turn=0),
+        ]
+    )
+    answer = await chat(journal, gateway).respond(
+        "/ask Going back to the compiler, what changed?", history
+    )
+    assert isinstance(answer, Answer) and answer.cites == (compiler,)
+    payload = json.loads(gateway.prompts[1].user)
+    assert payload["window"]["from"] == compiler_window.start.isoformat()
+    assert "Changed parser" in payload["notes"]
+    assert "Compared leaves" not in payload["notes"]
+    assert payload["totals_by_title"][0]["label"] == "Compiler"
+
+
+@pytest.mark.asyncio
+async def test_invalid_calendar_date_does_not_query_todays_notes(journal):
+    from daybook.chat import Plain
+
+    note(journal, datetime.now(UTC) - timedelta(minutes=10), "Today", "Unrelated")
+    gateway = ScriptedGateway([])
+    answer = await chat(journal, gateway).respond("/ask What happened on 2026-02-30?")
+    assert isinstance(answer, Plain) and "date is not valid" in answer.text
+    assert not gateway.prompts

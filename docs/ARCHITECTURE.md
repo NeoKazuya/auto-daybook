@@ -421,9 +421,9 @@ Tab navigation supports Firefox/LibreWolf and Chrome/Chromium/Brave/Edge with th
 
 ### 6.8 `chat`: recall and skill requests
 
-**Owns** routing and recall. `Chat.respond(message)` returns one of three replies:
+**Owns** routing and recall. `Chat.respond(message, history=())` returns one of three replies:
 
-- `Answer(text, cites, window)`
+- `Answer(text, cites, window, epoch)`
 - `DraftReady(entry, summary)`
 - `Plain(text)`
 
@@ -435,12 +435,12 @@ Tab navigation supports Firefox/LibreWolf and Chrome/Chromium/Brave/Edge with th
 
 **Recall:**
 
-1. Resolve the time window in code from a rule table: "today", "last hour", "this morning", "yesterday", "last N minutes". The default is today.
-2. Build the context:
-   - `portal.context(window, 8000, detail = observations if the window is 2 h or less, else segments)`
-   - `portal.totals(window, by="title")` and `by="kind"`, rendered as a table
-   - search hits if the question names something specific
-3. Make one call, recording `journal.epoch` first; if the epoch changed by the time the answer returns (a forget or edit happened), the answer is discarded and recall runs again on the current notes. The answer is 1–5 sentences, cites segment IDs, takes durations only from the totals table, and says "I don't have notes for that" when the notes lack it.
+1. Resolve relative days/hours/minutes, calendar days (including ISO dates), and weeks in code. A broad day question defaults to today; an undated content question may search older retained notes.
+2. The board owns up to four earlier recall references: RecallTurn(question, cites, window, epoch). It sends no assistant answer text. Chat remains stateless and drops entire references with a stale journal epoch before routing or retrieval. A new topic or explicit date overrides prior context.
+3. Combine bounded day summaries and code-computed totals with ranked searches. Interleave search results so early generic words do not crowd out later terms. Portal.read_notes(ids, range=None, neighbors="none", budget_tokens=4000) reads fresh underlying observations, prioritizes exact matches, and can include next/previous observations for follow-ups. It returns bounded text, surviving citation IDs, an evidence window, and a truncation flag.
+4. Answer immediately when evidence is sufficient, or request up to two bounded rounds of targeted searches/reads, then answer. Each round permits three queries with 24 hits each and up to eight selected IDs; text, note counts and prompt sizes are bounded. No embedding service or persisted chat transcript is involved.
+5. Give the detail the question warrants. Distinguish visible observations from inferred intent; titles alone do not establish video/page content. Copy code-computed duration strings when answering time questions. Cite only freshly read segments and return a window covering cited evidence.
+6. Check the journal epoch after every awaited model call and before returning. A forget/edit discards the attempt, retrieval plans and prior references; retry against current notes at most three times. Capture gaps and missing details remain missing.
 
 **Done when:**
 
@@ -474,7 +474,7 @@ Tab navigation supports Firefox/LibreWolf and Chrome/Chromium/Brave/Edge with th
 | `PATCH/DELETE /api/segments/{id}` | `edit_segment`, `forget_segment` |
 | `PATCH/DELETE /api/observations/{id}` | `edit_observation`, `forget_observation` |
 | `POST /api/forget {from,to}`, `POST /api/forget-all` | `forget_range`, `forget_all` |
-| `POST /api/chat {message}` | `chat.respond` |
+| `POST /api/chat {message, history?}` | `chat.respond` |
 | `GET /api/upcoming` (items due from an hour ago on), `POST /api/upcoming {title, due_at, kind}` (409 if already listed, 422 if due more than an hour ago), `DELETE /api/upcoming/{id}` | `portal.upcoming`, `add_upcoming`, `dismiss_upcoming` |
 | `GET /api/skills`, `PUT /api/skills/{id}`, `POST /api/skills/{id}/approve {hash}` (409 if stale), `POST /api/skills/{id}/enable` (409 if needs review), `POST /api/skills/{id}/disable`, `DELETE /api/skills/{id}`, `POST /api/skills/parse {id, text}` (checked through `SkillBook`, so the file name and origin are known) | `SkillBook` methods and `parse_skill` |
 | `GET/PUT /api/privacy` | `sense.privacy`, `set_privacy` |

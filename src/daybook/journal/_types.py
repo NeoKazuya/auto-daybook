@@ -231,3 +231,13 @@ class Hit:
 class Total:
     label: str
     active: float
+
+
+@dataclass(frozen=True)
+class RecallNotes:
+    """Bounded fresh excerpts; citations and window describe only included rows."""
+
+    text: str
+    cites: tuple[str, ...]
+    window: TimeRange | None
+    truncated: bool

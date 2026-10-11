@@ -219,7 +219,7 @@ def create_app(
 
     @app.post("/api/chat", response_model=w.ChatResponse)
     async def chat(body: w.ChatRequest):
-        return await resolved(backend.chat(body.message))
+        return await resolved(backend.chat(body.message, body.history))
 
     @app.get("/api/skills", response_model=w.SkillsResponse)
     async def skills():

@@ -408,7 +408,7 @@ class MockAPI:
         return w.MutationResponse()
 
     def chat(
-        self, message: str
+        self, message: str, history: list[w.RecallTurn]
     ) -> w.AnswerResponse | w.DraftResponse | w.PlainResponse:
         if message.startswith("/remember") or "remember" in message.lower():
             try:

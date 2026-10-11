@@ -167,8 +167,16 @@ class UpcomingPost(WireModel):
         return self
 
 
+class RecallTurn(WireModel):
+    question: str = Field(min_length=1, max_length=2000)
+    cites: list[str] = Field(max_length=8)
+    window: TimeWindow
+    epoch: int = Field(ge=0)
+
+
 class ChatRequest(WireModel):
     message: str = Field(min_length=1, max_length=10000)
+    history: list[RecallTurn] = Field(default_factory=list, max_length=4)
 
 
 class SkillError(WireModel):
@@ -262,6 +270,7 @@ class AnswerResponse(WireModel):
     text: str
     cites: list[str]
     window: TimeWindow
+    epoch: int = Field(default=0, ge=0)
 
 
 class DraftResponse(WireModel):
@@ -562,6 +571,13 @@ _upcoming = _example(
 )
 _example(UpcomingResponse, items=[_upcoming])
 _example(UpcomingPost, title="CSE 130 Assignment 3", due_at="2026-10-11T06:59:00Z")
+_example(
+    RecallTurn,
+    question="What did I do in the last hour?",
+    cites=["s1"],
+    window=example(TimeWindow),
+    epoch=0,
+)
 _example(ChatRequest, message="What did I do in the last hour?")
 _example(
     SkillError,

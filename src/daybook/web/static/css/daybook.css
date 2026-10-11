@@ -266,6 +266,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 .btn.primary:hover { background: var(--ink-soft); }
 .btn.ember { background: var(--ember); border-color: var(--ember); color: var(--on-ember); font-weight: 700; }
 .btn.ember:hover { background: var(--ember-deep); box-shadow: 0 0 12px color-mix(in srgb, var(--ember) 25%, transparent); }
+/* Same height as a .counter, for a button that sits next to one in a header. */
+.btn.compact { padding: 0.35rem 0.75rem; font-size: 0.85rem; }
 .btn.danger { border-color: var(--danger-line); color: var(--danger); }
 .btn.danger:hover { background: var(--danger-fill); }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--ink-2); }

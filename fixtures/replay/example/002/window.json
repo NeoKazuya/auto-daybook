@@ -1,0 +1,40 @@
+{
+  "active": {
+    "app": "Code",
+    "title": "example.py"
+  },
+  "windows": [
+    {
+      "id": "42",
+      "info": {
+        "app": "Code",
+        "title": "example.py"
+      },
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 720
+      },
+      "opacity": 1.0,
+      "pid": 1000
+    },
+    {
+      "id": "43",
+      "info": {
+        "app": "Bitwarden",
+        "title": "Vault"
+      },
+      "rect": {
+        "x": 900,
+        "y": 100,
+        "width": 300,
+        "height": 400
+      },
+      "opacity": 1.0,
+      "pid": 1001
+    }
+  ],
+  "microphone_active": false,
+  "overlay": false
+}

@@ -100,12 +100,32 @@ One limit spans skills, so it's checked when a skill is approved or enabled rath
 - **Stale approvals are refused.** "Approve & enable" posts the hash the user reviewed. If the file changed since, the server refuses and shows the new text.
 - **Built-in exception.** Skills in `skills/builtin/` count as approved, because they're part of the repo and go through normal PRs. Built-ins other than `music` start disabled.
 
+## Chat requests and capability limits
+
+Chat can draft reminders from sampled screen notes: visible apps, windows and text,
+and supported inferences about the current task. It uses only the action catalog.
+It cannot hear calls, detect voice tone, read hidden app state, use private app APIs
+or keyboard hooks, intercept Send, or know feelings that have not been expressed.
+Visible-condition reminders can warn while the condition is observed; sampling
+cannot guarantee catching an action before it happens.
+
+If a request needs unavailable evidence or actions, chat explains the limitation
+instead of saving a skill. `draft_skill` raises `UnsupportedSkill` with that
+explanation, and Chat returns a plain response. Supported drafts keep the usual
+review and exact-hash approval flow.
+
 ## Writing good signals
 
 - Ask about the **present**: "Is the user in a video call right now?", not "Did the user have a meeting today?"
 - Make each question answerable from screen notes: apps, windows, and what's visible.
 - Prefer `bool` or a short enum, with a description for each value.
 - Let the trigger handle time ("is true for 50m"). Don't put time in the question.
+- A rule tests one value of one signal. Independent rules do not combine as AND.
+  Put combined requirements, exclusions and numeric comparisons in one present
+  boolean question, then trigger that condition becoming true or persisting.
+- Use `updates` only for an action intentionally refreshed on every known reading.
+  It does not filter values or compare a number to a threshold; reminders need a
+  transition, a held condition, or a timer.
 
 ## Built-in skills
 

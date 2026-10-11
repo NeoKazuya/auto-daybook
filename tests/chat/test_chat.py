@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from daybook.act import build_catalog
 from daybook.chat import Answer, Chat, Plain, resolve_window
+from daybook.events import Bus
 from daybook.journal import (
     CaptureSpan,
     Journal,
@@ -324,3 +327,45 @@ async def test_gap_sequence_keeps_recorded_notes(question):
     reply = await Notes().chat(gateway).respond("/ask " + question)
     assert isinstance(reply, Answer)
     assert reply.cites == ("s1",)
+
+
+@pytest.mark.parametrize("explicit_command", [False, True])
+async def test_unsupported_skill_explains_capability_without_saving(
+    tmp_path, explicit_command
+):
+    bus = Bus()
+    journal = Journal(tmp_path / "journal.db", bus)
+    catalog = build_catalog({"focus": "Work", "calm": "Reading", "break": "Rest"})
+    effects = []
+
+    async def handler(skill, parameters):
+        effects.append((skill, parameters))
+        raise AssertionError("A chat request must not execute an action")
+
+    catalog.handlers.update({action: handler for action in catalog.specs})
+    skills = SkillBook(
+        tmp_path,
+        Path(__file__).parents[2] / "skills/builtin",
+        tmp_path / "journal.db",
+        journal.portal,
+        catalog,
+        bus,
+        clear_readings=journal.clear_skill_readings,
+    )
+    before = skills.entries()
+    explanation = "Daybook reads visible screen notes and cannot hear calls or detect voice stress."
+    responses = [] if explicit_command else ['{"route":"make_skill"}']
+    responses.append(json.dumps({"draft": None, "explanation": explanation}))
+    gateway = ScriptedGateway([*responses])
+    message = "When I sound stressed on a call, remind me to breathe"
+    try:
+        reply = await Chat(journal, gateway, skills).respond(
+            ("/skill " if explicit_command else "") + message
+        )
+        assert isinstance(reply, Plain) and reply.text == explanation
+        assert skills.entries() == before
+        assert not list((tmp_path / "skills").glob("*.skill.md"))
+        assert not effects
+        assert len(gateway.prompts) == (1 if explicit_command else 2)
+    finally:
+        journal.close()

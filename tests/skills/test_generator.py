@@ -1,13 +1,14 @@
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 from daybook.act import build_catalog
 from daybook.events import Bus
 from daybook.journal import Portal, Situation
 from daybook.model import Priority, ScriptedGateway
-from daybook.skills import SkillBook, draft_skill
+from daybook.skills import NeedsReview, SkillBook, UnsupportedSkill, draft_skill
 
 TEXT = """---
 id: stand-after-meeting
@@ -72,7 +73,12 @@ def payload(text, summary):
                     ],
                 }
             )
-    return json.dumps({**data, "goal": goal.strip(), "summary": summary})
+    return json.dumps(
+        {
+            "draft": {**data, "goal": goal.strip(), "summary": summary},
+            "explanation": None,
+        }
+    )
 
 
 class MemoryPortal(Portal):
@@ -111,6 +117,11 @@ async def test_valid_draft_has_provenance_and_needs_review(tmp_path):
     assert gateway.prompts[0].effort == "none"
     assert "Mood music" in gateway.prompts[0].user
     assert "desktop.focus" in gateway.prompts[0].user
+    with pytest.raises(NeedsReview):
+        skills.enable(entry.id)
+    approved = skills.approve(entry.id, entry.hash)
+    assert approved.status == "active" and approved.hash == entry.hash
+    assert approved.text == entry.text and approved.skill == entry.skill
 
 
 async def test_parse_retry_then_invalid_is_saved(tmp_path):
@@ -236,3 +247,118 @@ async def test_list_plan_renders_enum_descriptions_and_numeric_bounds(tmp_path):
     }
     assert level.type == "number" and level.minimum == 0 and level.maximum == 10
     assert entry.skill.rules[0].steps[0].arguments["minutes"] == 1
+
+
+async def test_unsupported_request_does_not_save_a_skill(tmp_path):
+    skills = book(tmp_path)
+    before = skills.entries()
+    reason = (
+        "Daybook cannot read hidden app state; it can only use visible screen notes."
+    )
+    gateway = ScriptedGateway([json.dumps({"draft": None, "explanation": reason})])
+    with pytest.raises(UnsupportedSkill, match="hidden app state") as error:
+        await draft_skill(
+            "Remind me from a hidden app's status", book=skills, gateway=gateway
+        )
+    assert error.value.explanation == reason
+    assert skills.entries() == before
+    assert not list((tmp_path / "skills").glob("*.skill.md"))
+    assert len(gateway.prompts) == 1
+
+
+async def test_grammar_repair_can_explain_an_unsupported_request_without_saving(
+    tmp_path,
+):
+    skills = book(tmp_path)
+    before = skills.entries()
+    bad = TEXT.replace("in_meeting becomes false", "unsupported trigger")
+    reason = "Daybook cannot intercept keyboard events or block an action."
+    gateway = ScriptedGateway(
+        [payload(bad, "Draft"), json.dumps({"draft": None, "explanation": reason})]
+    )
+    with pytest.raises(UnsupportedSkill, match="keyboard"):
+        await draft_skill(
+            "Block an action from a keyboard event", book=skills, gateway=gateway
+        )
+    assert skills.entries() == before
+    assert not list((tmp_path / "skills").glob("*.skill.md"))
+    assert len(gateway.prompts) == 2
+
+
+@pytest.mark.parametrize("outcome", ["both", "neither", "blank"])
+async def test_inconsistent_outcome_gets_one_bounded_structured_repair(
+    tmp_path, outcome
+):
+    import httpx
+
+    from daybook.model import ModelConfig, ModelGateway
+
+    skills = book(tmp_path)
+    good = json.loads(payload(TEXT, "Stand after meetings"))
+    invalid = {
+        "draft": good["draft"] if outcome == "both" else None,
+        "explanation": "unavailable"
+        if outcome == "both"
+        else " "
+        if outcome == "blank"
+        else None,
+    }
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        content = invalid if len(requests) == 1 else good
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": json.dumps(content)}}]}
+        )
+
+    gateway = ModelGateway(ModelConfig(base_url="http://model.test/v1"))
+    await gateway._client.aclose()
+    gateway._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(respond), base_url="http://model.test/v1/"
+    )
+    try:
+        entry, _ = await draft_skill(
+            "Remind me after a meeting", book=skills, gateway=gateway
+        )
+        assert entry.status == "needs_review"
+        assert len(requests) == 2
+        assert "Validation errors:" in requests[1]["messages"][0]["content"]
+        assert all(request["max_tokens"] == 2000 for request in requests)
+    finally:
+        await gateway.close()
+
+
+async def test_inconsistent_outcomes_exhaust_existing_repair_without_saving(tmp_path):
+    import httpx
+
+    from daybook.model import ModelConfig, ModelGateway, ModelUnavailable
+
+    skills = book(tmp_path)
+    before = skills.entries()
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": '{"draft":null,"explanation":null}'}}
+                ]
+            },
+        )
+
+    gateway = ModelGateway(ModelConfig(base_url="http://model.test/v1"))
+    await gateway._client.aclose()
+    gateway._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(respond), base_url="http://model.test/v1/"
+    )
+    try:
+        with pytest.raises(ModelUnavailable):
+            await draft_skill("Remind me", book=skills, gateway=gateway)
+        assert len(requests) == 2
+        assert skills.entries() == before
+        assert not list((tmp_path / "skills").glob("*.skill.md"))
+    finally:
+        await gateway.close()

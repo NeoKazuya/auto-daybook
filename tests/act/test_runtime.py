@@ -332,3 +332,37 @@ async def test_ipc_failure_clears_status_and_recovery_target(
     assert player.status().mood is None
     assert not player._player.playlist
     await player.close()
+
+
+async def test_overlay_restart_restores_original_id_owner_and_expiry(tmp_path):
+    first = Overlay(Bus(), home=tmp_path)
+    first.shell_connected(True)
+    assert (
+        await first.show(OverlayRequest("Rest", "Stand", minutes=0.001), "break")
+    ).ok
+    shown = first.state
+    assert shown is not None
+    await first.close()
+    restored = Overlay(Bus(), home=tmp_path)
+    assert restored.state == shown
+    restored.shell_connected(True)
+    assert (await restored.hide("stale")).ok
+    assert restored.state == shown
+    await asyncio.sleep(0.08)
+    assert restored.state is None
+    assert Overlay(Bus(), home=tmp_path).state is None
+    await restored.close()
+
+
+async def test_overlay_dismiss_is_not_restored_and_expired_snapshot_is_dropped(
+    tmp_path,
+):
+    overlay = Overlay(Bus(), home=tmp_path)
+    overlay.shell_connected(True)
+    await overlay.show(OverlayRequest("Rest", "Stand"), "break")
+    await overlay.hide()
+    assert Overlay(Bus(), home=tmp_path).state is None
+    await overlay.show(OverlayRequest("Rest", "Stand", minutes=0.0001), "break")
+    await overlay.close()
+    await asyncio.sleep(0.02)
+    assert Overlay(Bus(), home=tmp_path).state is None

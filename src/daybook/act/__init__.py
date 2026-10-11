@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Literal, Mapping, Protocol, cast
@@ -186,18 +187,71 @@ class FakeDesktop:
 
 
 class Overlay:
-    def __init__(self, bus: Bus) -> None:
+    def __init__(self, bus: Bus, *, home: Path | None = None) -> None:
         self.bus = bus
+        self._path = home / "overlay.json" if home is not None else None
         self._state: OverlayState | None = None
         self._connected = False
         self._timer: asyncio.Task[None] | None = None
+        if self._path is not None and self._path.exists():
+            try:
+                saved = json.loads(self._path.read_text())
+                request = OverlayRequest(**saved["request"])
+                expiry = datetime.fromisoformat(saved["expires_at"])
+                if (
+                    expiry.tzinfo is None
+                    or not math.isfinite(request.minutes)
+                    or request.minutes <= 0
+                    or request.style not in ("calm", "alert")
+                ):
+                    raise ValueError("invalid overlay snapshot")
+                if expiry > datetime.now(timezone.utc):
+                    self._state = OverlayState(
+                        saved["id"], request, saved["owner"], saved["expires_at"]
+                    )
+                    self._arm_timer()
+                else:
+                    self._persist(None)
+            except (OSError, ValueError, TypeError, KeyError):
+                self._state = None
+
+    def _persist(self, state: OverlayState | None) -> None:
+        if self._path is None:
+            return
+        if state is None:
+            self._path.unlink(missing_ok=True)
+        else:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(asdict(state)))
+            temporary.replace(self._path)
+
+    def _arm_timer(self) -> None:
+        state = self._state
+        if state is None or self._timer is not None:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # Construction may precede the daemon's event loop.
+
+        async def expire() -> None:
+            delay = (
+                datetime.fromisoformat(state.expires_at) - datetime.now(timezone.utc)
+            ).total_seconds()
+            await asyncio.sleep(max(0, delay))
+            await self.hide(state.id)
+
+        self._timer = asyncio.create_task(expire())
 
     @property
     def state(self) -> OverlayState | None:
+        self._arm_timer()
         return self._state
 
     def shell_connected(self, connected: bool) -> None:
         self._connected = connected
+        self._arm_timer()
 
     def _cancel_timer(self) -> None:
         timer, self._timer = self._timer, None
@@ -209,9 +263,8 @@ class Overlay:
             return Outcome("overlay.show", False, "shell_disconnected")
         if not math.isfinite(request.minutes) or request.minutes <= 0:
             return Outcome("overlay.show", False, "invalid_duration")
-        self._cancel_timer()
         id = uuid.uuid4().hex
-        self._state = OverlayState(
+        state = OverlayState(
             id,
             request,
             owner,
@@ -219,26 +272,36 @@ class Overlay:
                 datetime.now(timezone.utc) + timedelta(minutes=request.minutes)
             ).isoformat(),
         )
+        try:
+            self._persist(state)
+        except OSError:
+            return Outcome("overlay.show", False, "state_unavailable")
+        self._cancel_timer()
+        self._state = state
+        self._arm_timer()
         self.bus.publish(OverlayShown(id, request))
-
-        async def expire() -> None:
-            await asyncio.sleep(request.minutes * 60)
-            await self.hide(id)
-
-        self._timer = asyncio.create_task(expire())
         return Outcome("overlay.show", True)
 
     async def hide(self, id: str | None = None) -> Outcome:
         state = self._state
         if state is None or (id is not None and id != state.id):
             return Outcome("overlay.hide", True, "unchanged")
+        try:
+            self._persist(None)
+        except OSError:
+            return Outcome("overlay.hide", False, "state_unavailable")
         self._state = None
         self._cancel_timer()
         self.bus.publish(OverlayHidden(state.id))
         return Outcome("overlay.hide", True)
 
     async def close(self) -> None:
-        await self.hide()
+        if self._path is None:
+            await self.hide()
+        else:
+            # Shutdown suspends the timer; a restart retains the original deadline.
+            self._cancel_timer()
+            self._state = None
 
 
 @dataclass(frozen=True)

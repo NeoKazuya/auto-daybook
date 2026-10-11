@@ -377,7 +377,14 @@ async def open_runtime(
             clear_readings=journal.clear_skill_readings,
         )
         mind = Mind(
-            journal, gateway, skills, config.tick_interval, effort=config.tick_effort
+            journal,
+            gateway,
+            skills,
+            config.tick_interval,
+            effort=config.tick_effort,
+            evidence_ready=lambda observation_id, questions: sense.evidence_ready(
+                observation_id, questions
+            ),
         )
         x11 = None
         raw: Screen
@@ -389,7 +396,15 @@ async def open_runtime(
             x11 = X11Screen(config.display)
             raw = x11
         sense = Sense(
-            OverlayScreen(raw, overlay), journal, gateway, bus, config.home, mind.nudge
+            OverlayScreen(raw, overlay),
+            journal,
+            gateway,
+            bus,
+            config.home,
+            mind.nudge,
+            question_provider=lambda: tuple(
+                signal.ask for signal in skills.active_signals()
+            ),
         )
         stack.push_async_callback(sense.close)
         yield Runtime(

@@ -45,11 +45,19 @@ class Mind:
         effort: Literal["none", "low"] = "none",
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        evidence_ready: Callable[[str, tuple[str, ...]], bool] = lambda *_: True,
     ) -> None:
         from ._runner import Runner
 
         self._runner = Runner(
-            journal, gateway, skills, tick_interval, effort, clock, sleep
+            journal,
+            gateway,
+            skills,
+            tick_interval,
+            effort,
+            clock,
+            sleep,
+            evidence_ready,
         )
 
     async def run(self) -> None:

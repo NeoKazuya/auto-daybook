@@ -191,6 +191,17 @@ def live(tmp_path):
         return tick
 
     mind.tick_now = tick_now
+    music = SimpleNamespace(current=MusicStatus("focus", "Cipher", True), calls=[])
+
+    async def play_mood(mood, *, skill, min_dwell):
+        music.calls.append((mood, skill, min_dwell))
+        if mood not in catalog.moods:
+            return Outcome("music.play_mood", False, "unknown_mood")
+        music.current = MusicStatus(mood, "A reading track", True)
+        return Outcome("music.play_mood", True)
+
+    music.play_mood = play_mood
+    music.status = lambda: music.current
     services = Services(
         journal,
         cast(Sense, sense),
@@ -198,10 +209,7 @@ def live(tmp_path):
         cast(SkillBook, book),
         cast(Chat, chat),
         ScriptedGateway([]),
-        cast(
-            MusicPlayer,
-            SimpleNamespace(status=lambda: MusicStatus("focus", "Cipher", True)),
-        ),
+        cast(MusicPlayer, music),
         cast(Overlay, overlay),
         bus,
         catalog,
@@ -216,6 +224,7 @@ def live(tmp_path):
             overlay=overlay,
             chat=chat,
             mind=mind,
+            music=music,
             observation=observation,
             tick=tick,
         )
@@ -394,3 +403,44 @@ def test_overlay_test_requires_auth_and_connected_shell(live):
     backend.shells -= 1
     assert not live.overlay.connected
     assert "/api/overlay/test" in client.get("/openapi.json").json()["paths"]
+
+
+def test_music_cli_route_uses_existing_player(live):
+    client = live.client
+    assert client.post("/api/music/play", json={"mood": "calm"}).status_code == 403
+    assert not live.music.calls
+    response = client.post("/api/music/play", headers=HEADERS, json={"mood": "calm"})
+    assert response.status_code == 200
+    status = w.MusicStatus.model_validate(response.json())
+    assert status.mood == "calm" and status.playing
+    assert live.music.calls == [("calm", "manual", 0)]
+    assert client.get("/api/status").json()["music"] == response.json()
+    assert (
+        client.post("/api/music/play", headers=HEADERS, json={"mood": ""}).status_code
+        == 422
+    )
+    refused = client.post("/api/music/play", headers=HEADERS, json={"mood": "missing"})
+    assert refused.status_code == 409
+    assert refused.json() == {"detail": "unknown_mood"}
+
+
+def test_parse_of_builtin_override_does_not_inherit_trust(live):
+    from dataclasses import replace
+
+    entry = live.book.entries()[0]
+    live.book.rows[entry.id] = replace(
+        entry,
+        source=SkillSource(Path("builtin") / f"{entry.id}.skill.md", "builtin"),
+        approved=True,
+        enabled=True,
+        status="active",
+    )
+    response = live.client.post(
+        "/api/skills/parse",
+        headers=HEADERS,
+        json={"id": entry.id, "text": entry.text},
+    )
+    preview = w.SkillParseResponse.model_validate(response.json())
+    assert preview.valid and preview.entry.status == "needs_review"
+    assert not preview.entry.approved
+    assert live.book.rows[entry.id].approved

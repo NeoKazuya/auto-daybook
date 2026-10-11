@@ -242,6 +242,10 @@ class GatewayStatus(WireModel):
     background_calls_per_minute: int
 
 
+class MusicPlayRequest(WireModel):
+    mood: str = Field(min_length=1, max_length=80)
+
+
 class MusicStatus(WireModel):
     mood: str | None
     title: str | None
@@ -578,6 +582,7 @@ _gateway = _example(
     calls_per_minute=4,
     background_calls_per_minute=4,
 )
+_example(MusicPlayRequest, mood="focus")
 _music = _example(MusicStatus, mood="focus", title="Cipher", playing=True)
 _overlay_request = _example(
     OverlayRequest,

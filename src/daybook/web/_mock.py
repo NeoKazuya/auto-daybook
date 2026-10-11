@@ -274,6 +274,15 @@ class MockAPI:
         self.bus.publish(events.CaptureStateChanged(self.status.capture))
         return self.privacy
 
+    def music_play(self, mood: str) -> w.MusicStatus:
+        if mood not in self.catalog.moods:
+            raise HTTPException(409, "unknown_mood")
+        self.status.music = w.MusicStatus(
+            mood=mood, title=f"Mock {mood} track", playing=True
+        )
+        self.bus.publish(events.MusicChanged(mood, self.status.music.title))
+        return self.status.music
+
     def overlay_test(self) -> w.OverlayState:
         if self.shells == 0:
             raise HTTPException(409, "shell_disconnected")

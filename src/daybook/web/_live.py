@@ -152,12 +152,18 @@ class LiveAPI:
         parsed = book.parse(id, text)
         original = next((e for e in book.entries() if e.id == id), None)
         source = (
-            original.source if original else SkillSource(Path(f"{id}.skill.md"), "user")
+            original.source
+            if original and original.source.origin == "user"
+            else SkillSource(Path(f"{id}.skill.md"), "user")
         )
         digest = hashlib.sha256(text.encode()).hexdigest()
         valid = isinstance(parsed, Skill)
         approved = bool(
-            original and original.hash == digest and original.approved and valid
+            original
+            and original.source.origin == "user"
+            and original.hash == digest
+            and original.approved
+            and valid
         )
         enabled = bool(approved and original and original.enabled)
         entry = SkillEntry(
@@ -217,6 +223,12 @@ class LiveAPI:
         if body.paused:
             await self.services.overlay.hide()
         return self.privacy
+
+    async def music_play(self, mood: str) -> w.MusicStatus:
+        result = await self.services.music.play_mood(mood, skill="manual", min_dwell=0)
+        if not result.ok:
+            raise HTTPException(409, result.detail or "music_unavailable")
+        return w.MusicStatus.model_validate(self.services.music.status())
 
     async def overlay_test(self) -> w.OverlayState:
         result = await self.services.overlay.show(

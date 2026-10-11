@@ -232,6 +232,10 @@ def create_app(
     async def set_privacy(body: w.PrivacyPut):
         return await resolved(backend.set_privacy(body))
 
+    @app.post("/api/music/play", response_model=w.MusicStatus)
+    async def music_play(body: w.MusicPlayRequest):
+        return await resolved(backend.music_play(body.mood))
+
     @app.post("/api/overlay/test", response_model=w.OverlayState)
     async def overlay_test():
         return await resolved(backend.overlay_test())

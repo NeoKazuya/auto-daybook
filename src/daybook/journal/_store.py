@@ -491,11 +491,13 @@ class Journal:
 
     def forget_observation(self, id: str) -> None:
         with self._transaction(erase=True) as events:
+            self._observation(id)
             self._bump()
             self._remove([id], events)
 
     def forget_segment(self, id: str) -> None:
         with self._transaction(erase=True) as events:
+            self._segment(id)
             self._bump()
             self._db.execute("DELETE FROM segments WHERE id=?", (id,))
             events.append(SegmentChanged(id))

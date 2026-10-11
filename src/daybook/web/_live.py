@@ -190,6 +190,9 @@ class LiveAPI:
         return w.skill_from_domain(self.services.skills.save(id, text))
 
     def approve(self, id: str, hash: str) -> w.SkillResponse:
+        entry = next((e for e in self.services.skills.entries() if e.id == id), None)
+        if entry and entry.hash == hash and entry.skill is None:
+            raise HTTPException(409, "invalid_skill")
         return w.skill_from_domain(self.services.skills.approve(id, hash))
 
     def enable(self, id: str, enabled: bool) -> w.SkillResponse:

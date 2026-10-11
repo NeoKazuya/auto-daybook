@@ -516,3 +516,28 @@ def test_persisted_skill_approval_and_external_edit_through_http(live, tmp_path)
             == 200
         )
         assert not path.exists()
+
+        invalid = client.put(
+            "/api/skills/invalid", headers=HEADERS, json={"text": "Invalid skill"}
+        ).json()
+        rejected = client.post(
+            "/api/skills/invalid/approve",
+            headers=HEADERS,
+            json={"hash": invalid["hash"]},
+        )
+        assert rejected.status_code == 409
+        assert rejected.json() == {"detail": "invalid_skill"}
+
+
+@pytest.mark.parametrize("kind", ["segments", "observations"])
+def test_repeated_note_delete_is_404_without_invalidating_work(live, kind):
+    id = (
+        live.client.get("/api/timeline").json()["segments"][0]["id"]
+        if kind == "segments"
+        else live.observation.id
+    )
+    path = f"/api/{kind}/{id}"
+    assert live.client.delete(path, headers=HEADERS).status_code == 200
+    epoch = live.services.journal.epoch
+    assert live.client.delete(path, headers=HEADERS).status_code == 404
+    assert live.services.journal.epoch == epoch

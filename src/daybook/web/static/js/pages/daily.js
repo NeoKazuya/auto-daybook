@@ -39,6 +39,8 @@ async function render(root, params) {
   let data = null;
   let latestRefresh = null;
   let notesRevision = {};
+  let editor = null;
+  let pendingDraft = null;
 
   async function refresh() {
     const request = {};
@@ -47,15 +49,39 @@ async function render(root, params) {
       const next = await api.timeline(from, to);
       if (latestRefresh !== request) return;
       data = next;
-      if (!editing.size) draw();
+      if (pendingDraft) {
+        const draft = pendingDraft;
+        pendingDraft = null;
+        const item = data.segments.flatMap(s => [s, ...s.observations]).find(item => item.id === draft.id);
+        const unchanged = item && draft.keys.every((key, i) => (item[key] ?? '') === draft.source[i]);
+        if (unchanged) editing.add(draft.id);
+        else toast('Your edit was closed because the note changed or was deleted.', 'error');
+        draw();
+        if (unchanged) {
+          editor.inputs.forEach((input, i) => {
+            input.value = draft.values[i];
+            input.disabled = false;
+          });
+          const focused = editor.inputs[draft.focused];
+          if (focused) {
+            focused.focus();
+            focused.setSelectionRange(draft.start, draft.end);
+          }
+        }
+      } else if (!editing.size) draw();
     } catch (err) {
       if (latestRefresh !== request) return;
+      if (pendingDraft) {
+        pendingDraft = null;
+        toast("Couldn't verify your edit. It was closed.", 'error');
+      }
       if (editing.size) toast("Couldn't refresh timeline: " + err.message, 'error');
       else list.replaceChildren(errorState(err, refresh));
     }
   }
 
   function draw() {
+    editor = null;
     count.textContent = `${data.segments.length} segments`;
     const gaps = data.capture_spans.filter((g) => GAP[g.state]);
     if (!data.segments.length && !gaps.length) {
@@ -136,10 +162,26 @@ async function render(root, params) {
     await refresh();
   }
 
-  function invalidateNotes() {
+  function trackEditor(item, keys, inputs) {
+    editor = { id: item.id, keys, source: keys.map(key => item[key] ?? ''), inputs };
+  }
+
+  function invalidateNotes(preserveDraft = true) {
     notesRevision = {};
-    if (editing.size) toast('Notes changed. Your edit was closed and the timeline is reloading.');
+    if (!preserveDraft) pendingDraft = null;
+    else if (editor) {
+      const focused = editor.inputs.indexOf(document.activeElement);
+      const input = editor.inputs[focused];
+      // Retain only draft strings during verification, never the old record or DOM.
+      pendingDraft = {
+        id: editor.id, keys: editor.keys, source: editor.source,
+        values: editor.inputs.map(input => input.value), focused,
+        start: input?.selectionStart, end: input?.selectionEnd,
+      };
+      toast('Notes changed. Checking your edit against the current notes.');
+    }
     editing.clear();
+    editor = null;
     data = null;
     count.textContent = '…';
     list.replaceChildren(skeletons(4));
@@ -163,7 +205,7 @@ async function render(root, params) {
       if (notesRevision !== revision) return;
       // A missed deletion event can still be confirmed by the failed PATCH.
       if (err.status === 404) {
-        invalidateNotes();
+        invalidateNotes(false);
         await refresh();
       }
       throw err;
@@ -180,6 +222,7 @@ async function render(root, params) {
       saveEdit(s.id, [title, intent, cancel],
         () => api.editSegment(s.id, { title: title.value.trim(), intent: intent.value.trim() }),
         'Saved. Daybook won’t overwrite your wording.')) });
+    trackEditor(s, ['title', 'intent'], [title, intent]);
     return h('div.edit-form',
       h('label.label', 'Title'), title,
       h('label.label', 'Intent'), intent,
@@ -193,6 +236,7 @@ async function render(root, params) {
     const save = btn('Save', { kind: 'primary', onclick: () => busy(save, () =>
       saveEdit(o.id, [seen, text, cancel],
         () => api.editObservation(o.id, { seen: seen.value.trim(), visible_text: text.value.trim() }))) });
+    trackEditor(o, ['seen', 'visible_text'], [seen, text]);
     return h('div', { style: 'display:flex;flex-direction:column;gap:0.5rem;margin-top:0.4rem' },
       h('label.label', 'What was on screen'), seen,
       h('label.label', 'Captured text (up to 300 characters)'), text,
@@ -252,7 +296,7 @@ async function render(root, params) {
   }
 
   return { onEvent: (types = new Set(), events = []) => {
-    // Reconnect may have missed a deletion. Ordinary capture/tick updates keep drafts.
+    // Hide invalidated notes until checked; only unchanged records regain their draft.
     const invalidated = types.has('Reconnected') || events.some((event) =>
       event.type === 'StatusChanged' && event.component === 'journal' && event.status === 'notes_invalidated');
     if (invalidated) {

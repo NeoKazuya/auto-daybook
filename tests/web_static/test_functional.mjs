@@ -1221,3 +1221,114 @@ test('Daily own Save still renders saved wording when its invalidation precedes 
     f.open(kind);assert.equal(f.field(kind).value,'My saved wording');
   }
 });
+
+
+const dailySecondary = (f,kind) => walk(f.p.root).find(n=>n['aria-label']===(kind==='segment'?'Intent':'Captured on-screen text'));
+const editedDailyRecord = (f,kind) => kind==='segment'?f.resource.segments[0]:f.resource.segments[0].observations[0];
+
+for(const kind of ['segment','observation']){
+  for(const event of ['unrelated mutation','reconnect'])test('Daily verifies and restores an unchanged '+kind+' draft after '+event,async()=>{
+    const f=await dailyFixture(),pending=defer();f.open(kind);
+    const field=f.field(kind);field.value='My unfinished wording';
+    dailySecondary(f,kind).value='My unfinished detail';field.focus();field.setSelectionRange(2,7);
+    if(event==='unrelated mutation'){
+      if(kind==='segment')await f.x.api.editObservation('o1',{seen:'A separately corrected observation'});
+      else await f.x.api.editSegment('s1',{title:'A separately corrected segment'});
+    }
+    f.resource.segments[0].active=120;
+    f.resource.segments[0].observations[0].last_seen_at='2026-10-11T08:02:00Z';
+    f.x.setRequest(path=>path.startsWith('/api/timeline')?pending.promise:{});
+    const verification=event==='reconnect'
+      ? f.p.hooks.onEvent(new Set(['Reconnected']),[{type:'Reconnected'}])
+      : deliverNotesInvalidated(f.p);
+    assert.equal(f.field(kind),undefined);
+    assert.doesNotMatch(f.p.root.textContent,/Original title|Original note|Original screen text/);
+    pending.resolve(structuredClone(f.resource));await verification;await settle();
+    const restored=f.field(kind);
+    assert.equal(restored?.value,'My unfinished wording');
+    assert.equal(dailySecondary(f,kind).value,'My unfinished detail');
+    assert.equal(f.p.root.document.activeElement,restored);
+    assert.equal(restored.selectionStart,2);assert.equal(restored.selectionEnd,7);
+    assert.equal(restored.disabled,false);
+    f.x.setRequest(f.request);
+    await walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick();await settle();
+    const record=editedDailyRecord(f,kind);
+    assert.equal(record[kind==='segment'?'title':'seen'],'My unfinished wording');
+    assert.equal(record[kind==='segment'?'intent':'visible_text'],'My unfinished detail');
+  });
+
+  test('Daily changed '+kind+' source fields close its draft without restoring it',async()=>{
+    for(const key of kind==='segment'?['title','intent']:['seen','visible_text']){
+      const f=await dailyFixture(),pending=defer();f.open(kind);f.field(kind).value='Outdated private draft';
+      const patch={[key]:'Current remote wording'};
+      if(kind==='segment')await f.x.api.editSegment('s1',patch);else await f.x.api.editObservation('o1',patch);
+      f.x.setRequest(path=>path.startsWith('/api/timeline')?pending.promise:{});
+      const verification=deliverNotesInvalidated(f.p);assert.equal(f.field(kind),undefined);
+      pending.resolve(structuredClone(f.resource));await verification;await settle();
+      assert.equal(f.field(kind),undefined);assert.match(f.p.root.textContent,/Current remote wording/);
+      assert.equal(walk(f.p.root).some(n=>n.value==='Outdated private draft'),false);
+      f.open(kind);assert.notEqual(f.field(kind).value,'Outdated private draft');
+    }
+  });
+
+  test('Daily failed '+kind+' verification discards its draft rather than restoring it on a later poll',async()=>{
+    const f=await dailyFixture(),pending=defer();f.open(kind);f.field(kind).value='Unverified private draft';
+    f.x.setRequest(path=>path.startsWith('/api/timeline')?pending.promise:{});
+    const verification=deliverNotesInvalidated(f.p);assert.equal(f.field(kind),undefined);
+    pending.reject(Error('verification offline'));await verification;await settle();
+    assert.equal(f.field(kind),undefined);
+    assert.doesNotMatch(f.p.root.textContent,/Original title|Original note|Original screen text/);
+    f.x.setRequest(f.request);await f.p.hooks.onEvent();await settle();
+    assert.equal(f.field(kind),undefined);
+    f.open(kind);assert.notEqual(f.field(kind).value,'Unverified private draft');
+  });
+
+  test('Daily older '+kind+' verification cannot revive a draft after a later deletion',async()=>{
+    for(const fail of [false,true]){
+      const f=await dailyFixture(),older=defer(),fresh=defer(),old=structuredClone(f.resource);let gets=0;
+      f.open(kind);f.field(kind).value='Deleted overlap draft';
+      f.x.setRequest((path,options)=>{
+        if(path==='/api/forget-all'){f.resource.segments=[];return {ok:true};}
+        if(path.startsWith('/api/timeline'))return ++gets===1?older.promise:fresh.promise;
+        return f.request(path,options);
+      });
+      const first=deliverNotesInvalidated(f.p);await settle();
+      await f.x.api.forgetAll();const second=deliverNotesInvalidated(f.p);
+      fresh.resolve(structuredClone(f.resource));await second;await settle();
+      if(fail)older.reject(Error('older verification failed'));else older.resolve(old);
+      await first;await settle();
+      assert.equal(f.field(kind),undefined);assert.match(f.p.root.textContent,/No notes yet/);
+      assert.doesNotMatch(f.p.root.textContent,/Original title|Original note|Original screen text/);
+    }
+  });
+
+  test('Daily overlapping checks retain an unchanged '+kind+' draft and ignore a superseded response',async()=>{
+    const f=await dailyFixture(),older=defer(),fresh=defer(),old=structuredClone(f.resource);let gets=0;
+    f.open(kind);f.field(kind).value='Draft through two checks';
+    f.x.setRequest(path=>path.startsWith('/api/timeline')?(++gets===1?older.promise:fresh.promise):{});
+    const first=deliverNotesInvalidated(f.p),second=f.p.hooks.onEvent(new Set(['Reconnected']),[{type:'Reconnected'}]);
+    fresh.resolve(structuredClone(f.resource));await second;await settle();
+    assert.equal(f.field(kind)?.value,'Draft through two checks');
+    f.field(kind).value='Newer resumed draft';
+    const target=kind==='segment'?old.segments[0]:old.segments[0].observations[0];
+    target[kind==='segment'?'title':'seen']='Superseded remote wording';
+    older.resolve(old);await first;await settle();
+    assert.equal(f.field(kind)?.value,'Newer resumed draft');
+    assert.doesNotMatch(f.p.root.textContent,/Superseded remote wording/);
+  });
+
+  test('Daily failed in-flight '+kind+' Save cannot discard its revalidated draft',async()=>{
+    const f=await dailyFixture(),pending=defer();f.open(kind);f.field(kind).value='Pending save draft';
+    f.x.setRequest((path,options)=>options.method==='PATCH'?pending.promise:f.request(path,options));
+    const saving=walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick();await settle();
+    await deliverNotesInvalidated(f.p);await settle();
+    assert.equal(f.field(kind)?.value,'Pending save draft');
+    assert.equal(f.field(kind).disabled,false);
+    f.field(kind).value='Newer resumed wording';
+    pending.reject(Error('old Save failed'));await saving;await settle();
+    assert.equal(f.field(kind)?.value,'Newer resumed wording');
+    f.x.setRequest(f.request);
+    await walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick();await settle();
+    assert.equal(editedDailyRecord(f,kind)[kind==='segment'?'title':'seen'],'Newer resumed wording');
+  });
+}

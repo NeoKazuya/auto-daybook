@@ -741,3 +741,47 @@ async def test_health_recovers_idle_gateway_after_outage(monkeypatch):
         assert gw.status().calls_per_minute == 1
     finally:
         await gw.close()
+
+
+@pytest.mark.parametrize(
+    "body", [{"data": [{"id": "different-model"}]}, {"data": None}]
+)
+async def test_health_does_not_claim_a_missing_model_is_available(body):
+    checked = asyncio.Event()
+
+    async def transport(request):
+        if request.method == "GET":
+            checked.set()
+            return httpx.Response(200, json=body)
+        raise httpx.ConnectError("offline")
+
+    gw = gateway(transport)
+    try:
+        with pytest.raises(ModelUnavailable):
+            await gw.call(Priority.TICK, prompt())
+        await asyncio.wait_for(checked.wait(), 0.3)
+        await asyncio.sleep(0)
+        assert not gw.status().reachable
+    finally:
+        await gw.close()
+
+
+async def test_close_cancels_pending_health_probe():
+    probing = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def transport(request):
+        if request.method == "GET":
+            probing.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        raise httpx.ConnectError("offline")
+
+    gw = gateway(transport)
+    with pytest.raises(ModelUnavailable):
+        await gw.call(Priority.TICK, prompt())
+    await asyncio.wait_for(probing.wait(), 0.3)
+    await asyncio.wait_for(gw.close(), 0.3)
+    assert cancelled.is_set()

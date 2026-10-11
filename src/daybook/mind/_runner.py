@@ -58,8 +58,16 @@ class Runner:
         )
 
     def nudge(self, app_switched: bool) -> None:
-        if app_switched:
-            self.switch_due = self.clock() + timedelta(seconds=20)
+        # Sense calls this only after committing fresh, privacy-admitted evidence.
+        # Browser tab changes are not app switches, but can change skill signals.
+        try:
+            active = bool(self.skills.active_signals())
+        except Exception:
+            # A concurrent skill-file edit must not fail observation publication.
+            active = False
+        if active or app_switched:
+            due = self.clock() + timedelta(seconds=0 if active else 20)
+            self.switch_due = min(self.switch_due or due, due)
 
     def capture_start(self, now: datetime) -> datetime | None:
         spans = self.journal.portal.capture_spans(

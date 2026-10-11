@@ -206,7 +206,7 @@ async def test_schedule_debounce_spacing_and_evidence(runtime):
     journal, clock, observation, skills = runtime
     gateway = BatchGateway([reply(), reply(None), reply(None)])
 
-    async def sleep(seconds):
+    async def sleep(seconds: float) -> None:
         clock.advance(seconds)
         if clock().second != NOW.second:
             journal.extend_observation(observation.id, clock())
@@ -217,9 +217,29 @@ async def test_schedule_debounce_spacing_and_evidence(runtime):
     mind.nudge(app_switched=True)
     with pytest.raises(asyncio.CancelledError):
         await mind.run()
-    assert skills.fired[0].at == NOW + timedelta(seconds=20)
-    assert skills.fired[1].at == NOW + timedelta(seconds=110)
+    assert skills.fired[0].at == NOW
+    assert skills.fired[1].at == NOW + timedelta(seconds=90)
     assert (skills.fired[1].at - skills.fired[0].at).total_seconds() >= 30
+    assert len(gateway.prompts) == 2
+
+
+async def test_fresh_browser_observations_check_skills_without_periodic_wait(runtime):
+    journal, clock, observation, skills = runtime
+    gateway = BatchGateway([reply(), reply(None)])
+
+    async def sleep(seconds: float) -> None:
+        clock.advance(seconds)
+        journal.extend_observation(observation.id, clock())
+        # Repeated fresh evidence must not postpone an already requested check.
+        mind.nudge(app_switched=False)
+        if len(skills.fired) >= 2 or clock() >= NOW + timedelta(seconds=35):
+            raise asyncio.CancelledError
+
+    mind = Mind(journal, gateway, skills, tick_interval=90, clock=clock, sleep=sleep)
+    mind.nudge(app_switched=False)
+    with pytest.raises(asyncio.CancelledError):
+        await mind.run()
+    assert [tick.at for tick in skills.fired] == [NOW, NOW + timedelta(seconds=30)]
     assert len(gateway.prompts) == 2
 
 
@@ -295,7 +315,7 @@ async def test_app_switch_nudge_during_model_call_is_preserved(runtime):
 
     gateway = SwitchGateway([reply(), reply(None)])
 
-    async def sleep(seconds):
+    async def sleep(seconds: float) -> None:
         clock.advance(seconds)
         journal.extend_observation(observation.id, clock())
         if len(skills.fired) >= 2:
@@ -306,8 +326,8 @@ async def test_app_switch_nudge_during_model_call_is_preserved(runtime):
     with pytest.raises(asyncio.CancelledError):
         await mind.run()
     assert [tick.at for tick in skills.fired] == [
-        NOW + timedelta(seconds=20),
-        NOW + timedelta(seconds=50),
+        NOW,
+        NOW + timedelta(seconds=30),
     ]
 
 
@@ -443,7 +463,7 @@ async def test_periodic_cadence_counts_from_call_start_not_finish(runtime):
 
     gateway = DelayedGateway([reply(), reply(None)])
 
-    async def sleep(seconds):
+    async def sleep(seconds: float) -> None:
         clock.advance(seconds)
         journal.extend_observation(observation.id, clock())
         if len(skills.fired) == 2:
@@ -787,7 +807,7 @@ async def test_bounded_pre_gap_backlog_keeps_one_segment_until_drained(runtime, 
     journal.extend_observation(after.id, clock())
     gateway = BatchGateway([reply(), reply(), reply()])
 
-    async def sleep(seconds):
+    async def sleep(seconds: float) -> None:
         clock.advance(seconds)
         if len(skills.fired) >= 3:
             raise asyncio.CancelledError

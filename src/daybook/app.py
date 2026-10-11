@@ -29,7 +29,7 @@ from datetime import UTC, datetime, timedelta
 from importlib.machinery import PathFinder
 from importlib.util import find_spec
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Iterator, Literal, cast
+from typing import TYPE_CHECKING, Awaitable, Callable, Iterator, Literal, cast
 
 import uvicorn
 from fastapi import FastAPI
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
 LOG = logging.getLogger(__name__)
 CAPTURE_LOCK = Path("/tmp/daybook-capture.lock")
+OBSERVATION_RETENTION = timedelta(days=30)
 BUILTIN_SKILLS = Path(__file__).resolve().parents[2] / "skills/builtin"
 DEFAULT_MODEL = ModelConfig(
     base_url="http://127.0.0.1:18300/v1",
@@ -366,6 +367,7 @@ async def open_runtime(
         journal = Journal(config.home / "journal.db", bus)
         stack.callback(journal.close)
         stack.callback(stop_capture_history, journal)
+        await stack.enter_async_context(observation_retention(journal))
         gateway = ModelGateway(config.model)
         stack.push_async_callback(gateway.close)
         # Capture is withheld while Daybook is visible, so the first completion
@@ -441,6 +443,32 @@ async def open_runtime(
             ),
             x11,
         )
+
+
+@asynccontextmanager
+async def observation_retention(
+    journal: Journal,
+    *,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+):
+    # Run before capture/model work can use expired notes, including after downtime.
+    journal.prune_observations(clock() - OBSERVATION_RETENTION)
+
+    async def maintain() -> None:
+        while True:
+            await sleep(60)
+            try:
+                journal.prune_observations(clock() - OBSERVATION_RETENTION)
+            except Exception:
+                LOG.exception("observation_retention_failed")
+
+    task = asyncio.create_task(maintain())
+    try:
+        yield
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 def stop_capture_history(journal: Journal) -> None:

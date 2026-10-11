@@ -24,7 +24,11 @@ from ._types import (
     T,
 )
 
-_TIMEOUT = 40.0
+# Local generation can take over a minute for a 2–4k token structured reply.
+# Bound the complete request (including one repair), not a typical short reply.
+_TIMEOUT = 180.0
+_HEALTH_INTERVAL = 15.0
+_HEALTH_TIMEOUT = 3.0
 
 
 @dataclass
@@ -105,7 +109,7 @@ class ModelGateway:
         self._client = httpx.AsyncClient(
             base_url=config.base_url.rstrip("/") + "/",
             headers=headers,
-            timeout=_TIMEOUT,
+            timeout=httpx.Timeout(_TIMEOUT, connect=5.0),
             trust_env=False,
         )
         self._queue: list[_Request] = []
@@ -115,6 +119,7 @@ class ModelGateway:
         self._interactive_streak = 0
         self._closed = False
         self._reachable = False
+        self._health_task: asyncio.Task[None] | None = None
         self._latency: float | None = None
         self._calls: deque[tuple[float, Priority]] = deque()
 
@@ -215,11 +220,10 @@ class ModelGateway:
                 request.future.set_exception(ModelUnavailable("gateway_closed"))
             raise
         except Exception as exc:
-            self._reachable = (
-                False
-                if isinstance(exc, (httpx.HTTPError, TimeoutError))
-                else self._reachable
-            )
+            if isinstance(exc, (httpx.HTTPError, TimeoutError)):
+                self._reachable = False
+                if self._health_task is None or self._health_task.done():
+                    self._health_task = asyncio.create_task(self._recover_health())
             # Never expose server error bodies, prompts, or validation values.
             if not request.future.done():
                 request.future.set_exception(ModelUnavailable(type(exc).__name__))
@@ -229,6 +233,35 @@ class ModelGateway:
             if task is not None:
                 self._active.pop(task, None)
             self._wake.set()
+
+    async def _recover_health(self) -> None:
+        # A slow/failed completion is not proof that the server is offline.
+        # Probe without generating tokens, even when capture is withheld because
+        # the user is looking at Daybook. Never replay a failed user request.
+        while not self._closed and not self._reachable:
+            try:
+                async with asyncio.timeout(_HEALTH_TIMEOUT):
+                    response = await self._client.get("models", timeout=_HEALTH_TIMEOUT)
+                    response.raise_for_status()
+                    available = any(
+                        model.get("id") == self.config.model
+                        for model in response.json()["data"]
+                    )
+                if available:
+                    self._reachable = True
+                    return
+            except (
+                httpx.HTTPError,
+                TimeoutError,
+                ValueError,
+                KeyError,
+                TypeError,
+                AttributeError,
+            ):
+                pass
+            # A successful concurrent completion also establishes reachability.
+            if not self._reachable:
+                await asyncio.sleep(_HEALTH_INTERVAL)
 
     async def _complete(self, priority: Priority, prompt: Prompt) -> BaseModel | str:
         repair = ""
@@ -278,6 +311,9 @@ class ModelGateway:
 
     async def close(self) -> None:
         self._closed = True
+        if self._health_task is not None:
+            self._health_task.cancel()
+            await asyncio.gather(self._health_task, return_exceptions=True)
         for request in self._queue:
             if not request.future.done():
                 request.future.set_exception(ModelUnavailable("gateway_closed"))

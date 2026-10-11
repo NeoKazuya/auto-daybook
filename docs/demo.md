@@ -7,7 +7,7 @@ The live demo runs on the GX10. A presenter really uses the machine while the au
 - [ ] The GX10 is set up per [setup.md](setup.md), the screen is unlocked, and automatic screen lock is off for the session (Settings → Privacy → Screen Lock).
 - [ ] A monitor is connected, the speakers are audible, and the volume is checked.
 - [ ] The model is warm: `ollama ps` lists `qwen3.6:35b` (or Qwen3.8, if it passed its gates).
-- [ ] `daybook run` is running in tmux on the real screen, with a fresh `DAYBOOK_HOME` so the timeline starts empty.
+- [ ] `daybook run` is running in tmux on the real screen, with a fresh `DAYBOOK_HOME` so the timeline starts empty, and `tick_interval = "30s"` in its `daybook.toml` (demo mode: still at most 2 ticks per minute).
 - [ ] Skills:
   - `music` active
   - `break` disabled
@@ -30,7 +30,7 @@ The live demo runs on the GX10. A presenter really uses the machine while the au
 | 3 | Switches to the PDF and reads for ~1 min | A new "reading" segment; music changes to calm within about 30–60 s | "The music skill asks the model one question: which mood fits right now? Code picks the tracks." |
 | 4 | In chat: "remind me to stand up every time I finish a meeting" | A review card: the question it will ask, the rule in words, the permission (`overlay.show`). Click **Approve & enable** | "Skills are short text files. This one was just written by the model, and nothing runs until I approve exactly this version." |
 | 5 | Opens the meeting tab for ~1 min, then goes back to VS Code | A "meeting" segment, then the full-screen "Meeting's over" overlay. Dismiss it | "It fired once, when the meeting ended." |
-| 6 | Enables `break-demo`, then codes for ~2 min | The full-screen break overlay with break music. Dismiss it; focus music returns on the next tick | "The real break reminder waits 50 minutes. This demo copy waits 2." |
+| 6 | Enables `break-demo`, then codes for ~2.5 min (the first reading arrives within 30 s of enabling, then the streak needs 2 min) | The full-screen break overlay with break music. Dismiss it; focus music returns on the next tick | "The real break reminder waits 50 minutes. This demo copy waits 2." |
 | 7 | In chat: "what did I do in the last 10 minutes?" | An answer with durations and links into the timeline | "Recall uses the same notes. Durations come from code, not the model." |
 | 8 | Brings the password manager forward, then pauses from the tray | The timeline shows a "private" gap, then a "paused" gap; the tray icon changes. Use "forget last 15 minutes" to show deletion | "Exclusions, pause, and delete are built in." |
 | 9 | (If the network can be turned off) disables Wi‑Fi and repeats step 3 briefly | It still works | "Fully offline." |

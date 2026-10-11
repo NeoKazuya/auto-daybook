@@ -171,7 +171,7 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 
 **`Journal`** (writes):
 
-- **sense:** `add_observation`, `extend_observation`, `trim_after(t)` (when going away or after a failed observe), `set_capture_state` (idempotent). `trim_after(t)` deletes every observation that started after `t` (with its FTS rows), cuts the one spanning `t` back to `t`, and deletes signal readings after `t`, all in one transaction.
+- **sense:** `add_observation`, `extend_observation`, `trim_after(t)` (when going away or after a failed observe), `set_capture_state` (idempotent). `trim_after(t)` deletes every observation that started after `t` (with its FTS rows), cuts the one spanning `t` back to `t`, deletes signal readings and ticks after `t`, deletes segments left with no observations, and closes the open segment so resumed work starts a new one, all in one transaction. Firings are kept: they record effects that really happened, and a streak that restarts after the trim gets a new occurrence key.
 - **mind:** `record_tick` (one transaction; idempotent; rejected if started before the last forget) and `close_open_segment`.
 - **web, on user request:**
   - `edit_segment` (sets `authored=user`), `edit_observation`
@@ -275,7 +275,7 @@ Our overlay is recognized by `_NET_WM_PID` matching the shell process that `dayb
 
 **Schedule:**
 
-- A tick runs every 90 s, or 20 s after an app switch (or after an overlay is dismissed).
+- A tick runs every 90 s (30 s in demo mode, `tick_interval` in `daybook.toml`), or 20 s after an app switch (or after an overlay is dismissed).
 - Ticks are never less than 30 s apart.
 - A tick runs only when there is new evidence since the last tick: either new unassigned observations, or the latest observation was extended (the user is still there on an unchanged screen). No new evidence (locked, paused, withheld, overlay up, or away) means no tick, no readings, and no firings.
 - When there are no new observations, the tick still answers every signal and writes readings, but makes no segment decision. That keeps `is … for` streaks and `every` triggers working while someone reads or types on a still screen.
@@ -546,6 +546,7 @@ xauthority = "/run/user/1000/gdm/Xauthority"
 music_dir = "~/Music/daybook"
 desktop_backend = "xdo"        # or "cua"
 keep_frames = false
+tick_interval = "90s"         # "30s" for the live demo, so short streaks confirm on time
 
 [model]
 base_url = "http://127.0.0.1:11434/v1"

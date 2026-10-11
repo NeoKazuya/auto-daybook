@@ -274,6 +274,26 @@ class MockAPI:
         self.bus.publish(events.CaptureStateChanged(self.status.capture))
         return self.privacy
 
+    def overlay_test(self) -> w.OverlayState:
+        if self.shells == 0:
+            raise HTTPException(409, "shell_disconnected")
+        now = datetime.now(timezone.utc)
+        request = w.OverlayRequest(
+            title="Take a moment", body="This is a Daybook overlay test.", minutes=1
+        )
+        self.status.overlay = w.OverlayState(
+            id=f"test-{now.timestamp()}",
+            request=request,
+            owner="manual",
+            expires_at=now + timedelta(minutes=1),
+        )
+        self.bus.publish(
+            events.OverlayShown(
+                self.status.overlay.id, OverlayRequest(**request.model_dump())
+            )
+        )
+        return self.status.overlay
+
     def dismiss(self, id: str) -> w.MutationResponse:
         if self.status.overlay and self.status.overlay.id == id:
             self.status.overlay = None

@@ -441,6 +441,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 | `POST /api/chat {message}` | `chat.respond` |
 | `GET /api/skills`, `PUT /api/skills/{id}`, `POST /api/skills/{id}/approve {hash}` (409 if stale), `POST /api/skills/{id}/enable` (409 if needs review), `POST /api/skills/{id}/disable`, `DELETE /api/skills/{id}`, `POST /api/skills/parse {id, text}` (checked through `SkillBook`, so the file name and origin are known) | `SkillBook` methods and `parse_skill` |
 | `GET/PUT /api/privacy` | `sense.privacy`, `set_privacy` |
+| `POST /api/overlay/test` (no body; `OverlayState` on success, 409 without a connected shell) | `overlay.show` (CLI smoke test) |
 | `POST /api/overlay/{id}/dismiss` | `overlay.hide` |
 | `GET /api/status` | gateway, music, overlay, and capture status |
 | `GET /api/events?client=ui\|shell` | SSE stream of every bus event |

@@ -417,7 +417,11 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
 ### 6.9 `web`: routes and the UI
 
-**Owns** the HTTP contract and the static UI. It is plain HTML with ES modules and no build step. Each route calls one method on the module that owns the data, and holds no logic. The functions here that turn domain types into JSON are the only place the wire format is defined.
+**Owns** the HTTP contract and the static UI. It is plain HTML with ES modules and no build step. Each route calls one method on the module that owns the data, and holds no logic.
+
+**Wire models.** `daybook/web/wire.py` defines every request and response body, and every SSE event payload, as pydantic models, each with one realistic example. It's the only place the wire format is defined. Domain types are converted into these models there, and FastAPI publishes them at `/openapi.json`. Changing `wire.py` is shared-contract work.
+
+**Mock API.** `daybook run --mock-api` serves every route from the wire models' examples, keeps edits in memory, and emits a scripted stream of sample events on `/api/events` every few seconds. It needs no model, screen, journal, or skills, so the UI can be built and tested before the backend exists, and against the same contract.
 
 **Security:**
 
@@ -445,6 +449,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 **Done when:**
 
 - Route tests run against fakes.
+- Every response validates against its `wire.py` model, and `--mock-api` serves every route and a live event stream.
 - A mutating call without the token or with a foreign `Origin` is rejected.
 - SSE delivers live timeline updates to the browser.
 - Every UI page in [§8](#8-user-interface) works against a replay instance.
@@ -562,6 +567,7 @@ dialect = "ollama"             # "vllm" | "openai"
 
 ```sh
 daybook run [--replay DIR] [--no-capture] [--real-effects] [--port N]   # daybookd: capture, tick, skills, web; spawns mpv and the shell (not in replay/no-capture unless --real-effects)
+daybook run --mock-api [--port N]                      # web routes from wire.py examples + scripted events; nothing else runs (UI development)
 daybook observe-once                                   # one real capture -> printed observation (not saved)
 daybook tick-once                                      # one tick on current unassigned observations, prints readings
 daybook skill check FILE                               # parse_skill + errors
@@ -602,7 +608,7 @@ The plan is the complete system above, built module by module. Every module's sc
 
 | Work item | Full scope | Depends on |
 |---|---|---|
-| **Contracts** | The package skeleton, `pyproject.toml`, `scripts/check.sh`, and `check_boundaries.py`. Every public type and signature from §6 as stubs. The events list, catalog action names and parameters, and the three built-in skill files. This is a shared-contract PR: it waits for review | — |
+| **Contracts** | The package skeleton, `pyproject.toml`, `scripts/check.sh`, and `check_boundaries.py`. Every public type and signature from §6 as stubs. The events list, catalog action names and parameters, `web/wire.py`, `--mock-api`, and the three built-in skill files. This is a shared-contract PR: it waits for review. Full brief: [lanes/contracts.md](lanes/contracts.md) | — |
 | **GX10 setup** | Everything in [setup.md](setup.md): apt packages, the AppIndicator extension, `uv`, `gh`, the music library (20–30 CC-licensed tracks with `library.toml`), confirming model server logging is off | — |
 | **Replay fixtures** | `scripts/record_fixture.py` (standalone) and the four scenarios in §10, recorded on the GX10 with expected labels in the `ReplayScreen` folder format defined in Contracts | Contracts (folder format only), GX10 setup |
 | `journal` + `events` | §6.1, §6.2 | Contracts |
@@ -619,6 +625,8 @@ The plan is the complete system above, built module by module. Every module's sc
 | **Demo** | [demo.md](demo.md): the presenter script, the pre-approved `break-demo` skill, and rehearsals on the GX10 | End-to-end acceptance |
 
 Everything after Contracts can be built at the same time against fakes. The only real ordering is: Contracts first, then the end-to-end checks once the modules exist.
+
+The work is split into two lanes with separate owners: **Lane A** (the core and everything but the UI) and **Lane B** (the web UI and the shell). Ownership, task lists, and how the lanes coordinate are in [lanes/](lanes/README.md).
 
 ### 11.2 End-to-end acceptance
 

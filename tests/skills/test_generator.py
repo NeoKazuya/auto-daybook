@@ -411,3 +411,30 @@ async def test_activity_example_fires_on_first_detection_without_changing_builti
     ]
     assert rule.steps[1].arguments == {"for": "5s"}
     assert rule.steps[2].arguments == {"title": "*Instagram*"}
+
+
+async def test_other_builtin_positive_transition_example_is_preserved(tmp_path):
+    builtin = tmp_path / "builtin"
+    builtin.mkdir()
+    text = (
+        TEXT.replace("in_meeting", "complete")
+        .replace("becomes false", "becomes true")
+        .replace(
+            "Is the user in a video meeting right now?", "Is the task marked complete?"
+        )
+    )
+    (builtin / "stand-after-meeting.skill.md").write_text(text)
+    skills = SkillBook(
+        tmp_path / "home",
+        builtin,
+        tmp_path / "db",
+        MemoryPortal(),
+        build_catalog({"focus": "work"}),
+        Bus(),
+        clear_readings=lambda skill: None,
+    )
+    gateway = ScriptedGateway([payload(TEXT, "Meeting reminder")])
+    await draft_skill("remind me after a meeting", book=skills, gateway=gateway)
+    examples = gateway.prompts[0].user.split("Built-in supported reply instances:\n")[1]
+    example = json.loads(examples.splitlines()[0])
+    assert example["draft"]["rules"][0]["when"] == "complete becomes true"

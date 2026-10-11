@@ -186,14 +186,13 @@ async def generate(
             for name, signal in data["signals"].items()
         ]
         for rule in data["rules"]:
-            # Teach first detection for positive activity examples without changing
-            # the installed built-ins, their hashes, or runtime edge semantics.
-            match = re.fullmatch(r"(\w+) becomes true", rule["when"])
-            if match and any(
-                signal["name"] == match[1] and signal["type"] == "bool"
-                for signal in data["signals"]
+            # This site's nudge teaches first detection. Other built-ins may
+            # deliberately require a positive edge; preserve their examples.
+            if (
+                entry.id == "instagram-nudge"
+                and rule["when"] == "on_instagram becomes true"
             ):
-                rule["when"] = f"{match[1]} is true for 0s"
+                rule["when"] = "on_instagram is true for 0s"
             rule["steps"] = [
                 {
                     "action": action,

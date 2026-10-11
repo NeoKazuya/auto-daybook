@@ -129,7 +129,9 @@ def evaluate(
 async def draft_skill(
     request: str, *, book: SkillBook, gateway: ModelGateway
 ) -> tuple[SkillEntry, str]:
-    raise NotImplementedError
+    from ._draft import generate
+
+    return await generate(request, book=book, gateway=gateway)
 
 
 class SkillBook:

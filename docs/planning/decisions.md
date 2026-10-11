@@ -73,3 +73,55 @@ in ARCHITECTURE §11.1. No `CuaDesktop` is shipped.
 The result is a failure of this release in the tested session, not a claim that
 all cua versions fail on Xorg. The existing xdotool/wmctrl/gtk-launch backend
 remains the implementation for the three named desktop actions.
+
+
+## GX10 draft-skill model tuning (2026-10-10)
+
+Draft skills use effort `none` on the installed Qwen3.6:35b/Ollama 0.23.2 backend.
+The original `low` assumption failed measured calls: even with a compact prompt,
+structured plans, and a brief-reasoning instruction, the model spent its entire
+2,000-token output budget on reasoning, returned no answer, and reached the
+40-second gateway timeout. Increasing the input guide was not the cause; the
+structured-plan request used about 2,000 input tokens.
+
+With thinking disabled, the actual public `draft_skill` path produced a valid,
+unapproved meeting-completion reminder in 11.3 seconds, including one bounded
+JSON repair. The signal asks about the present meeting; a `becomes false` rule
+shows the overlay after it ends. Code renders the model's declarative plan as
+`.skill.md`, adds chat provenance, and applies the ordinary parser and approval
+flow. Hooks remain unavailable to generated skills.
+
+A subsequent actual HTTP `POST /api/chat` request delivered the inactive review
+response in 6.5 seconds, including generation and saving; exact-hash approval and
+external-edit invalidation also passed. The private plan uses lists of named
+signals and arguments because the OpenAI strict schema closes objects and cannot
+represent arbitrary map keys. The saved file and public API remain unchanged.
+UI rendering is still unproven. Optional timing, additional steps, and capability
+choices can vary between model outputs and are exposed for review; code preserves
+catalog defaults when optional arguments are omitted.
+
+## GX10 tick quality (2026-10-10)
+
+The four fixed recordings cover Code to technical PDF reading, a meeting to Code,
+a 185-second Code focus streak, and lock/exclusion periods. Labels were fixed
+before benchmarking. The initial effort `none` run matched all three signals on
+5/13 running ticks (38.5%). The prescribed `low` fallback failed four of five
+completed labelled ticks by exhausting 1,500 output tokens on reasoning without
+a JSON answer and reaching the 40-second timeout; even perfect remaining ticks
+could not reach 80%.
+
+A generic prompt/schema revision requires every nullable signal key, separates
+current facts from historical rollups, and requires a segment decision for new
+evidence. That effort `none` run matched all three signals on 11/13 running
+ticks (84.6%) and activity kind on 13/13 (100%). After a live notes fix preserved
+segment kinds across activity changes, the unchanged recordings scored 10/13
+signals (76.9%); that failed result remains recorded. Both break questions now
+ask about present concentration, explicitly include deliberate document study,
+and leave elapsed duration to the held-value rule. The resulting exact candidate
+`413ede899` matched 12/13 signals (92.3%) and 13/13 kinds in 57.2 seconds. Its one
+miss was an uncertain focus/mood answer just after capture resumed on Code.
+
+The meeting and focus reminders each fired once; locked and excluded periods
+made zero model calls. Labels stayed fixed through every comparison. These are
+measured results on the recordings; model outputs can still vary on other
+screens or repeated calls.

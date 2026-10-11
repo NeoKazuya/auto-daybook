@@ -580,3 +580,23 @@ def test_capture_reads_omit_empty_intervals(journal: Journal):
     spans = journal.portal.capture_spans(RANGE)
     assert [span.state for span in spans] == ["running", "locked", "running"]
     assert all(span.end is None or span.end > span.start for span in spans)
+
+
+def test_tick_frontier_survives_restart_and_tracks_forgetting(tmp_path):
+    from datetime import UTC
+
+    path = tmp_path / "frontier.db"
+    at = datetime.now(UTC)
+    journal = Journal(path, Bus())
+    assert journal.portal.latest_tick_evidence_until() is None
+    assert journal.record_tick(Tick(at, journal.epoch, at, (), None, ()))
+    later = at + timedelta(seconds=30)
+    assert journal.record_tick(Tick(later, journal.epoch, later, (), None, ()))
+    journal.close()
+    journal = Journal(path, Bus())
+    assert journal.portal.latest_tick_evidence_until() == later
+    journal.forget_range(TimeRange(later, later + timedelta(seconds=1)))
+    assert journal.portal.latest_tick_evidence_until() == at
+    journal.forget_all()
+    assert journal.portal.latest_tick_evidence_until() is None
+    journal.close()

@@ -465,7 +465,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
   - The window class is `daybook-shell`.
 - **Tray.** A StatusNotifierItem icon. It needs GNOME's AppIndicator extension; see [setup.md](setup.md).
   - The icon shows the capture state: recording, paused, private, or locked.
-  - The menu has Pause/Resume (`PUT /api/privacy`), Open Daybook (`xdg-open http://127.0.0.1:8765`), and Quit.
+  - The menu has Pause/Resume (`PUT /api/privacy`), Open Daybook (`xdg-open http://127.0.0.1:<port>`, using the port the shell was started with), and Quit.
 - **Resync on connect.** Every time the shell connects or reconnects to the event stream, it first fetches `GET /api/status` and applies the current overlay and capture state. Missed events can't leave an overlay up in `daybookd` with nothing on screen to dismiss.
 - **Environment** when spawned:
   - `DISPLAY=:1`

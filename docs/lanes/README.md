@@ -31,7 +31,7 @@ Only the owning lane edits a path. The import-boundary check (`scripts/check_bou
 | `src/daybook/web/static/` | **Lane B** |
 | `src/daybook/shell/` | **Lane B** |
 | `scripts/record_fixture.py`, `fixtures/` | Lane A |
-| `tests/` | The lane that owns the code under test: `tests/web_static/` and `tests/shell/` are Lane B's, everything else is Lane A's |
+| `tests/` | The lane that owns the code under test: `tests/web_static/` and `tests/shell/` are Lane B's; `tests/chat/` follows `src/daybook/chat/`; everything else is Lane A's |
 | `scripts/gx10/`, `docs/gx10-unattended.md` | GX10 setup (already merged in #3) |
 
 **Shared contracts.** Either lane may change these, but only through a shared-contract PR that waits for review (CONTRIBUTING step 5). Post a Tracker comment so the other lane sees it:

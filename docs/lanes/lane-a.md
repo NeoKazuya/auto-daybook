@@ -4,7 +4,7 @@
 
 **Owner:** the Codex wave. How the work is divided among Codex's agents, and in what order, is Codex's call. This brief says what has to exist when it's done. Claim the lane once on the [Tracker](https://github.com/NeoKazuya/auto-daybook/issues/1); each PR says `Part of #1` and names the lane.
 
-**Owns:** every path except `src/daybook/web/static/` and `src/daybook/shell/` (see [README.md](README.md#ownership-by-path)).
+**Owns:** the Lane A paths in the [ownership table](README.md#ownership-by-path): everything except Lane B's paths there (the web UI's static files, the shell, and their tests) and anything that moved to Lane B, such as chat.
 
 **Spec:** [ARCHITECTURE.md](../ARCHITECTURE.md) is the spec for every module, including its "Done when" checks. [skills.md](../skills.md) is the skill format. If this brief and ARCHITECTURE disagree, ARCHITECTURE wins.
 

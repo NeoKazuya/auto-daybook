@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The server fills this in per launch (ARCHITECTURE §6.9). Left empty, the UI runs on demo data. -->
+  <meta name="daybook-token" content="">
+  <title>Daybook · Table of Contents</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Literata:opsz,wght@7..72,400..700&display=swap">
+  <link rel="stylesheet" href="css/daybook.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#/contents"><span data-icon="book"></span>Auto-DayBook</a>
+    <div class="brand-rule"></div>
+    <nav class="nav" id="nav" aria-label="Sections"></nav>
+    <div class="sidebar-foot" id="sidebar-foot"></div>
+  </aside>
+
+  <div class="desk">
+    <main id="page" class="page" aria-live="polite"></main>
+  </div>
+
+  <footer class="footer" id="footer" aria-label="System status"></footer>
+  <div class="toasts" id="toasts" role="status"></div>
+</body>
+</html>

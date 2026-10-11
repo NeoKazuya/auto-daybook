@@ -184,10 +184,11 @@ def live(tmp_path):
     overlay.show = show
     overlay.hide = hide
     overlay.shell_connected = shell_connected
-    chat = SimpleNamespace(reply=Plain("Hello"), messages=[])
+    chat = SimpleNamespace(reply=Plain("Hello"), messages=[], histories=[])
 
-    async def respond(message):
+    async def respond(message, history=()):
         chat.messages.append(message)
+        chat.histories.append(history)
         return chat.reply
 
     chat.respond = respond
@@ -646,3 +647,38 @@ async def test_capture_reason_explains_daybook_without_disclosing_titles(
     assert result.json().get("capture_reason") == "daybook_visible"
     assert title not in result.text
     assert "Firefox" not in result.text
+
+
+def test_chat_history_wire_bounds_and_epoch_roundtrip(live):
+    now = datetime.now(UTC)
+    turn = {
+        "question": "What was I fixing?",
+        "cites": ["s1"],
+        "window": {
+            "from": (now - timedelta(hours=1)).isoformat(),
+            "to": now.isoformat(),
+        },
+        "epoch": 7,
+    }
+    live.chat.reply = Answer(
+        "Recorded detail", ("s1",), TimeRange(now - timedelta(hours=1), now), 7
+    )
+    response = live.client.post(
+        "/api/chat", headers=HEADERS, json={"message": "What next?", "history": [turn]}
+    )
+    assert response.status_code == 200 and response.json()["epoch"] == 7
+    assert live.chat.histories[-1][0].question == turn["question"]
+    assert live.chat.histories[-1][0].epoch == 7
+    for history in (
+        [turn] * 5,
+        [{**turn, "answer": "old assistant text"}],
+        [{**turn, "epoch": -1}],
+    ):
+        assert (
+            live.client.post(
+                "/api/chat",
+                headers=HEADERS,
+                json={"message": "What next?", "history": history},
+            ).status_code
+            == 422
+        )

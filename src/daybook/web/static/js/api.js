@@ -108,7 +108,7 @@ export const api = {
   deleteObservation: (id) => changeNotes('DELETE', `/api/observations/${id}`),
   forget: (from, to) => changeNotes('POST', '/api/forget', { from, to }),
   forgetAll: () => changeNotes('POST', '/api/forget-all'),
-  chat: (message) => call('POST', '/api/chat', { message }),
+  chat: (message, history = []) => call('POST', '/api/chat', { message, history }),
   skills: () => call('GET', '/api/skills'),
   saveSkill: (id, text) => call('PUT', `/api/skills/${id}`, { text }),
   parseSkill: (id, text) => call('POST', '/api/skills/parse', { id, text }),

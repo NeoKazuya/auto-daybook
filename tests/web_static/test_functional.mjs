@@ -53,7 +53,7 @@ function h(spec, attrs, ...children) {
 const walk = n => n instanceof Element ? [n, ...n.children.flatMap(walk)] : [];
 const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve)); };
 const defer = () => { let resolve,reject; const promise = new Promise((yes,no) => {resolve=yes;reject=no;}); return {promise,resolve,reject}; };
-const answer = { type: 'answer', text: 'You spent 4 minutes on journal tests', cites: ['s1'], window: { from: '2026-10-11T08:00:00Z', to: '2026-10-11T09:00:00Z' } };
+const answer = { epoch: 0, type: 'answer', text: 'You spent 4 minutes on journal tests', cites: ['s1'], window: { from: '2026-10-11T08:00:00Z', to: '2026-10-11T09:00:00Z' } };
 const draft = { type: 'draft', summary: 'Stand after meetings', entry: { id: 'stand-after-meeting' } };
 async function setup({ developer = false, manualTimers = false, demo = false } = {}) {
   let request = async path => path.startsWith('/api/timeline') ? { segments: [{id:'s1', title:'Old title'}] } : {};
@@ -1470,4 +1470,38 @@ test('footer explains capture reasons without implying the Pause switch changed'
 test('browser demo status includes a nullable capture reason',async()=>{
   const x=await setup({demo:true});
   assert.equal((await x.api.status()).capture_reason,null);
+});
+
+test('board sends bounded recall references without assistant text and forget clears them', async () => {
+  const x = await setup();
+  x.setRequest(async path => path === '/api/chat' ? answer : {segments: []});
+  const p = await x.page('board');
+  for (let i = 0; i < 6; i++) await p.ask('Question ' + i);
+  let sent = JSON.parse(x.calls.filter(([path]) => path === '/api/chat').at(-1)[1].body);
+  assert.equal(sent.history.length, 4);
+  assert.deepEqual(sent.history.map(t => t.question), ['Question 1','Question 2','Question 3','Question 4']);
+  assert.deepEqual(Object.keys(sent.history[0]).sort(), ['cites','epoch','question','window']);
+  assert.equal(JSON.stringify(sent).includes(answer.text), false);
+  await x.api.forgetAll();
+  await p.ask('What happened next?');
+  sent = JSON.parse(x.calls.filter(([path]) => path === '/api/chat').at(-1)[1].body);
+  assert.deepEqual(sent.history, []);
+  await p.ask('Another question');
+  walk(p.root).find(n => n.spec.startsWith('button') && n.textContent.includes('Clear board')).onclick();
+  await p.ask('New conversation');
+  sent = JSON.parse(x.calls.filter(([path]) => path === '/api/chat').at(-1)[1].body);
+  assert.deepEqual(sent.history, []);
+});
+
+test('drafts and pending questions are not recall history', async () => {
+  const x = await setup();
+  x.setRequest(async path => path === '/api/chat' ? draft : {});
+  const p = await x.page('board'); await p.ask('Create a reminder');
+  const pending = defer();
+  x.setRequest(path => path === '/api/chat' ? pending.promise : {});
+  await p.ask('Pending question');
+  await p.ask('Another pending question');
+  const sent = JSON.parse(x.calls.filter(([path]) => path === '/api/chat').at(-1)[1].body);
+  assert.deepEqual(sent.history, []);
+  pending.resolve(answer); await settle();
 });

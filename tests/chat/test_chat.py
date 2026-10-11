@@ -16,6 +16,7 @@ from daybook.journal import (
     CaptureSpan,
     Journal,
     Observation,
+    RecallNotes,
     Segment,
     TimeRange,
     Total,
@@ -112,13 +113,19 @@ class Notes:
             ),
             context=self.context,
             search=self.search,
+            read_notes=lambda ids, window=None, **kwargs: RecallNotes(
+                self.context(window, 4000, "observations"),
+                tuple(s.id for s in self.rows),
+                window,
+                False,
+            ),
         )
 
     def context(self, window, budget, detail):
         self.details.append((budget, detail))
         return "Segment s1: Fix imports. Editing the import test."
 
-    def search(self, term, window):
+    def search(self, term, window, *, limit=None):
         self.searches.append(term)
         return []
 
@@ -137,7 +144,7 @@ async def test_recall_uses_code_totals_bounded_context_and_valid_cites():
     )
     assert isinstance(reply, Answer)
     assert reply.cites == ("s1",)
-    assert notes.details == [(8000, "observations")]
+    assert notes.details == [(4000, "observations"), (2000, "segments")]
     assert notes.searches == ["imports"]
     assert gateway.priorities == [Priority.INTERACTIVE]
     payload = json.loads(gateway.prompts[0].user)

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 
 from ._types import (
     CaptureSpan,
     Hit,
     Observation,
+    RecallNotes,
     Segment,
     SignalId,
     SignalReading,
@@ -206,6 +207,124 @@ class Portal:
             return [
                 Hit(row["id"], row["kind"], row["text"], row["segment"]) for row in rows
             ]
+
+    def read_notes(
+        self,
+        ids: list[str],
+        range: TimeRange | None = None,
+        *,
+        neighbors: Literal["none", "next", "previous", "both"] = "none",
+        budget_tokens: int = 4000,
+    ) -> RecallNotes:
+        """Read exact hits first, then nearby observations, with bounded output.
+
+        IDs may identify observations or segments. Unknown/deleted IDs contribute
+        nothing. A range clips evidence and active durations; no gap is counted.
+        """
+        from ._store import bounds
+
+        if neighbors not in {"none", "next", "previous", "both"}:
+            raise ValueError("invalid neighbor direction")
+        if budget_tokens <= 0:
+            return RecallNotes("", (), None, False)
+        limit = min(int(budget_tokens * 3.5), 28000)
+        overlap = ""
+        parameters: tuple[str, ...] = ()
+        if range is not None:
+            start, end = bounds(range)
+            overlap = " AND o.started_at<? AND (o.last_seen_at>? OR o.started_at>=?)"
+            parameters = (end, start, start)
+        j = self._journal
+        with j._lock:
+            j._check_open()
+            select = """SELECT o.*, s.title AS segment_title, s.kind AS segment_kind,
+                s.intent AS segment_intent, s.authored AS segment_authored
+                FROM observations o LEFT JOIN segments s ON s.id=o.segment WHERE """
+            rows = []
+            truncated = len(ids) > 16
+            for id in dict.fromkeys(ids[:16]):
+                found = j._db.execute(
+                    select
+                    + "(o.id=? OR o.segment=?)"
+                    + overlap
+                    + " ORDER BY o.started_at, o.id LIMIT 17",
+                    (id, id, *parameters),
+                ).fetchall()
+                truncated |= len(found) > 16
+                rows.extend(found[:16])
+            # Follow-up reads can move beyond the prior segment, without guessing
+            # that its last timestamp is also the end of recorded work.
+            if rows and neighbors != "none":
+                for direction, operator, order, edge in (
+                    ("previous", "<", "DESC", min(r["started_at"] for r in rows)),
+                    ("next", ">", "ASC", max(r["started_at"] for r in rows)),
+                ):
+                    if neighbors in (direction, "both"):
+                        rows.extend(
+                            j._db.execute(
+                                select
+                                + f"o.started_at{operator}?"
+                                + overlap
+                                + f" ORDER BY o.started_at {order}, o.id LIMIT 4",
+                                (edge, *parameters),
+                            ).fetchall()
+                        )
+            lines: list[str] = []
+            cites: list[str] = []
+            citation_windows: dict[str, TimeRange] = {}
+            starts: list[datetime] = []
+            ends: list[datetime] = []
+            seen: set[str] = set()
+            for row in rows:
+                note = j._row_observation(row)
+                if note.id in seen:
+                    continue
+                seen.add(note.id)
+                start = max(note.started_at, range.start) if range else note.started_at
+                end = min(note.last_seen_at, range.end) if range else note.last_seen_at
+                record = {
+                    "id": note.id,
+                    "segment": note.segment,
+                    "from": start.isoformat(),
+                    "to": end.isoformat(),
+                    "active_seconds": max(0, (end - start).total_seconds()),
+                    "active_duration": f"{max(0, (end - start).total_seconds()):g} s",
+                    "app": note.window.app,
+                    "window_title": note.window.title[:400],
+                    "seen": note.seen[:2400],
+                    "visible_text": note.visible_text[:4800],
+                    "summary": (row["segment_title"] or "")[:400],
+                    "intent": (row["segment_intent"] or "")[:1200],
+                    "intent_authored": row["segment_authored"],
+                }
+                line = json.dumps(record, ensure_ascii=False)
+                if len(lines) >= 24 or len("\n".join(lines)) + len(line) + 1 > limit:
+                    truncated = True
+                    continue
+                truncated |= len(note.seen) > 2400 or len(note.visible_text) > 4800
+                lines.append(line)
+                if note.segment is not None:
+                    if note.segment not in cites:
+                        cites.append(note.segment)
+                    previous = citation_windows.get(note.segment)
+                    citation_windows[note.segment] = TimeRange(
+                        min(start, previous.start) if previous else start,
+                        max(
+                            end,
+                            start + timedelta(microseconds=1),
+                            previous.end if previous else end,
+                        ),
+                    )
+                starts.append(start)
+                ends.append(max(end, start + timedelta(microseconds=1)))
+            window = TimeRange(min(starts), max(ends)) if starts else None
+            return RecallNotes(
+                "\n".join(lines),
+                tuple(cites),
+                window,
+                truncated,
+                tuple(citation_windows.items()),
+            )
 
     def totals(
         self, range: TimeRange, by: Literal["kind", "title", "app"] = "kind"

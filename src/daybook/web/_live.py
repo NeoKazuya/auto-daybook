@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal
 from fastapi import HTTPException
 
 from daybook.act import OverlayRequest
-from daybook.chat import Answer, DraftReady
+from daybook.chat import Answer, DraftReady, RecallTurn
 from daybook.journal import TimeRange, UpcomingDraft
 from daybook.sense import PrivacySettings
 from daybook.skills import Skill, SkillEntry, SkillSource
@@ -191,12 +191,24 @@ class LiveAPI:
         return self._mutation()
 
     async def chat(
-        self, message: str
+        self, message: str, history: list[w.RecallTurn]
     ) -> w.AnswerResponse | w.DraftResponse | w.PlainResponse:
-        reply = await self.services.chat.respond(message)
+        reply = await self.services.chat.respond(
+            message,
+            tuple(
+                RecallTurn(
+                    t.question,
+                    tuple(t.cites),
+                    TimeRange(t.window.start, t.window.end),
+                    t.epoch,
+                )
+                for t in history
+            ),
+        )
         if isinstance(reply, Answer):
             return w.AnswerResponse(
                 text=reply.text,
+                epoch=reply.epoch,
                 cites=list(reply.cites),
                 window=w.TimeWindow(start=reply.window.start, end=reply.window.end),
             )

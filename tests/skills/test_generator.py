@@ -124,3 +124,30 @@ async def test_quoted_yaml_id_collision_never_overwrites(tmp_path):
     entry, _ = await draft_skill("remind", book=skills, gateway=gateway)
     assert entry.id != "yes"
     assert next(e for e in skills.entries() if e.id == "yes").text == existing_text
+
+
+async def test_builtin_hook_and_invalid_file_do_not_break_declarative_generation(
+    tmp_path,
+):
+    builtin = tmp_path / "builtin"
+    builtin.mkdir()
+    (builtin / "invalid.skill.md").write_text("no front matter")
+    hook = TEXT.replace("id: stand-after-meeting", "id: developer-hook").replace(
+        "      - overlay.show: {title: Meeting over, body: Stand up, minutes: 1}",
+        "      - hook: run",
+    )
+    (builtin / "developer-hook.skill.md").write_text(hook)
+    (builtin / "developer-hook.hook.py").write_text("async def run(ctx):\n    pass\n")
+    skills = SkillBook(
+        tmp_path / "home",
+        builtin,
+        tmp_path / "db",
+        MemoryPortal(),
+        build_catalog({"focus": "work"}),
+        Bus(),
+        clear_readings=lambda skill: None,
+    )
+    gateway = ScriptedGateway([payload(TEXT, "Stand after meetings")])
+    entry, _ = await draft_skill("remind", book=skills, gateway=gateway)
+    assert entry.status == "needs_review"
+    assert "developer-hook" not in gateway.prompts[0].user

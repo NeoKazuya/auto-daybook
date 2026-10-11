@@ -93,9 +93,21 @@ async def generate(
     request: str, *, book: SkillBook, gateway: ModelGateway
 ) -> tuple[SkillEntry, str]:
     examples = []
-    for path in sorted(book._book.builtin.glob("*.skill.md")):
-        front, goal = path.read_text().split("---", 2)[1:]
+    for entry in book.entries():
+        if (
+            entry.source.origin != "builtin"
+            or not isinstance(entry.skill, Skill)
+            or any(
+                step.action == "hook"
+                for rule in entry.skill.rules
+                for step in rule.steps
+            )
+        ):
+            continue
+        front, goal = entry.text.split("---", 2)[1:]
         data = yaml.safe_load(front)
+        data.pop("created_by", None)
+        data.pop("request", None)
         for rule in data["rules"]:
             rule["steps"] = [
                 {

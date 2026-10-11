@@ -16,6 +16,15 @@ const START_PAGES = [
 ];
 const RETENTION = [[null, 'Until I delete them'], [7, '7 days'], [30, '30 days'], [90, '90 days']];
 
+// Sense uses fnmatchcase: bracket quoting preserves each glob metacharacter.
+const literalTitlePattern = (value) => '*' + value.replace(/[*?\[\]]/g, (char) => '[' + char + ']') + '*';
+function titleExclusion(raw) {
+  const value = raw.startsWith('*') && raw.endsWith('*')
+    ? raw.slice(1, -1).replace(/\[([*?\[\]])\]/g, '$1') : raw;
+  const literal = literalTitlePattern(value) === raw;
+  return { match: 'title', raw, value: literal ? value : raw, literal };
+}
+
 async function render(root) {
   const left = h('div.stack', skeletons(3));
   const right = h('div.stack', skeletons(2));
@@ -123,10 +132,11 @@ async function render(root) {
     const rules = supports.monitoringRules;
     const only = rules && privacy.apps_mode === 'only';
     // Capture matches each pattern against the whole app name or window title
-    // (case-insensitive glob), so "Title has X" is stored as *X* and shown as X.
+    // (case-insensitive glob). "Title has" quotes punctuation and adds containment
+    // wildcards; existing explicit patterns remain visibly labelled as patterns.
     const exclusions = [
       ...privacy.exclude_apps.map((raw) => ({ match: 'app', raw, value: raw })),
-      ...privacy.exclude_titles.map((raw) => ({ match: 'title', raw, value: raw.replace(/^\*|\*$/g, '') })),
+      ...privacy.exclude_titles.map(titleExclusion),
     ];
     const without = (x) => (p) => x.match === 'app'
       ? { exclude_apps: p.exclude_apps.filter((v) => v !== x.raw) }
@@ -151,12 +161,12 @@ async function render(root) {
       h('div.label', 'Never monitor'),
       h('p.muted', { style: 'margin:0' }, 'While any of these is on screen, capture is withheld. Their titles are never stored.'),
       h('div.rows', exclusions.map((x) => listRow(
-        [h('span.tag.quiet', x.match === 'app' ? 'app' : 'title has'), x.value],
+        [h('span.tag.quiet', x.match === 'app' ? 'app' : x.literal ? 'title has' : 'title pattern'), x.value],
         `Stop blocking ${x.value}`,
         (b) => busy(b, () => save(without(x), `${x.value} is no longer blocked.`))))),
       addForm('blocked', 'App name, or text in a window title', true, (match, value) => {
         const key = match === 'app' ? 'exclude_apps' : 'exclude_titles';
-        const pattern = match === 'title' && !/[*?[]/.test(value) ? `*${value}*` : value;
+        const pattern = match === 'title' ? literalTitlePattern(value) : value;
         if (privacy[key].includes(pattern)) return toast(`${value} is already blocked.`);
         return save((p) => ({ [key]: [...new Set([...p[key], pattern])] }), `${value} will never be monitored.`);
       }));

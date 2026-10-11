@@ -21,6 +21,7 @@ async function render(root, params) {
   let catalog = [];
   let selected = params.get('id');
   let notice = null;
+  let hasUnsavedEdits = () => false;
   const count = h('span.counter', '…');
   const newSkill = h('a.btn', { href: '#/board?q=' + encodeURIComponent('/skill ') }, icon('plus'), 'New skill');
   const list = h('div.rows.skill-scroll', skeletons(3));
@@ -75,11 +76,17 @@ async function render(root, params) {
     const dev = getPref('developer');
     let editor = null;
     let parse = null;
+    const dirty = () => Boolean(editor && editor.value !== s.text);
+    hasUnsavedEdits = dirty;
+    const editNotice = h('p.muted', { hidden: true }, 'Save edits before approving or enabling this version.');
     if (dev) {
       editor = h('textarea.textarea', { spellcheck: false, 'aria-label': 'Skill file' }, s.text);
       parse = h('div.errors', parseView(s.errors));
       let timer;
       editor.addEventListener('input', () => {
+        const unsaved = dirty();
+        if (enableButton) enableButton.disabled = unsaved;
+        editNotice.hidden = !unsaved;
         clearTimeout(timer);
         timer = setTimeout(async () => {
           try {
@@ -104,10 +111,19 @@ async function render(root, params) {
     };
     const act = (fn, done) => (e) => run(e.currentTarget, fn, done);
 
+    const approveOrEnable = (fn, done) => (e) => {
+      if (dirty()) return;
+      return run(e.currentTarget, fn, done);
+    };
+    const enableButton = s.status === 'needs_review'
+      ? btn('Approve & enable', { icon: 'check', kind: 'ember',
+        onclick: approveOrEnable(() => api.approveSkill(s.id, s.hash), s.name + ' is now active.') })
+      : s.status === 'disabled'
+        ? btn('Enable', { icon: 'check', kind: 'primary',
+          onclick: approveOrEnable(() => api.enableSkill(s.id), s.name + ' enabled.') })
+        : null;
     const buttons = [
-      s.status === 'needs_review' && btn('Approve & enable', { icon: 'check', kind: 'ember',
-        onclick: act(() => api.approveSkill(s.id, s.hash), `${s.name} is now active.`) }),
-      s.status === 'disabled' && btn('Enable', { icon: 'check', kind: 'primary', onclick: act(() => api.enableSkill(s.id), `${s.name} enabled.`) }),
+      enableButton,
       s.status === 'active' && btn('Disable', { icon: 'pause', onclick: act(() => api.disableSkill(s.id), `${s.name} disabled. Its approval is kept.`) }),
       dev && btn('Save edits', { icon: 'edit', title: 'Saving any edit returns the skill to needs review',
         onclick: act(() => api.saveSkill(s.id, editor.value), 'Saved. Review the new version before it can run.') }),
@@ -127,13 +143,13 @@ async function render(root, params) {
         h('div.review-sec', h('div.label', 'Rules'), h('ul', s.rules.map((r) => h('li', ruleInWords(r))))),
         h('div.review-sec', h('div.label', 'Permissions'), h('ul', s.allow.map((action) =>
           h('li.perm', h('span', catalog.find((c) => c.name === action)?.description ?? action), h('span.tag.quiet', action))))),
-        dev && h('div.review-sec', h('div.label', 'Skill file'), editor, parse),
+        dev && h('div.review-sec', h('div.label', 'Skill file'), editNotice, editor, parse),
         h('div.actions-bar', buttons)));
   }
 
   await refresh();
   return { onEvent: (types) => {
-    if ((types.has('SkillsChanged') || types.has('Reconnected')) && !document.activeElement?.matches('textarea')) refresh();
+    if ((types.has('SkillsChanged') || types.has('Reconnected')) && !hasUnsavedEdits() && !document.activeElement?.matches('textarea')) refresh();
   } };
 }
 

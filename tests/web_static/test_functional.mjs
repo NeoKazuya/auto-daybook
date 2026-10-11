@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import vm from 'node:vm';
+import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 
@@ -8,6 +9,7 @@ import { resolve, dirname } from 'node:path';
 class Element {
   constructor(spec, attrs = {}, children = []) {
     this.spec = spec; this.attrs = attrs; Object.assign(this, attrs); this.children = children.flat(Infinity).filter(x => x != null && x !== false);
+    if (spec.startsWith('textarea')) this.value = this.textContent;
   }
   append(...x) { this.children.push(...x.flat(Infinity)); }
   replaceChildren(...x) { this.children = x.flat(Infinity).filter(x => x != null && x !== false); }
@@ -26,7 +28,7 @@ const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(reso
 const defer = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
 const answer = { type: 'answer', text: 'You spent 4 minutes on journal tests', cites: ['s1'], window: { from: '2026-10-11T08:00:00Z', to: '2026-10-11T09:00:00Z' } };
 const draft = { type: 'draft', summary: 'Stand after meetings', entry: { id: 'stand-after-meeting' } };
-async function setup() {
+async function setup({ developer = false } = {}) {
   let request = async path => path.startsWith('/api/timeline') ? { segments: [{id:'s1', title:'Old title'}] } : {};
   const streams = [], channels = [], calls = [];
   const context = vm.createContext({
@@ -47,7 +49,7 @@ async function setup() {
     if(cache.has(path)) return cache.get(path);
     let mod;
     if(path.endsWith('/ui.js') || path.endsWith('/prefs.js')) {
-      const exports = path.endsWith('/prefs.js') ? {getPref:()=>false} : helpers;
+      const exports = path.endsWith('/prefs.js') ? {getPref:key=>key === 'developer' ? developer : false,setPref:()=>{}} : helpers;
       mod = new vm.SyntheticModule(Object.keys(exports), function(){for(const [k,v] of Object.entries(exports)) this.setExport(k,v);},{context});
     } else mod = new vm.SourceTextModule(await readFile(path,'utf8'), {context,identifier:path});
     cache.set(path,mod);
@@ -161,4 +163,58 @@ test('pending reply renders on the current board after navigation',async()=>{
   const current=await x.page('board'); pending.resolve(draft); await settle();
   assert.match(current.root.textContent,/Stand after meetings/);
   assert.doesNotMatch(current.root.textContent,/Reading your notes/);
+});
+
+test('Title has always stores literal substring globs, including punctuation',async()=>{
+  for(const [literal,near] of [['Budget [Q4]','Budget Q'],['Why?','Whyx'],['a*b','aZZb'],['report]','report'],['[?*]','x'],['plain','other']]) {
+    const x=await setup(); let privacy={paused:false,exclude_apps:[],exclude_titles:[],screenshots_stored:'none'};
+    x.setRequest((path,options)=>{
+      if(path==='/api/privacy') {if(options.method==='PUT') privacy=JSON.parse(options.body); return privacy;}
+      if(path==='/api/status') return {gateway:{},music:{},capture:'running'};
+      return {totals:[]};
+    });
+    const p=await x.page('settings');
+    const form=walk(p.root).find(n=>n.spec==='form.excl-form');
+    assert.ok(form,p.root.textContent);
+    walk(form).find(n=>n.spec==='select').value='title';
+    walk(form).find(n=>n.spec.startsWith('input')).value=literal;
+    form.onsubmit({preventDefault(){}}); await settle();
+    assert.equal(privacy.exclude_titles.length,1);
+    const result=spawnSync('python3',['-c',
+      'import fnmatch,json,sys; p,l,n=json.loads(sys.argv[1]); assert fnmatch.fnmatchcase(("Window — "+l+" — Browser").lower(),p.lower()); assert not fnmatch.fnmatchcase(("Window — "+n+" — Browser").lower(),p.lower())',
+      JSON.stringify([privacy.exclude_titles[0],literal,near])],{encoding:'utf8'});
+    assert.equal(result.status,0,result.stderr);
+    assert.match(p.root.textContent,new RegExp(literal.replace(/[.*+?^$()|[\]\\]/g,'\\$&')));
+  }
+});
+test('unsaved skill edits cannot approve or enable the saved version; Save refreshes exact hash',async()=>{
+  for(const status of ['needs_review','disabled']) {
+    const x=await setup({developer:true});
+    let skill={id:'stand',name:'Stand',goal:'Stand.',status,origin:'user',hash:'old-hash',text:'original skill',signals:[],allow:[],rules:[],errors:[]};
+    const writes=[];
+    x.setRequest((path,options)=>{
+      if(options.method!=='GET') writes.push([path,options.body]);
+      if(path==='/api/skills/stand'&&options.method==='PUT') skill={...skill,text:JSON.parse(options.body).text,hash:'new-hash',status:'needs_review'};
+      return path==='/api/skills'?{entries:[skill],catalog:[]}:{errors:[]};
+    });
+    const p=await x.page('skills','id=stand');
+    const editor=walk(p.root).find(n=>n.spec.startsWith('textarea'));
+    const approval=walk(p.root).find(n=>n.textContent===(status==='disabled'?'Enable':'Approve & enable'));
+    editor.value='changed skill'; editor.oninput();
+    assert.equal(approval.disabled,true);
+    await approval.onclick({currentTarget:approval}); await settle();
+    assert.equal(writes.some(([path])=>path.endsWith('/approve')||path.endsWith('/enable')),false);
+    editor.value='original skill'; editor.oninput();
+    assert.equal(approval.disabled,false);
+    editor.value='changed skill'; editor.oninput();
+    assert.equal(approval.disabled,true);
+    await p.hooks.onEvent(new Set(['SkillsChanged'])); await settle();
+    assert.equal(walk(p.root).find(n=>n.spec.startsWith('textarea')).value,'changed skill');
+    const save=walk(p.root).find(n=>n.textContent==='Save edits');
+    await save.onclick({currentTarget:save}); await settle();
+    const current=walk(p.root).find(n=>n.textContent==='Approve & enable');
+    assert.ok(!current.disabled);
+    await current.onclick({currentTarget:current}); await settle();
+    assert.deepEqual(JSON.parse(writes.find(([path])=>path.endsWith('/approve'))[1]),{hash:'new-hash'});
+  }
 });

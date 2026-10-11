@@ -455,6 +455,37 @@ class Journal:
             events.append(TickRecorded(tick.id))
             return True
 
+    def record_readings(self, tick: Tick) -> bool:
+        """Commit a signal-only check without consuming the history frontier."""
+        import json
+
+        if tick.observations or tick.segments or not tick.readings:
+            return False
+        with self._transaction() as events:
+            if self._stale(tick.epoch):
+                return False
+            if any(
+                self._db.execute(
+                    "SELECT 1 FROM readings WHERE skill=? AND name=? AND tick=?",
+                    (reading.signal.skill, reading.signal.name, tick.id),
+                ).fetchone()
+                for reading in tick.readings
+            ):
+                return False
+            for reading in tick.readings:
+                self._db.execute(
+                    "INSERT INTO readings VALUES(?, ?, ?, ?, ?)",
+                    (
+                        reading.signal.skill,
+                        reading.signal.name,
+                        stamp(reading.at),
+                        tick.id,
+                        json.dumps(reading.value, allow_nan=False),
+                    ),
+                )
+            events.append(TickRecorded(tick.id))
+            return True
+
     def close_open_segment(self) -> None:
         with self._transaction() as events:
             row = self._db.execute("SELECT id FROM segments WHERE open=1").fetchone()

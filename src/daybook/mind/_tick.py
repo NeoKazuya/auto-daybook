@@ -30,9 +30,7 @@ class SegmentAnswer(BaseModel):
     intent: str = Field(max_length=600)
 
 
-def output_model(
-    signals: tuple[Signal, ...], *, observations: tuple[str, ...] = ()
-) -> type[BaseModel]:
+def signal_model(signals: tuple[Signal, ...]) -> type[BaseModel]:
     fields = {}
     for signal in signals:
         type_: Any
@@ -45,9 +43,13 @@ def output_model(
         else:
             type_ = Literal[signal.values]  # pyright: ignore[reportInvalidTypeForm]
         fields[str(signal.id)] = (type_ | None, ...)
-    readings = create_model(
-        "TickSignals", __config__=ConfigDict(extra="forbid"), **fields
-    )
+    return create_model("TickSignals", __config__=ConfigDict(extra="forbid"), **fields)
+
+
+def output_model(
+    signals: tuple[Signal, ...], *, observations: tuple[str, ...] = ()
+) -> type[BaseModel]:
+    readings = signal_model(signals)
 
     # Membership and chronology belong to the request, never to model invention.
     # Validation runs inside the gateway too, so malformed partitions use its

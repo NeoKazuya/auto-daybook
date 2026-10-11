@@ -43,16 +43,16 @@ These are fixed. The rest of the document is built on them.
 
 ## 2. The core idea
 
-**Skills never call the model.** A skill declares *signals*: named, typed questions such as "Is the user doing sustained, focused work?" (`bool`) or "Which kind of music fits right now?" (`music.mood`). One text-only model call, the **tick**, does two jobs. With enabled signals it is requested as soon as a fresh observation arrives (at least 30 seconds between attempts); otherwise the regular interval is 90 seconds:
+**Skills never call the model.** A skill declares *signals*: named, typed questions such as "Is the user doing sustained, focused work?" (`bool`) or "Which kind of music fits right now?" (`music.mood`). Mind runs two separate text-only passes:
 
-1. **Rollup.** It groups new observations chronologically by activity, continuing the current segment or starting a segment at each task boundary, with a title, a kind, and an inferred intent.
-2. **Signals.** It answers every active skill's questions in one JSON object. The JSON schema is generated from those questions, so the answers come back typed.
+1. **Signals.** A compact current-evidence check answers every active question in one typed JSON object, with no history summary. Fresh observations or still-screen extensions are checked with at least 10 seconds between model attempts.
+2. **Rollup.** On the existing history cadence, it groups new observations chronologically into activities, with a title, kind, and inferred intent. This task does not write signal readings or run actions.
 
 The answers are stored as readings. A **pure** evaluator then checks each skill's rules against the reading history. There are four trigger forms: *updates*, *becomes X*, *is X for duration*, and *every duration*. Matching rules run named actions from one catalog, limited to the actions that skill is allowed.
 
 Consequences:
 
-- **Fixed model load.** Background load is one observe call per admitted screen change or one-minute freshness refresh, plus at most one tick attempt per 30 s when fresh observations arrive for enabled signals (otherwise the regular interval is ~90 s), however many skills are enabled. A chat-made skill adds a few prompt tokens to the tick, not a model call.
+- **Bounded model load.** One observe call per admitted screen change or freshness refresh, at most six short signal checks per minute with fresh evidence, and history rollups at the configured interval (at least 30 seconds apart). Adding skills adds questions to the shared signal call, not separate requests. All calls retain the existing gateway concurrency and background serialization; an already-running request can still delay a check.
 - **Predictable triggers.** Given the same readings, the same rules fire. That makes the demo predictable and the evaluator unit-testable without a model.
 - **Expressive without core changes.** Any new question a user wants answered becomes a signal. The core schema never changes.
 
@@ -85,7 +85,7 @@ GNOME Xorg :1 ──────────────────────
 | Process | What runs | Cadence |
 |---|---|---|
 | `daybookd` | **sense:** the privacy gate, change detection, observe calls | polls every 5 s; at most one model observe per 10 s; immediately on app switch |
-| | **mind:** the tick (rollup + signals), then `skills.react` | fresh observations with enabled signals; otherwise every 90 s or 20 s after an app switch; at least 30 s apart; only with fresh evidence |
+| | **mind:** independent signal checks and history rollups | signals: fresh evidence, at least 10 s between attempts; history: every 90 s (30 s demo) or 20 s after an app switch, at least 30 s apart |
 | | **web:** FastAPI with Server-Sent Events (SSE) and the static UI | on request |
 | `daybook.shell` | Qt: tray icon and fullscreen or speech-bubble overlays. It's a stateless view of `daybookd` events | event-driven |
 | `mpv --idle` | music playback over a JSON IPC socket | event-driven |
@@ -133,14 +133,15 @@ Every model call goes through `ModelGateway.call(priority, prompt)`. `ModelConfi
 | Call | Made by | Input | Effort | Latency | Rate cap |
 |---|---|---|---|---|---|
 | observe | sense | 1 image (1280 px JPEG, q80) + window facts and active evidence questions (up to 12) | none; 400-token completion cap | ~3 s target; measure with active questions | 6/min |
-| tick | mind | text, 1.5–3K tokens; output schema built from the active signals | none, or low if quality needs it | 2–4 s | 2/min |
+| signal check | mind | current screen facts and active questions, typed values only | none; 512-token completion cap | not yet measured live | 6/min |
+| history tick | mind | text, 1.5–3K tokens; chronological activity groups | configured none or low; 4096-token cap | not yet measured separately | 2/min |
 | route | chat | ~300 tokens | none | ~1 s | on demand |
 | recall | chat | up to 8K tokens of notes and totals | none | 4–10 s | on demand |
 | upcoming scan | mind | text: dated notes from the last recorded tick | none; 600-token completion cap | ~2 s | at most once per tick, only for notes with a date |
 | remember | chat | the user's message | none; 600-token completion cap | ~2 s | on demand |
 | draft skill | chat | format guide, catalog, supported plan examples, and recent notes with the Upcoming list | low; 2000-token completion cap including reasoning | 12.8–25.4 s development; 9.2–32.0 s independent heldouts on the selected generator | on demand |
 
-**Background budget:** the normal cadence targets up to six observations and two ticks per minute. App switches and capture resumption can bypass sense's ten-second spacing; this is not a hard gateway rate limit. Raising concurrency changes admission capacity, not those scheduling rules. With the GX10 limit of two, one background request leaves capacity for chat; if interactive work fills every slot, new work waits for a slot and follows the fairness rule. The eight-background-calls-per-minute acceptance is measured during normal use, not inferred from the concurrency limit.
+**Background budget:** the normal cadence permits up to six observations, six short signal checks, and two history ticks per minute. App switches and capture resumption can bypass sense's ten-second spacing; this is not a hard gateway rate limit. Raising concurrency changes admission capacity, not those scheduling rules. With the GX10 limit of two, one background request leaves capacity for chat; if interactive work fills every slot, new work waits for a slot and follows the fairness rule. The former eight-background-calls-per-minute target predates the separate signal pass; validate the new workload and latency before deployment.
 
 **Backend configuration:** change `[model]` in `daybook.toml` (`base_url`, `model`, `api_key_file`, `dialect`, `max_concurrency`). The dialect (`ollama`, `vllm`, or `openai`) controls reasoning effort and JSON-schema request spelling. For vLLM, effort `none` sends `chat_template_kwargs.enable_thinking = false`; `low` enables thinking and sends top-level `reasoning_effort = low`. Completion caps include reasoning and output. The existing activity-call caps and effort `none` passed the Qwen3.8 transport and fixed activity checks. Skill drafting separately uses `low` with the unchanged 2000-token completion cap; its measured latency includes reasoning, and the earlier ~6 s no-reasoning caller smoke test is not representative of this planner. Those checks do not establish skill-planning correctness; the separate generator assessment is recorded in the adoption decision.
 
@@ -185,7 +186,7 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 - **Fixed observation retention:** the app uses a rolling **30-day** window. It prunes before starting capture/model work and checks every **60 seconds** while running, including while capture is paused. Thus expiration is enforced on startup and within a minute during normal operation. Cleanup uses the existing secure-delete/WAL-checkpoint path. Chat history is unchanged; this limit is for observations and the summaries derived from removed observations, not skill definitions, firing logs, or independently entered deadlines.
 
 - **sense:** `add_observation`, `extend_observation`, `trim_after(t)` (when going away or after a failed observe), `set_capture_state` (idempotent). `trim_after(t)` deletes every observation that started after `t` (with its FTS rows), cuts the one spanning `t` back to `t`, deletes signal readings and ticks after `t`, deletes segments left with no observations, and closes the open segment so resumed work starts a new one, all in one transaction. Firings are kept: they record effects that really happened, and a streak that restarts after the trim gets a new occurrence key.
-- **mind:** `record_tick` (one transaction for all ordered groups and readings; idempotent; rejects an invalid partition, stale or already assigned member, or a result started before the last forget) and `close_open_segment`.
+- **mind:** `record_tick` (one transaction for ordered history groups; idempotent; rejects invalid partitions, stale/already assigned members, or pre-forget work), `record_readings` (signal-only Tick, idempotent and epoch-checked, no history-frontier advance), and `close_open_segment`. Both recording methods publish `TickRecorded`; only signal recording is followed by `skills.react`.
 - **mind, chat, and web:** `add_upcoming(drafts, epoch, *, at)` returns only newly added items; repeats, items whose source note is gone, and results started before the last forget are skipped. `dismiss_upcoming(id)` hides an item.
 - **web, on user request:**
   - `edit_segment` (sets `authored=user`), `edit_observation`
@@ -263,7 +264,7 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
 
 **Question ownership:** app supplies an optional read-only `question_provider: Callable[[], tuple[str, ...]]` to Sense using `SkillBook.active_signals()`; callers without a skill book use the empty default. Book owns active approval state. Sense remembers only the tuple admitted for its last successfully written observation, so a change during HTTP is refreshed on a later eligible poll. Provider reads occur after the privacy and black-thumbnail gates, and again at admission before capture. Source reconciliation failures produce a withheld/discarded observation and retry later; they are never interpreted as a successful empty question set. Failed, stale, or rejected writes never update the remembered tuple.
 
-**Tick evidence readiness:** app passes the public `Sense.evidence_ready(observation_id, questions)` callback into Mind. Before building a tick, at gateway admission, and after inference, Mind requires the same active signal snapshot and a successful observation collected for those still-current questions. This closes the approval/enable race before Sense's next poll without treating every old observation as unusable: extensions and unchanged admitted questions remain valid. The callback is read-only and defaults to ready for standalone Mind callers; Sense retains observation/question identity ownership, with no new journal fields. Source reconciliation failures fail closed and retry later without recording an empty question set. Epoch and capture checks run after the readiness callback because reconciliation can itself invalidate the epoch. A tick rejected before admission consumes no model attempt or thirty-second cooldown; admitted requests retain the existing spacing.
+**Tick evidence readiness:** app passes the public `Sense.evidence_ready(observation_id, questions)` callback into Mind. Before building a tick, at gateway admission, and after inference, Mind requires the same active signal snapshot and a successful observation collected for those still-current questions. This closes the approval/enable race before Sense's next poll without treating every old observation as unusable: extensions and unchanged admitted questions remain valid. The callback is read-only and defaults to ready for standalone Mind callers; Sense retains observation/question identity ownership, with no new journal fields. Source reconciliation failures fail closed and retry later without recording an empty question set. Epoch and capture checks run after the readiness callback because reconciliation can itself invalidate the epoch. A request rejected before admission consumes no model attempt or cooldown; admitted signal checks retain 10-second spacing and history ticks retain 30-second spacing.
 
 **Default exclusions:**
 
@@ -299,10 +300,10 @@ Our fullscreen overlay is recognized by `_NET_WM_PID` matching the shell process
 
 **Schedule:**
 
-- Fresh observations request an immediate tick when there are enabled skill signals, including browser tab changes and resumed capture. Repeated observations coalesce without postponing a pending check. With no enabled signals, the regular schedule remains every 90 s (30 s in demo mode, `tick_interval` in `daybook.toml`), or 20 s after an app switch (or after an overlay is dismissed).
-- Ticks are never less than 30 s apart.
-- A tick runs only when there is new evidence since the last tick: either new unassigned observations, or the latest observation was extended (the user is still there on an unchanged screen). No new evidence (locked, paused, withheld, fullscreen overlay up, or away) means no tick, no readings, and no firings.
-- When there are no new observations, the tick still answers every signal and writes readings, but makes no segment decision. That keeps `is … for` streaks and `every` triggers working while someone reads or types on a still screen.
+- Separate owned tasks run signal checks and history grouping. Cancellation of Mind cancels and awaits both tasks. Each has its own lock and attempt clock.
+- Signal checks poll for new privacy-admitted evidence once per second, with at least 10 seconds between admitted attempts. They use current facts and the active questions only, never historical summaries. Paused, withheld, locked, away, or fullscreen-overlay capture produces no check. Same-screen extensions can sustain held-state and timer rules. Repeated identical evidence is not recorded twice.
+- History keeps the configured interval (90 s default, 30 s demo), or 20 s after an app switch/resume nudge, with at least 30 s between attempts. Signal checks never consume or advance the history evidence frontier.
+- The debug `tick_now` checks skills first, then requests a history update, returning the signal tick when present. Automatic reactions never wait for this history update.
 - After a gap longer than 5 minutes, the open segment is closed once pending observations before that gap have been assigned. Bounded batches preserve continuity on each side without joining activity across the gap.
 
 **Tick prompt** (text only, ~1.5–3K tokens):
@@ -311,9 +312,9 @@ Our fullscreen overlay is recognized by `_NET_WM_PID` matching the shell process
 - `portal.context(last 30 min, detail="segments")` for continuity
 - the open segment and its last 3 observations
 - the new observations, with times and window facts, or, if there are none, a note that the screen has stayed the same since `<time>`
-- one line per active question, for example `break.focused (bool): Is the user doing sustained, focused work …?`. Enum lines list each value with its description
+- no active question lines: those belong to the separate 512-token signal prompt, which lists each question, type, numeric bounds, and enum meanings
 
-The output model is built per tick from the active questions and admitted observation IDs. It contains `segments` (ordered groups with observation IDs, mode, title, kind, and intent) and `signals`. Each batch includes at most eight observations and 5,000 characters of new evidence, with a 4,096-token completion cap. Later observations stay unassigned for the next batch. For journals written by older versions, an unassigned observation already consumed by a committed tick remains outside the retry backlog until its evidence extends beyond that frontier; existing readings and firings are preserved. Such consumed legacy observations also do not delay gap closure. Invalid partitions in the current format never consume a frontier and remain retryable. The schema constrains each signal's type and allowed observation IDs; an exact ordered-partition validator uses the gateway's normal repair retry for omissions, duplicates, or reordering. Signals always answer the latest CURRENT evidence, including when the rollup is processing an older bounded batch.
+The history output model is built from admitted observation IDs. It contains `segments` (ordered groups with observation IDs, mode, title, kind, and intent) and an empty `signals` object. Each batch includes at most eight observations and 5,000 characters of new evidence, with a 4,096-token completion cap. Later observations stay unassigned for the next batch. For journals written by older versions, an unassigned observation already consumed by a committed tick remains outside the retry backlog until its evidence extends beyond that frontier; existing readings and firings are preserved. Such consumed legacy observations also do not delay gap closure. Invalid partitions in the current format never consume a frontier and remain retryable. The schema constrains allowed observation IDs; an exact ordered-partition validator uses the gateway's normal repair retry for omissions, duplicates, or reordering. The separate signal schema constrains each active value and always uses current evidence, even while history processes an older batch.
 
 `parse_tick` is pure:
 
@@ -322,9 +323,9 @@ The output model is built per tick from the active questions and admitted observ
 - extra signal keys are ignored
 - an invalid segment partition raises a validation error instead of silently consuming evidence
 
-Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
+History calls `journal.record_tick(...)` only. Signal checks call `journal.record_readings(...)`, then the existing `skills.react(recorded)` with approval, capture-gap, and firing-claim checks unchanged. Signal evidence is revalidated before admission and after the model returns; edits, deletion, pause/resume, forget, replaced observations, and changes to a shown Upcoming list discard stale answers.
 
-**Upcoming facts in the tick.** Only when an active skill declares `reads: [upcoming]` (see [skills.md](skills.md#reading-the-upcoming-list)), the user message adds up to five Upcoming items, each rendered by `UpcomingItem.describe(at)` as "CSE 130 Assignment 3 (due in 2 h 10 min)", and marks that skill's question lines `[reads Upcoming]`. The list is labelled as current facts with code-computed times; marked questions combine it with CURRENT evidence, and every other question still uses CURRENT evidence only. With no such skill, the prompt is unchanged. The model never subtracts times. If the shown items change before the answer is recorded (for example, the user dismisses one), the tick is discarded like any other stale result.
+**Upcoming facts in signal checks.** Only when an active skill declares `reads: [upcoming]` (see [skills.md](skills.md#reading-the-upcoming-list)), the user message adds up to five Upcoming items, each rendered by `UpcomingItem.describe(at)` as "CSE 130 Assignment 3 (due in 2 h 10 min)", and marks that skill's question lines `[reads Upcoming]`. The list is labelled as current facts with code-computed times; marked questions combine it with CURRENT evidence, and every other question still uses CURRENT evidence only. With no such skill, the prompt is unchanged. The model never subtracts times. If the shown items change before the answer is recorded (for example, the user dismisses one), the tick is discarded like any other stale result.
 
 **Upcoming scan.** With `upcoming = true` (the default), after a recorded tick, the run loop scans that tick's new notes outside the tick lock, so a scan never delays a tick or a **Tick now** response. A note costs a call only if its text names a date or a countdown (a month, weekday, today/tonight/tomorrow, next week, a numeric date, "due in 3 days", "30 minutes left", "due in 1 month"; a clock time or the word "deadline" alone doesn't count) and the same text wasn't already scanned that local day ("tomorrow" means a different date on a later day). One TICK-priority call extracts items as local `YYYY-MM-DDTHH:MM` with the source note ID (constrained to the supplied IDs); code converts them with the system time zone's rules for that date and keeps only items in the next 60 days. Failures skip that batch. Observe is unchanged: on a calendar event popup, its notes already keep the title, date, and time. A standing date question for observe was tried and dropped, because it changed every note and one of two recorded-scenario runs with it scored lower.
 

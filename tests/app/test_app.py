@@ -340,6 +340,11 @@ async def test_concrete_replay_composes_owners_and_never_starts_real_effects(
         assert gateway.priorities == [daybook.model.Priority.OBSERVE]
         gateway.replies.append(
             json.dumps(
+                {str(signal.id): None for signal in services.skills.active_signals()}
+            )
+        )
+        gateway.replies.append(
+            json.dumps(
                 {
                     "segments": [
                         {
@@ -352,10 +357,7 @@ async def test_concrete_replay_composes_owners_and_never_starts_real_effects(
                             "observations": [observation.id],
                         }
                     ],
-                    "signals": {
-                        str(signal.id): None
-                        for signal in services.skills.active_signals()
-                    },
+                    "signals": {},
                 }
             )
         )
@@ -1234,10 +1236,16 @@ async def test_newly_approved_questions_wait_for_fresh_observation_before_tick(
                     else "An editor displays source code."
                 )
                 self.replies.append(json.dumps({"seen": seen, "visible_text": ""}))
+            elif built.output.__name__ == "TickSignals":
+                self.replies.append(
+                    json.dumps(
+                        {
+                            str(s.id): "result is marked complete" in built.user
+                            for s in services.skills.active_signals()
+                        }
+                    )
+                )
             else:
-                current = built.user.split("CURRENT evidence;", 1)[1].split(
-                    "Questions about CURRENT evidence;", 1
-                )[0]
                 self.replies.append(
                     json.dumps(
                         {
@@ -1254,10 +1262,7 @@ async def test_newly_approved_questions_wait_for_fresh_observation_before_tick(
                                     ),
                                 }
                             ],
-                            "signals": {
-                                str(s.id): "result is marked complete" in current
-                                for s in services.skills.active_signals()
-                            },
+                            "signals": {},
                         }
                     )
                 )
@@ -1361,7 +1366,11 @@ async def test_question_disable_discards_queued_or_inflight_public_tick(
                 group["observations"] = re.findall(
                     r"^([0-9a-f]{32}) ", built.user, re.M
                 )
-            self.replies[0] = json.dumps(answer)
+            self.replies[0] = json.dumps(
+                answer["signals"]
+                if built.output.__name__ == "TickSignals"
+                else {**answer, "signals": {}}
+            )
             return await super().call(priority, built)
 
     answer = json.dumps(
@@ -1381,7 +1390,12 @@ async def test_question_disable_discards_queued_or_inflight_public_tick(
         }
     )
     gateway = HeldTickGateway(
-        ['{"seen":"The visible result is complete.","visible_text":""}', answer, answer]
+        [
+            '{"seen":"The visible result is complete.","visible_text":""}',
+            answer,
+            answer,
+            answer,
+        ]
     )
     monkeypatch.setattr(daybook.model, "ModelGateway", lambda _: gateway)
     text = (

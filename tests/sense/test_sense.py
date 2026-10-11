@@ -710,7 +710,7 @@ async def test_sense_resume_mind_cadence(
             if initial_tick:
                 assert await mind.tick_now()
             with pytest.raises(asyncio.CancelledError):
-                await mind.run()
+                await mind._runner.run()
         assert ticks == ([0, expected_tick] if initial_tick else [expected_tick])
         assert len(observe_gateway.prompts) == len(expected_observations)
         assert [

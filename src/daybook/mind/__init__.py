@@ -49,6 +49,7 @@ class Mind:
         upcoming: bool = False,
     ) -> None:
         from ._runner import Runner
+        from ._signals import SignalRunner
 
         self._runner = Runner(
             journal,
@@ -62,14 +63,27 @@ class Mind:
             upcoming,
         )
 
+        self._signals = SignalRunner(self._runner)
+
     async def run(self) -> None:
-        await self._runner.run()
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(self._signals.run())
+            tasks.create_task(self._runner.run())
 
     def nudge(self, app_switched: bool = False) -> None:
         self._runner.nudge(app_switched)
 
     async def tick_now(self) -> Tick | None:
-        return await self._runner.tick_now()
+        # The explicit debug action checks skills first, then updates history.
+        try:
+            active = bool(self._runner.skills.active_signals())
+        except Exception:
+            return None
+        readings = await self._signals.check_now()
+        if active and readings is None:
+            return None
+        history = await self._runner.tick_now()
+        return readings or history
 
     async def scan_upcoming(self) -> None:
         """Extract Upcoming items from notes of recorded ticks (run() does this)."""

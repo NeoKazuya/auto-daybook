@@ -373,9 +373,9 @@ async def test_tick_shows_upcoming_facts_only_to_skills_that_read_them(journal):
         journal.epoch,
         at=NOW,
     )
-    plain = IdGateway([tick_reply({"music.focused": False})], source.id)
+    plain = ScriptedGateway([json.dumps({"music.focused": False})])
     mind = Mind(journal, plain, cast(SkillBook, Book((PLAIN,))), clock=lambda: NOW)
-    assert await mind.tick_now()
+    assert await mind._signals.check_now()
     assert "Upcoming" not in plain.prompts[0].user
 
     # The screen is unchanged since the first tick, so no segments.
@@ -383,8 +383,8 @@ async def test_tick_shows_upcoming_facts_only_to_skills_that_read_them(journal):
         [
             json.dumps(
                 {
-                    "segments": [],
-                    "signals": {"music.focused": False, "nudge.drifting": True},
+                    "music.focused": False,
+                    "nudge.drifting": True,
                 }
             )
         ]
@@ -397,7 +397,7 @@ async def test_tick_shows_upcoming_facts_only_to_skills_that_read_them(journal):
         cast(SkillBook, Book((PLAIN, DRIFT))),
         clock=lambda: clock,
     )
-    await mind.tick_now()
+    await mind._signals.check_now()
     user = reading.prompts[0].user
     assert "- CSE 130 Assignment 3 (due in 2 h 9 min)" in user
     assert "nudge.drifting (bool) [reads Upcoming]: Off task?" in user
@@ -687,13 +687,13 @@ class DismissingGateway(ScriptedGateway):
 
 async def test_dismissal_during_a_tick_discards_its_upcoming_readings(journal):
     journal.set_capture_state("running", NOW)
-    source = note(journal, "YouTube video playing", title="YouTube")
+    note(journal, "YouTube video playing", title="YouTube")
     [item] = journal.add_upcoming(
         [UpcomingDraft("CSE 130 Assignment 3", NOW + timedelta(hours=2))],
         journal.epoch,
         at=NOW,
     )
-    reply = tick_reply({"nudge.drifting": True}).replace("$id", source.id)
+    reply = json.dumps({"nudge.drifting": True})
     book = Book((DRIFT,))
     gateway = DismissingGateway([reply], journal, item.id)
     mind = Mind(journal, gateway, cast(SkillBook, book), clock=lambda: NOW)
@@ -728,13 +728,13 @@ class RevivingGateway(ScriptedGateway):
 
 async def test_revived_item_with_new_details_also_discards_the_tick(journal):
     journal.set_capture_state("running", NOW)
-    source = note(journal, "YouTube video playing", title="YouTube")
+    note(journal, "YouTube video playing", title="YouTube")
     [item] = journal.add_upcoming(
         [UpcomingDraft("CSE 130 Assignment 3", NOW + timedelta(hours=2))],
         journal.epoch,
         at=NOW,
     )
-    reply = tick_reply({"nudge.drifting": True}).replace("$id", source.id)
+    reply = json.dumps({"nudge.drifting": True})
     book = Book((DRIFT,))
     gateway = RevivingGateway([reply], journal, item.id)
     mind = Mind(journal, gateway, cast(SkillBook, book), clock=lambda: NOW)

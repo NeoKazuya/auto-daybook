@@ -170,7 +170,7 @@ async def test_invalid_partition_uses_gateway_repair_before_commit(tmp_path):
     )
     try:
         tick = await Mind(journal, gateway, book, clock=lambda: at).tick_now()
-        assert tick and len(requests) == 2 and book.fired == [tick]
+        assert tick and len(requests) == 2 and book.fired == []
         assert "Validation errors" in requests[1]["messages"][0]["content"]
         observation = journal.portal.now().observation
         assert observation and observation.segment is not None

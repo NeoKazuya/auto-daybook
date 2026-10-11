@@ -20,7 +20,8 @@ from daybook.journal import (
     TimeRange,
     WindowInfo,
 )
-from daybook.mind import Mind, parse_tick
+from daybook.mind import Mind as _Mind
+from daybook.mind import parse_tick
 from daybook.model import (
     ModelConfig,
     ModelGateway,
@@ -32,6 +33,28 @@ from daybook.model import (
 from daybook.skills import Signal, SkillBook
 
 
+class Mind(_Mind):
+    """Exercise history scheduling in isolation from the separate skill loop."""
+
+    async def tick_now(self):
+        return await self._runner.tick_now()
+
+    async def run(self):
+        await self._runner.run()
+
+
+class RecordingJournal(Journal):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.recorded = []
+
+    def record_tick(self, tick):
+        accepted = super().record_tick(tick)
+        if accepted:
+            self.recorded.append(tick)
+        return accepted
+
+
 class BatchGateway(ScriptedGateway):
     async def call(self, priority, prompt):
         built = await prompt() if callable(prompt) else prompt
@@ -39,6 +62,7 @@ class BatchGateway(ScriptedGateway):
             return None
         if self.replies and isinstance(self.replies[0], str):
             answer = json.loads(self.replies[0])
+            answer["signals"] = {}
             for group in answer.get("segments", []):
                 if group["observations"] == ["$batch"]:
                     group["observations"] = re.findall(
@@ -153,7 +177,7 @@ class Clock:
 
 @pytest.fixture
 def runtime(tmp_path):
-    journal = Journal(tmp_path / "journal.db", Bus())
+    journal = RecordingJournal(tmp_path / "journal.db", Bus())
     clock = Clock()
     journal.set_capture_state("running", clock())
     observation = journal.add_observation(
@@ -183,7 +207,7 @@ async def test_scripted_full_tick_then_still_screen_readings(runtime):
     first = await mind.tick_now()
     assert first and isinstance(first.segments[0].decision, Start)
     assert journal.portal.now().segment
-    assert skills.fired == [first]
+    assert journal.recorded == [first]
     assert gateway.priorities == [Priority.TICK]
     assert not gateway.prompts[0].images
     assert await mind.tick_now() is None
@@ -197,7 +221,7 @@ async def test_scripted_full_tick_then_still_screen_readings(runtime):
                 SIGNALS[0].id, TimeRange(NOW, clock() + timedelta(seconds=1))
             )
         )
-        == 2
+        == 0
     )
     assert "screen has stayed the same" in gateway.prompts[1].user
 
@@ -210,36 +234,16 @@ async def test_schedule_debounce_spacing_and_evidence(runtime):
         clock.advance(seconds)
         if clock().second != NOW.second:
             journal.extend_observation(observation.id, clock())
-        if len(skills.fired) >= 2:
+        if len(journal.recorded) >= 2:
             raise asyncio.CancelledError
 
     mind = Mind(journal, gateway, skills, tick_interval=90, clock=clock, sleep=sleep)
     mind.nudge(app_switched=True)
     with pytest.raises(asyncio.CancelledError):
         await mind.run()
-    assert skills.fired[0].at == NOW
-    assert skills.fired[1].at == NOW + timedelta(seconds=90)
-    assert (skills.fired[1].at - skills.fired[0].at).total_seconds() >= 30
-    assert len(gateway.prompts) == 2
-
-
-async def test_fresh_browser_observations_check_skills_without_periodic_wait(runtime):
-    journal, clock, observation, skills = runtime
-    gateway = BatchGateway([reply(), reply(None)])
-
-    async def sleep(seconds: float) -> None:
-        clock.advance(seconds)
-        journal.extend_observation(observation.id, clock())
-        # Repeated fresh evidence must not postpone an already requested check.
-        mind.nudge(app_switched=False)
-        if len(skills.fired) >= 2 or clock() >= NOW + timedelta(seconds=35):
-            raise asyncio.CancelledError
-
-    mind = Mind(journal, gateway, skills, tick_interval=90, clock=clock, sleep=sleep)
-    mind.nudge(app_switched=False)
-    with pytest.raises(asyncio.CancelledError):
-        await mind.run()
-    assert [tick.at for tick in skills.fired] == [NOW, NOW + timedelta(seconds=30)]
+    assert journal.recorded[0].at == NOW + timedelta(seconds=20)
+    assert journal.recorded[1].at == NOW + timedelta(seconds=110)
+    assert (journal.recorded[1].at - journal.recorded[0].at).total_seconds() >= 30
     assert len(gateway.prompts) == 2
 
 
@@ -267,7 +271,7 @@ async def test_stale_epoch_drops_tick_and_no_reaction(runtime):
     gateway = ForgetGateway([reply()])
     mind = Mind(journal, gateway, skills, clock=clock)
     assert await mind.tick_now() is None
-    assert not skills.fired
+    assert not journal.recorded
     assert not journal.portal.now().readings
 
 
@@ -318,16 +322,16 @@ async def test_app_switch_nudge_during_model_call_is_preserved(runtime):
     async def sleep(seconds: float) -> None:
         clock.advance(seconds)
         journal.extend_observation(observation.id, clock())
-        if len(skills.fired) >= 2:
+        if len(journal.recorded) >= 2:
             raise asyncio.CancelledError
 
     mind = Mind(journal, gateway, skills, clock=clock, sleep=sleep)
     mind.nudge(app_switched=True)
     with pytest.raises(asyncio.CancelledError):
         await mind.run()
-    assert [tick.at for tick in skills.fired] == [
-        NOW,
-        NOW + timedelta(seconds=30),
+    assert [tick.at for tick in journal.recorded] == [
+        NOW + timedelta(seconds=20),
+        NOW + timedelta(seconds=50),
     ]
 
 
@@ -466,13 +470,13 @@ async def test_periodic_cadence_counts_from_call_start_not_finish(runtime):
     async def sleep(seconds: float) -> None:
         clock.advance(seconds)
         journal.extend_observation(observation.id, clock())
-        if len(skills.fired) == 2:
+        if len(journal.recorded) == 2:
             raise asyncio.CancelledError
 
     mind = Mind(journal, gateway, skills, 30, clock=clock, sleep=sleep)
     with pytest.raises(asyncio.CancelledError):
         await mind.run()
-    assert [tick.at for tick in skills.fired] == [
+    assert [tick.at for tick in journal.recorded] == [
         NOW + timedelta(seconds=30),
         NOW + timedelta(seconds=60),
     ]
@@ -534,7 +538,7 @@ async def test_resume_waits_for_fresh_observation_before_readings_and_actions(ru
     mind = Mind(journal, gateway, skills, clock=clock)
     # Sense publishes running before its asynchronous observation finishes.
     assert await mind.tick_now() is None
-    assert not gateway.prompts and not skills.fired
+    assert not gateway.prompts and not journal.recorded
     assert not journal.portal.now().readings
     after = journal.add_observation(
         ObservationDraft(
@@ -561,7 +565,7 @@ async def test_in_flight_tick_is_discarded_after_pause_and_resume(runtime):
     gateway = ResumeGateway([reply()])
     mind = Mind(journal, gateway, skills, clock=clock)
     assert await mind.tick_now() is None
-    assert not skills.fired and not journal.portal.now().readings
+    assert not journal.recorded and not journal.portal.now().readings
     assert journal.portal.latest_tick_evidence_until() is None
 
 
@@ -649,7 +653,9 @@ async def test_queued_tick_rejects_replaced_current_but_keeps_extensions(
         else:
             tick_started.set()
             await release_tick.wait()
-            content = reply(ids=(observation.id,))
+            content = json.dumps(
+                {**json.loads(reply(ids=(observation.id,))), "signals": {}}
+            )
         return httpx.Response(
             200, json={"choices": [{"message": {"content": content}}]}
         )
@@ -689,11 +695,11 @@ async def test_queued_tick_rejects_replaced_current_but_keeps_extensions(
         if changed_id:
             assert not tick_started.is_set()  # Rejected before HTTP admission.
             assert tick is None
-            assert not skills.fired
+            assert not journal.recorded
             assert not journal.portal.now().readings
             assert journal.portal.now().segment is None
         else:
-            assert tick and skills.fired == [tick]
+            assert tick and journal.recorded == [tick]
             assert journal.portal.now().segment
     finally:
         release_observe.set()
@@ -725,7 +731,7 @@ async def test_evidence_readiness_failure_recovers_without_consuming_attempt(
     gateway = BatchGateway([reply()])
     mind = Mind(journal, gateway, skills, clock=clock, evidence_ready=ready)
     assert await mind.tick_now() is None
-    assert not gateway.prompts and not skills.fired
+    assert not gateway.prompts and not journal.recorded
     unavailable[0] = False
     assert await mind.tick_now() is not None  # Same clock; no wasted 30 s cooldown.
     assert len(gateway.prompts) == 1
@@ -748,7 +754,7 @@ async def test_evidence_callback_epoch_change_is_checked_after_callback(
     mind = Mind(journal, gateway, skills, clock=clock, evidence_ready=ready)
     assert await mind.tick_now() is None
     assert len(gateway.prompts) == (0 if reconcile_call == 2 else 1)
-    assert not skills.fired and not journal.portal.now().readings
+    assert not journal.recorded and not journal.portal.now().readings
     assert journal.portal.latest_tick_evidence_until() is None
 
 
@@ -809,7 +815,7 @@ async def test_bounded_pre_gap_backlog_keeps_one_segment_until_drained(runtime, 
 
     async def sleep(seconds: float) -> None:
         clock.advance(seconds)
-        if len(skills.fired) >= 3:
+        if len(journal.recorded) >= 3:
             raise asyncio.CancelledError
 
     mind = Mind(journal, gateway, skills, tick_interval=30, clock=clock, sleep=sleep)
@@ -821,10 +827,10 @@ async def test_bounded_pre_gap_backlog_keeps_one_segment_until_drained(runtime, 
             assert await mind.tick_now()
             clock.advance(30)
 
-    assert [len(tick.observations) for tick in skills.fired] == [8, 1, 1]
-    assert [id for tick in skills.fired for id in tick.observations] == before_ids + [
-        after.id
-    ]
+    assert [len(tick.observations) for tick in journal.recorded] == [8, 1, 1]
+    assert [
+        id for tick in journal.recorded for id in tick.observations
+    ] == before_ids + [after.id]
     segments = journal.portal.segments(TimeRange(NOW, clock() + timedelta(seconds=1)))
     assert [
         tuple(note.id for note in segment.observations) for segment in segments
@@ -904,7 +910,7 @@ async def test_legacy_consumed_unassigned_frontier_does_not_block_new_batch(runt
     mind = Mind(journal, gateway, skills, clock=clock)
     current = await mind.tick_now()
     assert current and current.observations == (notes[-1].id,)
-    assert skills.fired == [current]
+    assert journal.recorded == [old_tick, current]
     assert (
         journal.portal.readings(
             SIGNALS[0].id, TimeRange(NOW, clock() + timedelta(seconds=1))

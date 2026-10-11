@@ -65,6 +65,7 @@ class Sense:
         self._last_thumb: bytes | None = None
         self._last_window = None
         self._pending_window = False
+        self._pending_overlay_resume = False
         self._switch = 0
         self._notified_switch = 0
         self._last_request: datetime | None = None
@@ -94,6 +95,7 @@ class Sense:
         temporary.replace(path)
         self._privacy = settings
         self._generation += 1
+        self._pending_overlay_resume = False
         self.gateway.drop_observe()
         self._continuity += 1
         self._observation = None
@@ -119,6 +121,7 @@ class Sense:
         self._observation = None
         self._last_thumb = None
         self._last_window = None
+        self._pending_overlay_resume = state == "overlay"
         self._state(state, at)
 
     def _failed(
@@ -308,7 +311,9 @@ class Sense:
             self.journal.extend_observation(observation.id, self._last_poll)
         if app_switched:
             self._notified_switch = max(self._notified_switch, switch)
-        self.nudge(app_switched)
+        # Retry failures retain this trigger, but privacy gaps clear it.
+        self.nudge(app_switched or self._pending_overlay_resume)
+        self._pending_overlay_resume = False
 
     async def wait_idle(self) -> None:
         """Wait for scheduled observations; useful after a single explicit poll."""

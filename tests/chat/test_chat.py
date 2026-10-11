@@ -274,3 +274,53 @@ async def test_gap_only_conjunction_stays_no_notes_when_model_unavailable(messag
     assert "don't have notes" in reply.text
     assert not reply.cites
     assert not gateway.prompts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("relation", ["except", "besides"])
+async def test_gap_exclusions_keep_recorded_notes(relation):
+    gateway = ScriptedGateway(
+        ['{"text":"You fixed imports for 10 min.","cites":["s1"]}']
+    )
+    reply = (
+        await Notes()
+        .chat(gateway)
+        .respond(f"/ask what did I do {relation} during the paused period?")
+    )
+    assert isinstance(reply, Answer)
+    assert reply.cites == ("s1",)
+    assert len(gateway.prompts) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("modifier", ["earlier", "later", "preceding", "following"])
+@pytest.mark.parametrize("gap", ["paused period", "private stretch"])
+async def test_gap_modifiers_do_not_request_outside_notes(modifier, gap):
+    gateway = ScriptedGateway([ModelUnavailable()])
+    reply = (
+        await Notes()
+        .chat(gateway)
+        .respond(f"/ask what did I do during the {modifier} {gap}?")
+    )
+    assert isinstance(reply, Answer)
+    assert "don't have notes" in reply.text
+    assert not reply.cites
+    assert not gateway.prompts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what did I do during the paused period and then?",
+        "what did I do earlier and during the paused period?",
+        "what did I do following the earlier paused period?",
+    ],
+)
+async def test_gap_sequence_keeps_recorded_notes(question):
+    gateway = ScriptedGateway(
+        ['{"text":"You fixed imports for 10 min.","cites":["s1"]}']
+    )
+    reply = await Notes().chat(gateway).respond("/ask " + question)
+    assert isinstance(reply, Answer)
+    assert reply.cites == ("s1",)

@@ -73,3 +73,26 @@ in ARCHITECTURE §11.1. No `CuaDesktop` is shipped.
 The result is a failure of this release in the tested session, not a claim that
 all cua versions fail on Xorg. The existing xdotool/wmctrl/gtk-launch backend
 remains the implementation for the three named desktop actions.
+
+
+## GX10 draft-skill model tuning (2026-10-10)
+
+Draft skills use effort `none` on the installed Qwen3.6:35b/Ollama 0.23.2 backend.
+The original `low` assumption failed measured calls: even with a compact prompt,
+structured plans, and a brief-reasoning instruction, the model spent its entire
+2,000-token output budget on reasoning, returned no answer, and reached the
+40-second gateway timeout. Increasing the input guide was not the cause; the
+structured-plan request used about 2,000 input tokens.
+
+With thinking disabled, the actual public `draft_skill` path produced a valid,
+unapproved meeting-completion reminder in 11.3 seconds, including one bounded
+JSON repair. The signal asks about the present meeting; a `becomes false` rule
+shows the overlay after it ends. Code renders the model's declarative plan as
+`.skill.md`, adds chat provenance, and applies the ordinary parser and approval
+flow. Hooks remain unavailable to generated skills.
+
+This measurement covers generation and saving, not delivery of the review card
+through chat and the UI. Optional timing, additional steps, and capability choices
+can still vary between model outputs and are exposed for review; code preserves
+catalog defaults when optional arguments are omitted. The replay signal-quality
+gate and its tick-only `low` fallback are unchanged.

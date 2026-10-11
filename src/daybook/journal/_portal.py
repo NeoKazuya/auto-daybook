@@ -27,6 +27,16 @@ class Portal:
     def __init__(self, journal: Journal) -> None:
         self._journal = journal
 
+    def latest_tick_evidence_until(self) -> datetime | None:
+        """Read the surviving committed frontier, including ticks without signals."""
+        from ._store import moment
+
+        j = self._journal
+        with j._lock:
+            j._check_open()
+            value = j._db.execute("SELECT MAX(evidence_until) FROM ticks").fetchone()[0]
+            return moment(value) if value is not None else None
+
     def now(self) -> Situation:
         from ._store import moment
 

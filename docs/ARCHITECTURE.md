@@ -132,7 +132,7 @@ Every model call goes through `ModelGateway.call(priority, prompt)`. The gateway
 | tick | mind | text, 1.5–3K tokens; output schema built from the active signals | none, or low if quality needs it | 2–4 s | 2/min |
 | route | chat | ~300 tokens | none | ~1 s | on demand |
 | recall | chat | up to 8K tokens of notes and totals | none | 4–10 s | on demand |
-| draft skill | chat | ~3K tokens (format guide, catalog, examples) | low | 10–20 s | on demand |
+| draft skill | chat | ~3K tokens (format guide, catalog, plan examples) | none | 10–20 s measured on GX10 | on demand |
 
 **Background load:** typically 5–12 model-seconds per minute; at most about 24 when the screen changes constantly. A chat request waits behind at most one call already running (about 3 s).
 

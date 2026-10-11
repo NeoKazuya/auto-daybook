@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 
@@ -16,9 +17,9 @@ GUIDE = """A skill is YAML front matter between --- lines followed by a plain Ma
 Required fields: id ([a-z0-9-]{1,40}), name, signals (1–4), rules (at least one), allow.
 Signals map names to {ask: a concrete question about the present, type: bool | music.mood | {enum: [short, values]} | {number: [min, max]}}. Optional enum describe maps each value to its meaning.
 Rules: {when: trigger, cooldown: positive duration (optional), do: [one-key action argument mappings]}.
-Exactly four triggers: '<signal> updates', '<signal> becomes <value>', '<signal> is <value> for <duration>', 'every <duration>'.
-Durations are positive integer+s/m/h; min_dwell may be 0s. Every action must be listed in allow and match catalog parameters. Arguments may use $signal or $signal.for, including text interpolation.
-Ask about the user's situation now. Let triggers handle time. Do not use Python, hook steps, extra fields, or unlisted actions. Becomes requires a previous known reading, so meeting reminders fire after a meeting rather than on startup.
+Exactly four triggers: '<signal> updates' fires on EVERY known reading (only for continually refreshed actions); '<signal> becomes <value>' fires on the transition from another known value; '<signal> is <value> for <duration>' fires after that value persists; 'every <duration>' is a wall-clock timer. Use becomes for activity completion, never updates. Binary present activities use type bool and true/false values.
+Durations are positive integer+s/m/h; min_dwell may be 0s. Every action must be listed in allow and match catalog parameters. Requested reminders use overlay.show by default; use notify.send when a desktop notification is explicitly requested. Preserve catalog defaults: omit optional action parameters and rule cooldown unless requested or necessary; a new reminder without a requested duration must omit minutes and cooldown. Explicit built-in timings serve their original goals; do not copy them into new reminders. Arguments may use $signal or $signal.for, including text interpolation.
+Ask about the user's situation now. Let triggers handle time. For after/end/finish requests, ask whether the activity is happening now and trigger becomes false (or an enum transition to inactive); never ask whether it recently ended. Do not use Python, hook steps, extra fields, or unlisted actions. Becomes requires a previous known reading, so meeting reminders fire after a meeting rather than on startup.
 """
 
 
@@ -91,10 +92,27 @@ def render(
 async def generate(
     request: str, *, book: SkillBook, gateway: ModelGateway
 ) -> tuple[SkillEntry, str]:
-    examples = "\n\n".join(
-        path.read_text() for path in sorted(book._book.builtin.glob("*.skill.md"))
-    )
-    user = f"Format guide:\n{GUIDE}\nAction catalog:\n{book._book.catalog.describe_for_prompt()}\nBuilt-in examples:\n{examples}\nUser request:\n{request}"
+    examples = []
+    for path in sorted(book._book.builtin.glob("*.skill.md")):
+        front, goal = path.read_text().split("---", 2)[1:]
+        data = yaml.safe_load(front)
+        for rule in data["rules"]:
+            rule["steps"] = [
+                {
+                    "action": action,
+                    "params": {
+                        name: value
+                        for name, value in params.items()
+                        if book._book.catalog.specs[action].parameters[name].required
+                    },
+                }
+                for step in rule.pop("do")
+                for action, params in step.items()
+            ]
+        examples.append(
+            json.dumps({**data, "goal": goal.strip(), "summary": data["name"]})
+        )
+    user = f"The code renders the file; return a JSON instance, never a schema ($defs/properties/type) or YAML/text field. Rule steps use action and params instead of the file format do mappings.\nFormat guide:\n{GUIDE}\nAction catalog:\n{book._book.catalog.describe_for_prompt()}\nBuilt-in plan instances:\n{chr(10).join(examples)}\nUser request:\n{request}\nFor a reminder with no requested duration, params contains title/body only. Use $signal.for only for a held-value trigger, not a becomes edge. Return the instance with no schema fields."
     feedback = ""
     summary = "Draft skill"
     text = ""
@@ -103,10 +121,10 @@ async def generate(
         result = await gateway.call(
             Priority.INTERACTIVE,
             Prompt(
-                system="Choose a small declarative skill plan using the supplied grammar/catalog. Return the structured plan only; code will render YAML. In each rule, steps are action+params objects. Use the fewest questions and rules needed. Reason briefly, then answer. No hook or executable code.",
+                system="Choose a small declarative skill plan using the supplied grammar/catalog. Return the structured plan instance only, never schema definitions; code will render YAML. In each rule, steps are action+params objects. Use the fewest questions and rules needed. Reason briefly, then answer. No hook or executable code.",
                 user=user + feedback,
                 output=Draft,
-                effort="low",
+                effort="none",
                 max_tokens=2000,
             ),
         )

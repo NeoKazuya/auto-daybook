@@ -36,7 +36,6 @@ class Runner:
         self.periodic_due = self.clock() + timedelta(seconds=tick_interval)
         self.switch_due: datetime | None = None
         self.last_attempt: datetime | None = None
-        self.evidence_until: datetime | None = None
         self.lock = asyncio.Lock()
 
     @property
@@ -101,12 +100,13 @@ class Runner:
             portal = self.journal.portal
             situation = portal.now()
             latest = situation.observation
+            committed_until = portal.latest_tick_evidence_until()
             if (
                 situation.capture != "running"
                 or latest is None
                 or (
-                    self.evidence_until is not None
-                    and latest.last_seen_at <= self.evidence_until
+                    committed_until is not None
+                    and latest.last_seen_at <= committed_until
                 )
             ):
                 return None
@@ -199,6 +199,5 @@ class Runner:
             )
             if not self.journal.record_tick(tick):
                 return None
-            self.evidence_until = evidence_until
             await self.skills.react(tick)
             return tick

@@ -76,7 +76,7 @@ async def test_valid_draft_has_provenance_and_needs_review(tmp_path):
     )
     assert summary == "Stand after meetings"
     assert gateway.priorities == [Priority.INTERACTIVE]
-    assert gateway.prompts[0].effort == "low"
+    assert gateway.prompts[0].effort == "none"
     assert "Mood music" in gateway.prompts[0].user
     assert "desktop.focus" in gateway.prompts[0].user
 

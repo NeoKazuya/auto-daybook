@@ -338,3 +338,29 @@ async def test_contiguous_mixed_capture_states_close_five_minute_gap(runtime):
     mind = Mind(journal, ScriptedGateway([]), skills, clock=clock)
     assert await mind.tick_now() is None
     assert journal.portal.now().segment is None
+
+
+async def test_restart_does_not_call_model_for_persisted_evidence_without_signals(
+    runtime,
+):
+    journal, clock, observation, skills = runtime
+    assert journal.record_tick(
+        Tick(
+            clock(),
+            journal.epoch,
+            clock(),
+            (observation.id,),
+            Start("Work", "coding", "Implement"),
+            (),
+        )
+    )
+    clock.advance(30)
+    gateway = ScriptedGateway([reply(), reply()])
+    mind = Mind(journal, gateway, skills, clock=clock)
+    assert await mind.tick_now() is None
+    clock.advance(30)
+    assert await mind.tick_now() is None
+    assert not gateway.prompts
+    journal.extend_observation(observation.id, clock())
+    assert await mind.tick_now()
+    assert len(gateway.prompts) == 1

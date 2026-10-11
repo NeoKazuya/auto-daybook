@@ -367,5 +367,8 @@ async def test_unsupported_skill_explains_capability_without_saving(
         assert not list((tmp_path / "skills").glob("*.skill.md"))
         assert not effects
         assert len(gateway.prompts) == (1 if explicit_command else 2)
+        assert [prompt.effort for prompt in gateway.prompts] == (
+            [] if explicit_command else ["none"]
+        ) + ["low"]
     finally:
         journal.close()

@@ -102,17 +102,24 @@ One limit spans skills, so it's checked when a skill is approved or enabled rath
 
 ## Chat requests and capability limits
 
-Chat can draft reminders from sampled screen notes: visible apps, windows and text,
-and supported inferences about the current task. It uses only the action catalog.
-It cannot hear calls, detect voice tone, read hidden app state, use private app APIs
-or keyboard hooks, intercept Send, or know feelings that have not been expressed.
-Visible-condition reminders can warn while the condition is observed; sampling
-cannot guarantee catching an action before it happens.
+Chat can draft reminders from sampled screen notes: visible apps, windows, text,
+numeric values and UI elements, with supported inferences about the current task.
+Presence or absence can be evidence when the relevant area is sufficiently
+visible. Missing or ambiguous evidence produces an unknown signal reading;
+it does not make the capability unavailable.
 
-If a request needs unavailable evidence or actions, chat explains the limitation
-instead of saving a skill. `draft_skill` raises `UnsupportedSkill` with that
-explanation, and Chat returns a plain response. Supported drafts keep the usual
-review and exact-hash approval flow.
+A warning before an action is a best-effort reminder while its visible condition
+is observed. Sampling cannot guarantee catching a quick action or block it.
+Daybook uses only the action catalog. It cannot hear calls, detect voice tone,
+read hidden app state, use private app APIs or keyboard hooks, intercept actions,
+or know feelings that have not been expressed.
+
+If an essential requested input or action is fundamentally unavailable, chat
+explains the limitation instead of saving a skill. `draft_skill` raises
+`UnsupportedSkill` with that explanation, and Chat returns a plain response.
+Supported drafts keep the usual review and exact-hash approval flow. Skill drafts
+use low reasoning effort to plan combined conditions; other model calls keep
+their existing effort settings.
 
 ## Writing good signals
 

@@ -114,7 +114,8 @@ async def test_valid_draft_has_provenance_and_needs_review(tmp_path):
     )
     assert summary == "Stand after meetings"
     assert gateway.priorities == [Priority.INTERACTIVE]
-    assert gateway.prompts[0].effort == "none"
+    assert gateway.prompts[0].effort == "low"
+    assert gateway.prompts[0].max_tokens == 2000
     assert "Mood music" in gateway.prompts[0].user
     assert "desktop.focus" in gateway.prompts[0].user
     with pytest.raises(NeedsReview):
@@ -137,6 +138,7 @@ async def test_parse_retry_then_invalid_is_saved(tmp_path):
     assert entry.status == "invalid" and entry.errors
     assert len(gateway.prompts) == 2
     assert "rules[0].when" in gateway.prompts[1].user
+    assert all(prompt.effort == "low" for prompt in gateway.prompts)
     assert entry.source.path.exists()
 
 

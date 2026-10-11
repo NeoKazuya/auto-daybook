@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from daybook.events import Bus
 from daybook.journal import (
+    Continue,
     Journal,
     ObservationDraft,
     Start,
@@ -436,3 +437,141 @@ def test_mock_evidence_changes_emit_the_same_narrow_invalidation(mutation):
         operations[mutation]()
         events = [queue.get_nowait() for _ in range(queue.qsize())]
     assert events.count(StatusChanged("journal", "notes_invalidated")) == 1
+
+
+@pytest.mark.parametrize("overlap_midnight", [True, False])
+def test_today_search_dates_hits_at_first_overlapping_evidence(
+    tmp_path, monkeypatch, overlap_midnight
+):
+    from zoneinfo import ZoneInfo
+
+    from daybook.web import _window
+
+    now = datetime(2026, 10, 12, 0, 10, tzinfo=ZoneInfo("Pacific/Kiritimati"))
+    midnight = now.replace(hour=0, minute=0)
+    monkeypatch.setattr(_window, "local_now", lambda: now)
+    journal = Journal(tmp_path / "midnight.db", Bus())
+    previous = add_note(
+        journal,
+        midnight - timedelta(minutes=1),
+        seen="midnight prior",
+        seconds=120 if overlap_midnight else 30,
+    )
+    assert journal.record_tick(
+        Tick(
+            previous.last_seen_at,
+            journal.epoch,
+            previous.last_seen_at,
+            (previous.id,),
+            Start("midnight task", "coding", "Continue the task"),
+            (),
+        )
+    )
+    segment = journal.portal.now().segment
+    assert segment is not None
+    current = add_note(
+        journal, midnight + timedelta(minutes=2), seen="midnight current"
+    )
+    assert journal.record_tick(
+        Tick(
+            current.last_seen_at,
+            journal.epoch,
+            current.last_seen_at,
+            (current.id,),
+            Continue(segment.title, segment.kind, segment.intent),
+            (),
+        )
+    )
+    services = cast(Services, SimpleNamespace(journal=journal, bus=Bus()))
+    try:
+        with TestClient(
+            create_app(
+                services=services, token="test-token", origin="http://testserver"
+            )
+        ) as client:
+            hits = client.get("/api/search", params={"q": "midnight"}).json()["hits"]
+            assert hits
+            assert all(
+                midnight <= datetime.fromisoformat(hit["at"]) < now for hit in hits
+            )
+            segment_hit = next(hit for hit in hits if hit["observation_id"] is None)
+            expected = midnight if overlap_midnight else current.started_at
+            assert datetime.fromisoformat(segment_hit["at"]) == expected
+            assert {hit["segment_id"] for hit in hits} == {segment.id}
+            # Index links by segment ID into today's timeline, not by hit timestamp.
+            timeline = client.get("/api/timeline").json()
+            assert segment.id in {item["id"] for item in timeline["segments"]}
+    finally:
+        journal.close()
+
+
+def test_mock_search_dates_overlapping_hits_within_the_requested_window():
+    from daybook.web._mock import MockAPI
+
+    mock = MockAPI(Bus())
+    segment = mock.timeline.segments[0]
+    note = segment.observations[0]
+    assert segment.started_at is not None
+    start = segment.started_at + timedelta(minutes=1)
+    response = mock.search("journal", start, note.last_seen_at, 50)
+    assert response.hits
+    assert all(hit.at >= start for hit in response.hits)
+
+
+def test_search_cap_bounds_result_materialization_to_matching_window(tmp_path):
+    journal = Journal(tmp_path / "bounded.db", Bus())
+    at = datetime(2026, 10, 11, 12, tzinfo=UTC)
+    for offset in range(80):
+        add_note(
+            journal,
+            at - timedelta(days=30) + timedelta(minutes=offset),
+            seen="bounded search history",
+        )
+    current = [
+        add_note(
+            journal,
+            at + timedelta(seconds=offset),
+            seen="bounded search current",
+            seconds=1,
+        )
+        for offset in range(4)
+    ]
+    calls = []
+
+    original_factory = journal._db.row_factory
+    assert original_factory is not None
+
+    def count_hits(cursor, values):
+        if tuple(column[0] for column in cursor.description) == (
+            "id",
+            "kind",
+            "segment",
+            "text",
+        ):
+            calls.append(values)
+        return original_factory(cursor, values)
+
+    journal._db.row_factory = count_hits
+    services = cast(Services, SimpleNamespace(journal=journal, bus=Bus()))
+    try:
+        with TestClient(
+            create_app(
+                services=services, token="test-token", origin="http://testserver"
+            )
+        ) as client:
+            response = client.get(
+                "/api/search",
+                params={
+                    "q": "bounded",
+                    "limit": 1,
+                    "from": at.isoformat(),
+                    "to": (at + timedelta(minutes=5)).isoformat(),
+                },
+            )
+            assert response.status_code == 200
+            hits = response.json()["hits"]
+            assert len(hits) == 1
+            assert hits[0]["observation_id"] in {note.id for note in current}
+            assert len(calls) == 1
+    finally:
+        journal.close()

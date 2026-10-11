@@ -70,7 +70,16 @@ class MockAPI:
             return w.SearchResponse(hits=[])
         hits: list[w.SearchHit] = []
         for segment in self.get_timeline(window.start, window.end).segments:
-            if segment.started_at is not None and all(
+            observations = [
+                observation
+                for observation in segment.observations
+                if observation.started_at < window.end
+                and (
+                    observation.last_seen_at > window.start
+                    or observation.started_at >= window.start
+                )
+            ]
+            if observations and all(
                 word in (segment.title + " " + segment.intent).casefold()
                 for word in words
             ):
@@ -78,28 +87,23 @@ class MockAPI:
                     w.SearchHit(
                         segment_id=segment.id,
                         observation_id=None,
-                        at=segment.started_at,
+                        at=min(
+                            max(observation.started_at, window.start)
+                            for observation in observations
+                        ),
                         kind=segment.kind,
                         title=segment.title,
                         snippet=segment.title + " " + segment.intent,
                     )
                 )
-            for observation in segment.observations:
-                if not (
-                    observation.started_at < window.end
-                    and (
-                        observation.last_seen_at > window.start
-                        or observation.started_at >= window.start
-                    )
-                ):
-                    continue
+            for observation in observations:
                 snippet = observation.seen + " " + observation.visible_text
                 if all(word in snippet.casefold() for word in words):
                     hits.append(
                         w.SearchHit(
                             segment_id=segment.id,
                             observation_id=observation.id,
-                            at=observation.started_at,
+                            at=max(observation.started_at, window.start),
                             kind=segment.kind,
                             title=segment.title,
                             snippet=snippet,

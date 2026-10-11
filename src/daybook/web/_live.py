@@ -55,16 +55,23 @@ class LiveAPI:
         portal = self.services.journal.portal
         observations = {o.id: o for o in portal.observations(window)}
         segments = {s.id: s for s in portal.segments(window)}
+        first_evidence: dict[str, datetime] = {}
+        for observation in observations.values():
+            if observation.segment is not None:
+                at = max(observation.started_at, window.start)
+                first_evidence[observation.segment] = min(
+                    first_evidence.get(observation.segment, at), at
+                )
         hits: list[w.SearchHit] = []
-        for hit in portal.search(text, window):
+        for hit in portal.search(text, window, limit=limit):
             if hit.kind == "segment":
                 segment = segments.get(hit.id)
-                if segment is None or segment.started_at is None:
+                if segment is None or segment.id not in first_evidence:
                     continue
                 result = w.SearchHit(
                     segment_id=segment.id,
                     observation_id=None,
-                    at=segment.started_at,
+                    at=first_evidence[segment.id],
                     kind=segment.kind,
                     title=segment.title,
                     snippet=hit.text,
@@ -77,7 +84,7 @@ class LiveAPI:
                 result = w.SearchHit(
                     segment_id=observation.segment,
                     observation_id=observation.id,
-                    at=observation.started_at,
+                    at=max(observation.started_at, window.start),
                     kind=segment.kind if segment else None,
                     title=segment.title if segment else observation.window.title,
                     snippet=hit.text,

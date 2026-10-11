@@ -163,6 +163,7 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 **`Portal`** (read-only; used by the UI, recall, the mind, and hooks):
 
 - `now() -> Situation`: capture state, open segment, latest observation, latest reading per signal.
+- `latest_tick_evidence_until() -> datetime | None`: the maximum `evidence_until` among surviving committed ticks, including ticks without signal readings, or `None` when no tick survives. Mind reads this journal-owned frontier before model admission and evidence batching. This is a read-only query with no independent cache, so each read reflects the ticks that remain after forget or trim.
 - `segments(range)`, `observations(range, unassigned_only=False)`, `capture_spans(range)`.
 - `search(text, range=None) -> [Hit]`: FTS5 over observation `seen`, `visible_text`, and title, plus segment title and intent.
 - `totals(range, by="kind"|"title"|"app") -> [Total]`. All duration arithmetic lives here; the model never adds up times.

@@ -56,14 +56,15 @@ async function render(root, params) {
 
   function draw() {
     count.textContent = `${data.segments.length} segments`;
-    if (!data.segments.length && !data.capture_spans.length) {
+    const gaps = data.capture_spans.filter((g) => GAP[g.state]);
+    if (!data.segments.length && !gaps.length) {
       list.replaceChildren(emptyState('calendar', 'No notes yet',
         'Work as usual. Daybook writes a note a few seconds after the screen changes, and groups them into segments here.'));
       return;
     }
     const items = [
       ...data.segments.map((s, i) => ({ at: s.started_at, el: () => segmentEntry(s, i + 1) })),
-      ...data.capture_spans.filter((g) => GAP[g.state]).map((g) => ({ at: g.start, el: () => gapEntry(g) })),
+      ...gaps.map((g) => ({ at: g.start, el: () => gapEntry(g) })),
     ].sort((a, b) => new Date(a.at) - new Date(b.at));
     list.replaceChildren(h('div.leaf', items.map((x) => x.el())));
   }

@@ -55,11 +55,14 @@ const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(reso
 const defer = () => { let resolve,reject; const promise = new Promise((yes,no) => {resolve=yes;reject=no;}); return {promise,resolve,reject}; };
 const answer = { type: 'answer', text: 'You spent 4 minutes on journal tests', cites: ['s1'], window: { from: '2026-10-11T08:00:00Z', to: '2026-10-11T09:00:00Z' } };
 const draft = { type: 'draft', summary: 'Stand after meetings', entry: { id: 'stand-after-meeting' } };
-async function setup({ developer = false } = {}) {
+async function setup({ developer = false, manualTimers = false } = {}) {
   let request = async path => path.startsWith('/api/timeline') ? { segments: [{id:'s1', title:'Old title'}] } : {};
-  const streams = [], channels = [], calls = [], toasts = [], intervals = [];
+  const streams = [], channels = [], calls = [], toasts = [], intervals = [], timers = [];
   const context = vm.createContext({
-    URLSearchParams, Date, console, setTimeout, clearTimeout, setInterval:fn=>intervals.push(fn),
+    URLSearchParams, Date, console,
+    setTimeout:manualTimers?(fn,delay)=>{const timer={fn,delay};timers.push(timer);return timer;}:setTimeout,
+    clearTimeout:manualTimers?timer=>{if(timer)timer.cancelled=true;}:clearTimeout,
+    setInterval:fn=>intervals.push(fn),
     document: { querySelector: () => ({content:'test-token'}), activeElement:null },
     location: {search:''}, history: {replaceState(){}},
     fetch: async (path, options) => { calls.push([path, options]); const result = await request(path, options); return result instanceof Response ? result : {ok:true,json:async()=>result}; },
@@ -101,7 +104,9 @@ async function setup({ developer = false } = {}) {
     const module=await load(base+'/app.js');await module.evaluate();
     return {footer:surfaces.footer,pip,refresh:()=>intervals.at(-1)()};
   }
-  return {api:apiModule.namespace.api,subscribe:apiModule.namespace.subscribe,page,app,streams,channels,calls,toasts,setRequest:fn=>{request=fn;}};
+  return {api:apiModule.namespace.api,subscribe:apiModule.namespace.subscribe,page,app,streams,channels,calls,toasts,
+    runNextTimer:()=>{const timer=timers.find(t=>!t.cancelled&&!t.ran);assert.ok(timer,'a debounce is pending');assert.equal(timer.delay,350);timer.ran=true;return timer.fn();},
+    setRequest:fn=>{request=fn;}};
 }
 test('forget clears cached recall while keeping draft across navigation', async()=>{
   const x=await setup();
@@ -946,3 +951,58 @@ test('Settings delayed own PUT acknowledgement cannot replace a newer external p
   assert.equal(current.querySelector('input').value,'Next private title');assert.equal(current.querySelector('select').value,'title');
   assert.equal(p.root.document.activeElement,current.querySelector('input'));assert.equal(current.querySelector('input').selectionStart,2);
 });
+
+
+test('Daily running capture without segments shows the empty state',async()=>{
+  const x=await setup();
+  x.setRequest(()=>({segments:[],capture_spans:[{state:'running',start:'2026-10-11T08:00:00Z',end:null}]}));
+  const p=await x.page('daily');
+  assert.match(p.root.textContent,/No notes yet/);
+  assert.match(p.root.textContent,/0 segments/);
+  assert.equal(walk(p.root).some(n=>n.spec==='div.leaf'),false);
+});
+test('Daily keeps renderable privacy gaps beside a running span without segments',async()=>{
+  for(const [state,label] of [['paused','Paused'],['locked','Locked'],['away','Away'],['withheld','Private'],['overlay','Overlay']]) {
+    const x=await setup();
+    x.setRequest(()=>({segments:[],capture_spans:[
+      {state:'running',start:'2026-10-11T08:00:00Z',end:'2026-10-11T08:01:00Z'},
+      {state,start:'2026-10-11T08:01:00Z',end:null},
+    ]}));
+    const p=await x.page('daily');
+    assert.match(p.root.textContent,new RegExp(label));
+    assert.doesNotMatch(p.root.textContent,/No notes yet/);
+    assert.equal(walk(p.root).filter(n=>n.spec==='div.entry.gap').length,1);
+  }
+});
+for(const stage of ['debouncing','checked']) {
+  for(const fail of [false,true]) test('Skills stale parse '+(fail?'error':'success')+' cannot replace newer '+stage+' input',async()=>{
+    const x=await setup({developer:true,manualTimers:true}),old=defer();
+    const skill={id:'stand',name:'Stand',goal:'Stand.',status:'needs_review',origin:'user',hash:'old',text:'server version',signals:[],allow:[],rules:[],errors:[{location:'initial',message:'Existing check'}]};
+    const submitted=[];
+    x.setRequest((path,options)=>{
+      if(path==='/api/skills')return {entries:[skill],catalog:[]};
+      if(path==='/api/skills/parse') {
+        const text=JSON.parse(options.body).text;submitted.push(text);
+        return text==='older edit'?old.promise:{errors:[{location:'new',message:'Current text error'}]};
+      }
+      return {};
+    });
+    const p=await x.page('skills','id=stand');
+    const editor=walk(p.root).find(n=>n['aria-label']==='Skill file');
+    const errors=walk(p.root).find(n=>n.spec==='div.errors');
+    editor.value='older edit';editor.oninput();const checking=x.runNextTimer();await settle();
+    assert.deepEqual(submitted,['older edit']);
+    editor.value='newer edit';editor.oninput();
+    if(stage==='checked')await x.runNextTimer();
+    if(fail)old.reject(Error('Old transport failure'));
+    else old.resolve({errors:[]});
+    await checking;await settle();
+    assert.equal(editor.value,'newer edit');
+    assert.match(errors.textContent,stage==='checked'?/Current text error/:/Existing check/);
+    assert.doesNotMatch(errors.textContent,/file parses|Old transport failure/);
+    if(stage==='debouncing')await x.runNextTimer();
+    assert.deepEqual(submitted,['older edit','newer edit']);
+    assert.match(errors.textContent,/Current text error/);
+    assert.equal(walk(p.root).find(n=>n.textContent==='Approve & enable').disabled,true);
+  });
+}

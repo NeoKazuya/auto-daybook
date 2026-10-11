@@ -104,16 +104,21 @@ async function render(root, params) {
       editor = h('textarea.textarea', { spellcheck: false, 'aria-label': 'Skill file' }, draft?.text ?? s.text);
       parse = h('div.errors', parseView(s.errors));
       let timer;
+      let editRevision = 0;
       onEdit = () => {
+        const revision = ++editRevision;
+        const submitted = editor.value;
         const unsaved = dirty();
         if (enableButton) enableButton.disabled = unsaved;
         editNotice.hidden = !unsaved;
         clearTimeout(timer);
         timer = setTimeout(async () => {
           try {
-            const r = await api.parseSkill(s.id, editor.value);
+            const r = await api.parseSkill(s.id, submitted);
+            if (revision !== editRevision) return;
             parse.replaceChildren(...parseView(r.errors));
           } catch (err) {
+            if (revision !== editRevision) return;
             parse.replaceChildren(h('div', `Couldn't check the file: ${err.message}`));
           }
         }, 350);

@@ -1432,3 +1432,42 @@ test('demo Settings duplicate current-mode selections are idempotent and preserv
   assert.equal(walk(p.root).filter(n=>n.title==='Stop allowing Code').length,1);
   assert.equal(walk(p.root).filter(n=>n.title==='Stop blocking KeePassXC').length,1);
 });
+
+
+test('footer explains capture reasons without implying the Pause switch changed', async()=>{
+  const x=await setup();
+  const status={capture:'withheld',capture_reason:'daybook_visible',
+    gateway:{model:'test',reachable:true,calls_per_minute:0},music:{}};
+  x.setRequest(path=>{
+    if(path==='/api/status')return structuredClone(status);
+    if(path==='/api/privacy')return {paused:false,exclude_apps:[],exclude_titles:[]};
+    if(path==='/api/skills')return {entries:[],catalog:[]};
+    return {segments:[],capture_spans:[]};
+  });
+  const app=await x.app();
+  assert.match(app.footer.textContent,/Daybook is visible/);
+  assert.doesNotMatch(app.footer.textContent,/Paused|Private window/);
+  assert.ok(walk(app.footer).some(n=>/keep your journal and settings out of observations/.test(n.title??'')));
+  for(const [reason,label] of [
+    ['excluded_window','An excluded window is visible'],
+    ['screen_unavailable','Screen temporarily unavailable'],
+    ['observation_unavailable','Observation temporarily unavailable'],
+    ['unknown_future_reason','Capture temporarily unavailable'],
+    [null,'Capture temporarily unavailable'],
+  ]){
+    status.capture_reason=reason;
+    x.streams[0].listeners.StatusChanged({data:JSON.stringify({component:'sense',status:'capture_reason_changed'})});
+    await settle();
+    assert.ok(app.footer.textContent.includes(label));
+  }
+  status.capture='paused';status.capture_reason=null;
+  x.streams[0].listeners.CaptureStateChanged({data:JSON.stringify({state:'paused'})});
+  await settle();
+  assert.match(app.footer.textContent,/Paused/);
+  assert.ok(x.calls.every(([,options])=>options.method==='GET'));
+});
+
+test('browser demo status includes a nullable capture reason',async()=>{
+  const x=await setup({demo:true});
+  assert.equal((await x.api.status()).capture_reason,null);
+});

@@ -226,7 +226,7 @@ export async function handle(method, path, body) {
     case 'GET /status':
       return {
         gateway: { ...db.gateway }, music: { ...db.music }, overlay: null,
-        capture: captureState(), shell_connected: false, mock: true,
+        capture: captureState(), capture_reason: null, shell_connected: false, mock: true,
       };
     case 'GET /now': {
       const open = db.segments.find((s) => s.open);

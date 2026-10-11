@@ -323,7 +323,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 - **`evaluate(rule, history, max_gap=5 min, now) -> Occurrence | None`.** Pure. It covers the four trigger forms and the keys that make firing idempotent.
 - **Approval and enablement** (stored separately, in `skill_state`).
   - A skill is active only if it is enabled *and* `sha256(skill file + hook file)` is approved.
-  - `approve(id, hash)` approves that exact hash and enables the skill. `disable(id)` and `enable(id)` flip only `enabled`. Enabling a skill whose current hash isn't approved is refused, so it has to be reviewed.
+  - `approve(id, hash)` approves that exact hash and enables the skill. Approving a *different* hash than before also deletes that skill's old signal readings and firings, so answers to the old version's questions can't form edges or streaks under the new one; `react` ignores readings from a tick that started before the approval. `disable(id)` and `enable(id)` flip only `enabled`. Enabling a skill whose current hash isn't approved is refused, so it has to be reviewed.
   - **Cross-skill limit.** `SkillBook` (not the parser) enforces at most 12 active signals in total: `approve` and `enable` are refused with a clear error if they would exceed it, and `entries()` reports the current total.
   - Any edit, whether by hand, in the UI, or by the generator, returns it to "needs review".
   - Approving an outdated hash fails with `StaleApproval`.
@@ -461,6 +461,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 - **Tray.** A StatusNotifierItem icon. It needs GNOME's AppIndicator extension; see [setup.md](setup.md).
   - The icon shows the capture state: recording, paused, private, or locked.
   - The menu has Pause/Resume (`PUT /api/privacy`), Open Daybook (`xdg-open http://127.0.0.1:8765`), and Quit.
+- **Resync on connect.** Every time the shell connects or reconnects to the event stream, it first fetches `GET /api/status` and applies the current overlay and capture state. Missed events can't leave an overlay up in `daybookd` with nothing on screen to dismiss.
 - **Environment** when spawned:
   - `DISPLAY=:1`
   - `XAUTHORITY=/run/user/1000/gdm/Xauthority`
@@ -472,7 +473,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 - `daybook overlay test` shows the overlay full-screen on the GX10 above a maximized window. It dismisses by button and by `Esc`, and auto-hides on its countdown.
 - While the overlay is up, sense reports `OVERLAY`.
 - The tray icon is visible, reflects pause within 5 s, and pauses capture from its menu.
-- If `daybookd` restarts, the shell reconnects.
+- If `daybookd` or the shell restarts while an overlay is up, the reconnected shell shows that overlay again (from the status snapshot) and it can be dismissed.
 
 ### 6.11 `app`: composition and CLI
 
@@ -563,13 +564,12 @@ dialect = "ollama"             # "vllm" | "openai"
 daybook run [--replay DIR] [--no-capture] [--real-effects] [--port N]   # daybookd: capture, tick, skills, web; spawns mpv and the shell (not in replay/no-capture unless --real-effects)
 daybook observe-once                                   # one real capture -> printed observation (not saved)
 daybook tick-once                                      # one tick on current unassigned observations, prints readings
-daybook record DIR [--minutes N]                       # record real steps into a replay fixture (frames saved; dev only)
 daybook skill check FILE                               # parse_skill + errors
 daybook music check | play MOOD                        # library consistency; play a mood
 daybook overlay test                                   # show a test overlay through a running daybookd
 ```
 
-`daybook record` is the one deliberate exception to "frames never touch disk". It exists to build fixtures, it's labeled as such, and it refuses to run while `daybookd` is capturing.
+`scripts/record_fixture.py` (standalone; uses `mss` and `python-xlib` directly, not the `daybook` package) is the one deliberate exception to "frames never touch disk". It exists to build fixtures, it's labeled as such, and it refuses to run while `daybookd` holds the capture lock.
 
 ## 10. Development and testing
 
@@ -585,7 +585,7 @@ daybook overlay test                                   # show a test overlay thr
   - a temporary-file journal
   - a fake `DesktopControl`
   - a recorded mpv IPC transcript
-- **Replay fixtures** are recorded on the GX10 with `daybook record` and committed with expected labels (kind, mood, focused, in_meeting). At minimum:
+- **Replay fixtures** are recorded on the GX10 with the standalone `scripts/record_fixture.py`, which doesn't depend on any Daybook module, and committed with expected labels (kind, mood, focused, in_meeting). At minimum:
   - **coding → reading:** VS Code, then a PDF
   - **meeting → work:** a Meet tab, then the editor
   - **focus streak:** 3+ minutes of coding
@@ -604,7 +604,7 @@ The plan is the complete system above, built module by module. Every module's sc
 |---|---|---|
 | **Contracts** | The package skeleton, `pyproject.toml`, `scripts/check.sh`, and `check_boundaries.py`. Every public type and signature from §6 as stubs. The events list, catalog action names and parameters, and the three built-in skill files. This is a shared-contract PR: it waits for review | — |
 | **GX10 setup** | Everything in [setup.md](setup.md): apt packages, the AppIndicator extension, `uv`, `gh`, the music library (20–30 CC-licensed tracks with `library.toml`), confirming model server logging is off | — |
-| **Replay fixtures** | The four scenarios in §10, recorded on the GX10 with expected labels | Contracts (`daybook record` needs `sense`'s `Screen`), GX10 setup |
+| **Replay fixtures** | `scripts/record_fixture.py` (standalone) and the four scenarios in §10, recorded on the GX10 with expected labels in the `ReplayScreen` folder format defined in Contracts | Contracts (folder format only), GX10 setup |
 | `journal` + `events` | §6.1, §6.2 | Contracts |
 | `model` | §6.3 | Contracts |
 | `sense` | §6.4 | Contracts; fixtures for replay tests |

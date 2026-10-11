@@ -128,7 +128,8 @@ def test_gx10_recordings_round_trip_privacy_and_labels(monkeypatch, name, polici
                 assert frame.getextrema() == ((0, 0),) * 3
         # Runtime replay can decode the permitted frame in memory.
         if capture == "running":
-            assert len(screen.thumbnail()) == 32 * 18
+            thumbnail = screen.thumbnail()
+            assert len(thumbnail) == 32 * 18 and max(thumbnail) > 5
             assert screen.grab().startswith(b"\xff\xd8")
     labels = json.loads((folder / "labels.json").read_text())
     assert labels

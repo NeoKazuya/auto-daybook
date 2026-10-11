@@ -1,0 +1,50 @@
+[
+  {
+    "at": 30,
+    "kind": "coding",
+    "mood": "focus",
+    "focused": true,
+    "in_meeting": false,
+    "capture": "running"
+  },
+  {
+    "at": 60,
+    "kind": "coding",
+    "mood": "focus",
+    "focused": true,
+    "in_meeting": false,
+    "capture": "running"
+  },
+  {
+    "at": 90,
+    "kind": "coding",
+    "mood": "focus",
+    "focused": true,
+    "in_meeting": false,
+    "capture": "running"
+  },
+  {
+    "at": 120,
+    "kind": "coding",
+    "mood": "focus",
+    "focused": true,
+    "in_meeting": false,
+    "capture": "running"
+  },
+  {
+    "at": 150,
+    "kind": "coding",
+    "mood": "focus",
+    "focused": true,
+    "in_meeting": false,
+    "capture": "running"
+  },
+  {
+    "at": 180,
+    "kind": "coding",
+    "mood": "focus",
+    "focused": true,
+    "in_meeting": false,
+    "capture": "running"
+  }
+]

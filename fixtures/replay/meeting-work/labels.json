@@ -1,0 +1,18 @@
+[
+  {
+    "at": 30,
+    "kind": "meeting",
+    "mood": "calm",
+    "focused": false,
+    "in_meeting": true,
+    "capture": "running"
+  },
+  {
+    "at": 90,
+    "kind": "coding",
+    "mood": "focus",
+    "focused": true,
+    "in_meeting": false,
+    "capture": "running"
+  }
+]

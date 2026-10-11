@@ -532,6 +532,32 @@ class Journal:
                 )
             events.append(SegmentChanged(id))
 
+    def prune_observations(self, before: datetime) -> int:
+        """Expire old evidence, preserving the recent part of crossing observations."""
+        cutoff = stamp(before)
+        with self._transaction(erase=True) as events:
+            ids = [
+                row[0]
+                for row in self._db.execute(
+                    "SELECT id FROM observations WHERE started_at<? AND last_seen_at<?",
+                    (cutoff, cutoff),
+                )
+            ]
+            crossing = self._db.execute(
+                "SELECT id FROM observations WHERE started_at<? AND last_seen_at>=?",
+                (cutoff, cutoff),
+            ).fetchall()
+            if not ids and not crossing:
+                return 0
+            self._bump()
+            self._remove(ids, events)
+            self._db.execute(
+                "UPDATE observations SET started_at=? WHERE started_at<? AND last_seen_at>=?",
+                (cutoff, cutoff, cutoff),
+            )
+            events.append(StatusChanged("journal", "notes_invalidated"))
+            return len(ids)
+
     def forget_observation(self, id: str) -> None:
         with self._transaction(erase=True) as events:
             self._observation(id)

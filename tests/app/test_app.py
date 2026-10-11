@@ -1583,3 +1583,29 @@ async def test_deliberate_shell_quit_callback_runs_once_without_restart():
     assert len(pids) == 2 and pids[0] is not None and pids[1] is None
     with pytest.raises(ProcessLookupError):
         os.kill(pids[0], 0)
+
+
+async def test_runtime_prunes_old_observations_before_serving(tmp_path, monkeypatch):
+    from contextlib import closing
+    from datetime import UTC, datetime, timedelta
+
+    import daybook.model
+    from daybook.events import Bus
+    from daybook.journal import Journal, ObservationDraft, WindowInfo
+    from daybook.model import ScriptedGateway
+
+    config = library_config(tmp_path)
+    with closing(Journal(config.home / "journal.db", Bus())) as journal:
+        journal.add_observation(
+            ObservationDraft(
+                datetime.now(UTC) - timedelta(days=31),
+                WindowInfo("Code", "expired"),
+                "expired",
+            ),
+            journal.epoch,
+        )
+    gateway = ScriptedGateway([])
+    monkeypatch.setattr(daybook.model, "ModelGateway", lambda _: gateway)
+    async with app.open_runtime(config, no_capture=True) as runtime:
+        assert not runtime.services.journal.portal.search("expired")
+        assert gateway.prompts == []

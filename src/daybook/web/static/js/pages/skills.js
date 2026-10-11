@@ -1,8 +1,7 @@
 // Skills: the reference page. A list of skills with their status, and a review card
-// for the selected one (docs/skills.md): goal, signals as questions, rules in words,
-// permissions, the raw file with live parse errors, and the approval controls.
+// for the selected one: its name, its prompt, its rules in words, and the approval controls.
 import { api } from '../api.js';
-import { h, icon, btn, busy, ribbon, panel, stat, emptyState, errorState, skeletons, confirmDialog, toast, folio } from '../ui.js';
+import { h, icon, btn, busy, ribbon, panel, split, emptyState, errorState, skeletons, confirmDialog, toast, folio } from '../ui.js';
 
 const page = { route: 'skills', label: 'Skills', icon: 'quill', render };
 export default page;
@@ -19,16 +18,13 @@ async function render(root, params) {
   let selected = params.get('id');
   let notice = null;
   const count = h('span.counter', '…');
-  const list = h('div.rows', skeletons(3));
+  const list = h('div.rows.skill-scroll', skeletons(3));
   const detail = h('div');
-  const stats = h('div.stats');
 
   root.append(
     ribbon(page, [h('a.pill', { href: '#/board?q=' + encodeURIComponent('/skill ') }, icon('plus'), 'New skill from chat')]),
-    h('div.grid-2',
-      panel('Skills & toggles', 'check', [count], list),
-      detail),
-    stats);
+    split(panel('Skills & toggles', 'check', [count], list), detail,
+      { key: 'skills', initial: 60, label: 'Resize skills and review card' }));
 
   async function refresh() {
     try {
@@ -48,17 +44,10 @@ async function render(root, params) {
       detail.replaceChildren();
     } else {
       list.replaceChildren(...skills.map(row));
+      list.querySelector('.selected')?.scrollIntoView({ block: 'nearest' });
       const s = skills.find((x) => x.id === selected);
       detail.replaceChildren(review(s));
     }
-    const review_n = skills.filter((s) => s.status === 'needs_review').length;
-    stats.replaceChildren(
-      stat('quill', 'Skills', `${active} active`),
-      stat('alert', 'Waiting for review', `${review_n}`),
-      stat('bolt', 'Fired today', `${skills.reduce((t, s) => t + (s.fired_today ?? 0), 0)} times`),
-      h('a.stat.action', { href: '#/board?q=' + encodeURIComponent('/skill ') },
-        h('div.stat-icon', icon('plus')),
-        h('div', { style: 'text-align:right' }, h('div.stat-label', 'Describe it in chat'), h('div.stat-value', { style: 'font-size:1.15rem' }, 'New skill'))));
   }
 
   function row(s, i) {
@@ -78,20 +67,6 @@ async function render(root, params) {
 
   function review(s) {
     const st = STATUS[s.status] ?? STATUS.invalid;
-    const editor = h('textarea.textarea', { spellcheck: false, 'aria-label': 'Skill file' }, s.text);
-    const parse = h('div.errors', parseView(s.errors));
-    let timer;
-    editor.addEventListener('input', () => {
-      clearTimeout(timer);
-      timer = setTimeout(async () => {
-        try {
-          const r = await api.parseSkill(s.id, editor.value);
-          parse.replaceChildren(...parseView(r.errors));
-        } catch (err) {
-          parse.replaceChildren(h('div', `Couldn't check the file: ${err.message}`));
-        }
-      }, 350);
-    });
 
     const run = async (button, fn, done) => {
       try {
@@ -105,14 +80,11 @@ async function render(root, params) {
     };
     const act = (fn, done) => (e) => run(e.currentTarget, fn, done);
 
-    const approved = s.status === 'active' || s.status === 'disabled';
     const buttons = [
       s.status === 'needs_review' && btn('Approve & enable', { icon: 'check', kind: 'ember',
         onclick: act(() => api.approveSkill(s.id, s.hash), `${s.name} is now active.`) }),
       s.status === 'disabled' && btn('Enable', { icon: 'check', kind: 'primary', onclick: act(() => api.enableSkill(s.id), `${s.name} enabled.`) }),
       s.status === 'active' && btn('Disable', { icon: 'pause', onclick: act(() => api.disableSkill(s.id), `${s.name} disabled. Its approval is kept.`) }),
-      btn('Save edits', { icon: 'edit', title: 'Saving any edit returns the skill to needs review',
-        onclick: act(() => api.saveSkill(s.id, editor.value), 'Saved. Review the new version before it can run.') }),
       s.origin !== 'builtin' && btn('Delete', { icon: 'trash', kind: 'danger', onclick: async (e) => {
         const button = e.currentTarget;
         const ok = await confirmDialog({ title: `Delete “${s.name}”?`, body: 'The skill file is removed. Notes it already caused stay in the timeline.', confirm: 'Delete skill', danger: true });
@@ -123,31 +95,14 @@ async function render(root, params) {
     return panel('Review card', 'shield', h(`span.tag${st.tag}`, st.label),
       h('div.review',
         notice && h('div.notice', notice),
-        h('div',
-          h('div.label', s.origin === 'builtin' ? 'Built-in skill' : s.created_by === 'chat' ? 'Made from chat' : 'Your skill'),
-          h('h2', s.name),
-          s.request && h('p.muted', { style: 'margin:0.3rem 0 0' }, `From your request: “${s.request}”`)),
-        section('Goal', h('p.goal', s.goal)),
-        section('It asks the model', h('ul', s.signals.map((g) => h('li', g.ask)))),
-        section('Rules', h('ul', s.rules.map((r) => h('li', ruleInWords(r))))),
-        section('Permissions', h('ul', s.permissions.map((p) =>
-          h('li.perm', h('span', p.describe ?? p.action), h('span.tag.quiet', p.action))))),
-        approved && s.status !== 'active' ? h('p.muted', { style: 'margin:0' }, 'Approved. Enabling it needs no new review.') : null,
-        section('Skill file', editor, parse),
+        h('h2', s.name),
+        h('p.goal', s.goal),
+        h('div.review-sec', h('div.label', 'Rules'), h('ul', s.rules.map((r) => h('li', ruleInWords(r))))),
         h('div.actions-bar', buttons)));
   }
 
   await refresh();
-  return { onEvent: (e) => { if (e.type === 'SkillChanged' && !document.activeElement?.matches('textarea')) refresh(); } };
-}
-
-function section(title, ...body) {
-  return h('div.review-sec', h('div.label', title), ...body);
-}
-
-function parseView(errors) {
-  if (!errors?.length) return [h('span.parse-ok', '✓ The file parses.')];
-  return errors.map((e) => h('div', `${e.at}: ${e.message}`));
+  return { onEvent: (e) => { if (e.type === 'SkillChanged') refresh(); } };
 }
 
 /* ---------- rules in words ---------- */

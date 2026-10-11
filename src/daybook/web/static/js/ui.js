@@ -89,6 +89,60 @@ export function panel(title, ic, tools, ...body) {
     ...body);
 }
 
+/**
+ * Two panes with a draggable divider: widening one narrows the other. The divider
+ * also moves with the arrow keys, double-click resets it, and the position is
+ * remembered per `key` in this browser.
+ */
+export function split(left, right, { key, initial = 50, min = 30, max = 75, label = 'Resize panes' }) {
+  const storeKey = `daybook.split.${key}`;
+  let pct = initial;
+  try { pct = Number(localStorage.getItem(storeKey)) || initial; } catch { /* storage blocked */ }
+
+  const handle = h('div.split-handle', {
+    role: 'separator', tabindex: 0, 'aria-orientation': 'vertical', 'aria-label': label,
+    'aria-valuemin': min, 'aria-valuemax': max, title: 'Drag to resize · double-click to reset',
+  });
+  const box = h('div.split', left, handle, right);
+
+  function set(next, save = true) {
+    pct = Math.min(max, Math.max(min, Math.round(next * 10) / 10));
+    box.style.setProperty('--split', `${pct}%`);
+    handle.setAttribute('aria-valuenow', String(Math.round(pct)));
+    if (save) try { localStorage.setItem(storeKey, String(pct)); } catch { /* storage blocked */ }
+  }
+  set(pct, false);
+
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add('dragging');
+    document.body.classList.add('resizing');
+    const rect = box.getBoundingClientRect();
+    const move = (ev) => set(((ev.clientX - rect.left) / rect.width) * 100, false);
+    const up = () => {
+      handle.classList.remove('dragging');
+      document.body.classList.remove('resizing');
+      handle.removeEventListener('pointermove', move);
+      set(pct);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up, { once: true });
+    handle.addEventListener('pointercancel', up, { once: true });
+  });
+  handle.addEventListener('dblclick', () => set(initial));
+  handle.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 10 : 2;
+    if (e.key === 'ArrowLeft') set(pct - step);
+    else if (e.key === 'ArrowRight') set(pct + step);
+    else if (e.key === 'Home') set(min);
+    else if (e.key === 'End') set(max);
+    else return;
+    e.preventDefault();
+  });
+  return box;
+}
+
 export function stat(ic, label, value) {
   return h('div.stat', h('div.stat-icon', icon(ic)), h('div', h('div.stat-label', label), h('div.stat-value', value)));
 }

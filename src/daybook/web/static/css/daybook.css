@@ -5,7 +5,6 @@
 :root {
   /* Surfaces */
   --desk: #0d0e10;
-  --desk-dot: #2d3036;
   --sheet: #1b1c1e;
   --sheet-hover: #292a2c;
   --panel: #171717;
@@ -52,7 +51,6 @@
   --r-lg: 12px;
   --sidebar-w: 18rem;
   --footer-h: 3.25rem;
-  --dot-gap: 22px;
 
   color-scheme: dark;
 }
@@ -124,8 +122,6 @@ a { color: inherit; text-decoration: none; }
   min-height: 100vh;
   padding-bottom: calc(var(--footer-h) + 2rem);
   background-color: var(--desk);
-  background-image: radial-gradient(var(--desk-dot) 1px, transparent 1px);
-  background-size: var(--dot-gap) var(--dot-gap);
 }
 .page { max-width: 80rem; margin: 0 auto; padding: 4rem 2.5rem 1.5rem; display: flex; flex-direction: column; gap: 1.5rem; }
 
@@ -173,6 +169,29 @@ button.pill .icon { width: 1.05rem; height: 1.05rem; }
 .panel-tools { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 
 .grid-2 { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 1.5rem; align-items: start; }
+
+/* Two panes with a draggable divider (ui.js split) */
+.split { display: grid; grid-template-columns: minmax(16rem, var(--split, 60%)) 1.5rem minmax(16rem, 1fr); align-items: start; }
+.split > * { min-width: 0; container-type: inline-size; }
+@container (max-width: 34rem) {
+  .row .folio { display: none; }
+  .row { padding: 0.9rem 1rem; }
+}
+@container (max-width: 26rem) {
+  .row { flex-wrap: wrap; }
+  .row-end { margin-left: 3.25rem; }
+  .row-sub { -webkit-line-clamp: 1; }
+}
+.split-handle { align-self: stretch; position: relative; cursor: col-resize; touch-action: none; display: flex; justify-content: center; }
+.split-handle::before { content: ""; width: 1px; background: var(--panel-line); transition: background 0.15s; }
+.split-handle::after {
+  content: ""; position: absolute; top: 50%; left: 50%; width: 6px; height: 2.75rem; transform: translate(-50%, -50%);
+  border-radius: 2px; background: var(--chip); border: 1px solid var(--chip-line); transition: background 0.15s, border-color 0.15s;
+}
+.split-handle:hover::before, .split-handle.dragging::before, .split-handle:focus-visible::before { background: var(--ember); }
+.split-handle:hover::after, .split-handle.dragging::after, .split-handle:focus-visible::after { background: var(--ember); border-color: var(--ember); }
+.split-handle:focus-visible { outline: none; }
+body.resizing { cursor: col-resize; user-select: none; }
 
 /* Tags, stamps, counters */
 .tag {
@@ -225,6 +244,16 @@ button.pill .icon { width: 1.05rem; height: 1.05rem; }
 
 /* Row cards — the reference's list item */
 .rows { display: flex; flex-direction: column; gap: 0.6rem; }
+
+/* Skills list: scrolls inside its panel. */
+.skill-scroll {
+  max-height: 25rem; overflow-y: auto; padding-right: 0.75rem; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: var(--chip-line) transparent;
+}
+.skill-scroll::-webkit-scrollbar { width: 8px; }
+.skill-scroll::-webkit-scrollbar-track { background: var(--card); border-radius: 2px; }
+.skill-scroll::-webkit-scrollbar-thumb { background: var(--chip-line); border-radius: 2px; }
+.skill-scroll::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
 .row {
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   padding: 1rem 1.5rem; border-radius: var(--r-lg);
@@ -266,9 +295,6 @@ button.pill .icon { width: 1.05rem; height: 1.05rem; }
 }
 .stat-label { font-family: var(--mono); font-size: 0.78rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-2); }
 .stat-value { font-size: 1.45rem; font-weight: 700; line-height: 1.2; }
-.stat.action { cursor: pointer; justify-content: space-between; }
-.stat.action:hover { background: var(--chip); }
-.stat.action .stat-icon { background: var(--ink); color: var(--on-ink); border-color: var(--ink-soft); }
 
 /* Section labels inside panels */
 .label { font-family: var(--mono); font-size: 0.8rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-2); }
@@ -398,15 +424,11 @@ button.pill .icon { width: 1.05rem; height: 1.05rem; }
 
 .review { display: flex; flex-direction: column; gap: 1.1rem; }
 .review h2 { margin: 0; font-size: 1.6rem; font-weight: 500; letter-spacing: -0.01em; }
+.review .goal { font-size: 1.12rem; line-height: 1.65; margin: 0; }
 .review-sec { display: flex; flex-direction: column; gap: 0.5rem; }
 .review-sec ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
 .review-sec li { padding: 0.65rem 0.85rem; background: var(--card); border: 1px solid var(--panel-line); border-radius: var(--r-sm); font-size: 1.02rem; }
 .review-sec li em { color: var(--ember-soft); font-style: normal; font-weight: 600; }
-.review-sec .goal { font-size: 1.12rem; line-height: 1.65; margin: 0; }
-.perm { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
-.errors { display: flex; flex-direction: column; gap: 0.35rem; }
-.errors div { font-family: var(--mono); font-size: 0.88rem; color: var(--danger); background: var(--danger-fill); border: 1px solid var(--danger-line); border-radius: var(--r-sm); padding: 0.45rem 0.65rem; }
-.parse-ok { font-family: var(--mono); font-size: 0.88rem; color: var(--ink-2); }
 .actions-bar { display: flex; gap: 0.5rem; flex-wrap: wrap; padding-top: 0.75rem; border-top: 1px solid var(--panel-line); }
 .notice { padding: 0.75rem 1rem; border-radius: var(--r-sm); border: 1px solid var(--ember); background: color-mix(in srgb, var(--ember) 8%, transparent); color: var(--ember-soft); font-size: 1rem; }
 
@@ -478,6 +500,8 @@ dialog .row-btns { display: flex; justify-content: flex-end; gap: 0.5rem; }
 
 @media (max-width: 1100px) {
   .grid-2 { grid-template-columns: 1fr; }
+  .split { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+  .split-handle { display: none; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 860px) {

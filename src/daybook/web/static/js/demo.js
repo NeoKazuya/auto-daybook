@@ -98,21 +98,31 @@ const db = {
       "Play local music that matches what I'm doing, and change it when my activity changes. Focus music while I code or debug, calm music while I read, break music when I'm not working.",
       [{ name: 'mood', ask: 'Which kind of music fits what the user is doing right now?', type: 'music.mood' }],
       [{ when: 'mood updates', do: [{ action: 'music.play_mood', args: { mood: '$mood' } }] }],
-      ['music.play_mood'], 41),
+      ['music.play_mood']),
     skill('break', 'Break reminder', 'builtin', 'disabled', false,
       'After a long stretch of focused work, cover the screen with a break reminder and switch to break music.',
       [{ name: 'focused', ask: 'Is the user doing sustained, focused work (coding, debugging, writing, studying) rather than browsing, chatting, watching media, or idling?', type: 'bool' }],
       [{ when: 'focused is true for 50m', do: [
         { action: 'overlay.show', args: { title: 'Time for a break', minutes: 5 } },
         { action: 'music.play_mood', args: { mood: 'break', min_dwell: '0s' } }] }],
-      ['overlay.show', 'music.play_mood'], 0),
+      ['overlay.show', 'music.play_mood']),
     skill('break-demo', 'Break reminder (demo, 2 min)', 'builtin', 'active', true,
       'After a long stretch of focused work, cover the screen with a break reminder and switch to break music.',
       [{ name: 'focused', ask: 'Is the user doing sustained, focused work (coding, debugging, writing, studying) rather than browsing, chatting, watching media, or idling?', type: 'bool' }],
       [{ when: 'focused is true for 2m', do: [
         { action: 'overlay.show', args: { title: 'Time for a break', minutes: 5 } },
         { action: 'music.play_mood', args: { mood: 'break', min_dwell: '0s' } }] }],
-      ['overlay.show', 'music.play_mood'], 1),
+      ['overlay.show', 'music.play_mood']),
+    skill('water', 'Water reminder', 'user', 'disabled', false,
+      "While I'm at the computer, nudge me to drink some water every 45 minutes.",
+      [{ name: 'at_desk', ask: 'Is the user actively using the computer right now?', type: 'bool' }],
+      [{ when: 'every 45m', do: [{ action: 'notify.send', args: { title: 'Drink some water', body: 'A glass now keeps the afternoon headache away.' } }] }],
+      ['notify.send']),
+    Object.assign(skill('refocus', 'Gentle refocus', 'user', 'needs_review', false,
+      'If I drift into social media, news or videos for more than 10 minutes, send me a quiet nudge to get back to what I was doing.',
+      [{ name: 'drifting', ask: 'Is the user browsing social media, news, or videos unrelated to their work?', type: 'bool' }],
+      [{ when: 'drifting is true for 10m', cooldown: '30m', do: [{ action: 'notify.send', args: { title: 'Back to it?', body: "You've been off task for $drifting.for." } }] }],
+      ['notify.send']), { request: 'nudge me if I get distracted for more than 10 minutes' }),
   ],
   status: {
     model: { name: 'qwen3.6:35b', reachable: true, latency_ms: 2900, calls_per_min: 6, queue: 0 },
@@ -121,9 +131,9 @@ const db = {
 };
 
 
-function skill(id, name, origin, status, enabled, goal, signals, rules, allow, firedToday) {
+function skill(id, name, origin, status, enabled, goal, signals, rules, allow) {
   return {
-    id, name, origin, status, enabled, goal, signals, rules, fired_today: firedToday,
+    id, name, origin, status, enabled, goal, signals, rules,
     created_by: origin === 'builtin' ? 'builtin' : 'chat',
     hash: `sha256:${id.padEnd(12, '0').slice(0, 12)}`,
     permissions: allow.map((action) => ({ action, describe: CATALOG[action] })),
@@ -337,7 +347,7 @@ async function chat(message) {
         'Every time I finish a meeting, remind me to stand up.',
         [{ name: 'in_meeting', ask: 'Is the user currently in a video call or online meeting (Zoom, Google Meet, Microsoft Teams, Jitsi, a Discord or Slack call, or similar)?', type: 'bool' }],
         [{ when: 'in_meeting becomes false', cooldown: '10m', do: [{ action: 'overlay.show', args: { title: "Meeting's over", body: 'Stand up and stretch for a minute before the next thing.', minutes: 1 } }] }],
-        ['overlay.show'], 0);
+        ['overlay.show']);
       s.created_by = 'chat';
       s.request = text.replace(/^\/skill\s*/, '');
       db.skills.push(s);

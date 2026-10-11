@@ -195,3 +195,18 @@ def test_later_group_failure_rolls_back_earlier_group_and_readings(batch):
         )
         == 3
     )
+
+
+def test_journal_preserves_explicit_same_kind_group_boundaries(batch):
+    journal, _, tick = batch
+    groups = tuple(
+        replace(group, decision=Continue(f"Task {index}", "coding", "Task"))
+        for index, group in enumerate(tick.segments)
+    )
+    assert journal.record_tick(replace(tick, segments=groups))
+    segments = journal.portal.segments(TimeRange(AT, AT + timedelta(minutes=5)))
+    assert [(s.title, s.active) for s in segments] == [
+        ("Task 0", 30),
+        ("Task 1", 30),
+        ("Task 2", 30),
+    ]

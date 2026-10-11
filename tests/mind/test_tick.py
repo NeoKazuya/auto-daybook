@@ -14,6 +14,7 @@ from daybook.journal import (
     ObservationDraft,
     SegmentAssignment,
     SignalId,
+    SignalReading,
     Start,
     Tick,
     TimeRange,
@@ -816,3 +817,139 @@ async def test_bounded_pre_gap_backlog_keeps_one_segment_until_drained(runtime, 
     assert not journal.portal.observations(
         TimeRange(NOW, clock() + timedelta(seconds=1)), unassigned_only=True
     )
+
+
+async def test_explicit_same_kind_groups_remain_distinct_even_if_both_continue(runtime):
+    journal, clock, first, skills = runtime
+    clock.advance(30)
+    journal.extend_observation(first.id, clock())
+    second = journal.add_observation(
+        ObservationDraft(
+            clock(),
+            WindowInfo("Code", "another-project.py"),
+            "Debugging a different project",
+        ),
+        journal.epoch,
+    )
+    assert second
+    clock.advance(30)
+    journal.extend_observation(second.id, clock())
+    response = {
+        "segments": [
+            {**SEGMENT, "observations": [first.id], "title": "First task"},
+            {**SEGMENT, "observations": [second.id], "title": "Second task"},
+        ],
+        "signals": {"test.focused": True, "test.mood": "focus", "test.level": 3},
+    }
+    gateway = BatchGateway([json.dumps(response)])
+    tick = await Mind(journal, gateway, skills, clock=clock).tick_now()
+    assert tick
+    segments = journal.portal.segments(TimeRange(NOW, clock() + timedelta(seconds=1)))
+    assert [(s.title, s.active) for s in segments] == [
+        ("First task", 30),
+        ("Second task", 30),
+    ]
+    assert all(isinstance(group.decision, Start) for group in tick.segments)
+
+
+async def test_legacy_consumed_unassigned_frontier_does_not_block_new_batch(runtime):
+    journal, clock, first, skills = runtime
+    notes = [first]
+    for index in range(8):
+        clock.advance(30)
+        journal.extend_observation(notes[-1].id, clock())
+        note = journal.add_observation(
+            ObservationDraft(clock(), WindowInfo("Code", str(index)), "Code"),
+            journal.epoch,
+        )
+        assert note
+        notes.append(note)
+    # Exactly the persisted shape produced by old null-segment ticks: a consumed
+    # evidence watermark and readings, while those observations remain unassigned.
+    old_tick = Tick(
+        clock(),
+        journal.epoch,
+        clock(),
+        (),
+        (),
+        (SignalReading(SIGNALS[0].id, False, clock(), ""),),
+    )
+    assert journal.record_tick(old_tick)
+    before = journal.portal.readings(
+        SIGNALS[0].id, TimeRange(NOW, clock() + timedelta(seconds=1))
+    )
+    clock.advance(30)
+    journal.extend_observation(notes[-1].id, clock())
+    gateway = BatchGateway([reply(), reply()])
+    mind = Mind(journal, gateway, skills, clock=clock)
+    current = await mind.tick_now()
+    assert current and current.observations == (notes[-1].id,)
+    assert skills.fired == [current]
+    assert (
+        journal.portal.readings(
+            SIGNALS[0].id, TimeRange(NOW, clock() + timedelta(seconds=1))
+        )[0]
+        == before[0]
+    )
+    clock.advance(30)
+    assert await mind.tick_now() is None
+    assert len(gateway.prompts) == 1
+
+
+async def test_legacy_unassigned_still_screen_retries_only_after_extension(runtime):
+    journal, clock, note, skills = runtime
+    clock.advance(30)
+    journal.extend_observation(note.id, clock())
+    assert journal.record_tick(Tick(clock(), journal.epoch, clock(), (), (), ()))
+    gateway = BatchGateway([reply(), reply()])
+    mind = Mind(journal, gateway, skills, clock=clock)
+    assert await mind.tick_now() is None
+    assert not gateway.prompts
+    clock.advance(30)
+    journal.extend_observation(note.id, clock())
+    current = await mind.tick_now()
+    assert current and current.observations == (note.id,)
+
+
+async def test_legacy_skipped_observations_do_not_hold_segment_across_gap(runtime):
+    journal, clock, first, skills = runtime
+    clock.advance(30)
+    journal.extend_observation(first.id, clock())
+    assert journal.record_tick(
+        Tick(
+            clock(),
+            journal.epoch,
+            clock(),
+            (first.id,),
+            (SegmentAssignment((first.id,), Start("Before", "coding", "Task")),),
+            (),
+        )
+    )
+    legacy = journal.add_observation(
+        ObservationDraft(
+            clock(), WindowInfo("Code", "legacy.py"), "Legacy pending code"
+        ),
+        journal.epoch,
+    )
+    assert legacy
+    clock.advance(30)
+    journal.extend_observation(legacy.id, clock())
+    assert journal.record_tick(Tick(clock(), journal.epoch, clock(), (), (), ()))
+    journal.set_capture_state("paused", clock())
+    clock.advance(301)
+    journal.set_capture_state("running", clock())
+    after = journal.add_observation(
+        ObservationDraft(clock(), WindowInfo("Code", "after.py"), "Resumed code"),
+        journal.epoch,
+    )
+    assert after
+    clock.advance(30)
+    journal.extend_observation(after.id, clock())
+    gateway = BatchGateway([reply()])
+    current = await Mind(journal, gateway, skills, clock=clock).tick_now()
+    assert current and current.observations == (after.id,)
+    segments = journal.portal.segments(TimeRange(NOW, clock() + timedelta(seconds=1)))
+    assert [tuple(n.id for n in s.observations) for s in segments] == [
+        (first.id,),
+        (after.id,),
+    ]

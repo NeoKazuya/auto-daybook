@@ -387,18 +387,20 @@ class Journal:
                 "INSERT INTO ticks VALUES(?, ?, ?, ?)",
                 (tick.id, at, evidence, tick.epoch),
             )
-            for assignment in tick.segments:
+            for index, assignment in enumerate(tick.segments):
                 decision = assignment.decision
                 if decision.kind not in KINDS:
                     raise ValueError("unknown activity kind")
                 current = self._db.execute(
                     "SELECT * FROM segments WHERE open=1"
                 ).fetchone()
-                # A kind change cannot relabel prior time, including when an
-                # external caller passes Continue. User-authored text stays owned
-                # by the user; a different new activity gets its own segment.
+                # Explicit groups are distinct tasks: only the first can extend
+                # the pre-tick segment. A kind change also starts a new bucket,
+                # including for direct callers passing Continue. User-authored
+                # text remains owned by the user.
                 if (
-                    isinstance(decision, Start)
+                    index > 0
+                    or isinstance(decision, Start)
                     or current is None
                     or decision.kind != current["kind"]
                 ):

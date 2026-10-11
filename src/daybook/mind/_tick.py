@@ -126,7 +126,7 @@ def parse(
         answer = SegmentAnswer.model_validate(item)
         constructor = (
             Continue
-            if answer.mode == "continue" and (has_open_segment or assignments)
+            if answer.mode == "continue" and has_open_segment and not assignments
             else Start
         )
         assignments.append(

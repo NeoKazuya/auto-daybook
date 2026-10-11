@@ -336,7 +336,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
   A failing step is recorded and the rule continues with its next step. Hook steps time out after 10 s. Nothing reacts while paused.
 - **`draft_skill(request)`.**
-  - The prompt has the format guide, `catalog.describe_for_prompt()`, and the built-in skills verbatim. It produces a declarative skill only, with no hook.
+  - The prompt has the format guide, `catalog.describe_for_prompt()`, and validated declarative built-ins converted to structured plan examples. Invalid files and built-ins containing hooks are excluded from examples. The model returns a declarative plan; code renders the `.skill.md` file, with no hook.
   - If parsing fails, the generator retries once with the errors included. If it still fails, the draft is saved as invalid so the user can fix it.
   - The result is written with `created_by: chat` and the original `request`, in "needs review" status, along with a one-line summary.
 

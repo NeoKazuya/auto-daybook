@@ -8,6 +8,7 @@ export default page;
 
 async function render(root, params) {
   let searchRevision = 0;
+  const totalsRequests = new WeakMap();
   const input = h('input.input', { type: 'search', placeholder: 'Search your notes: a file, a site, a person, a phrase…', 'aria-label': 'Search notes', value: params.get('q') ?? '' });
   const results = h('div');
   const kinds = h('div', skeletons(1));
@@ -52,11 +53,16 @@ async function render(root, params) {
   }
 
   function chips(host, by) {
+    const request = {};
+    totalsRequests.set(host, request);
     return api.totals(by).then((rows) => {
+      if (totalsRequests.get(host) !== request) return;
       host.replaceChildren(rows.length
         ? h('div.tagcloud', rows.map((r) => h('span.tag', r.label, h('span', duration(r.active)))))
         : emptyState('tag', 'Nothing indexed yet', 'Tags appear as Daybook writes notes.'));
-    }).catch((err) => host.replaceChildren(errorState(err, () => chips(host, by))));
+    }).catch((err) => {
+      if (totalsRequests.get(host) === request) host.replaceChildren(errorState(err, () => chips(host, by)));
+    });
   }
 
   const notYet = (what) => emptyState('tag', `${what} isn’t available yet`,

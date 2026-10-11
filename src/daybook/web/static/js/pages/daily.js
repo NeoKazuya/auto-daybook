@@ -128,6 +128,12 @@ async function render(root, params) {
     draw();
   }
 
+  async function cancelEdit(id) {
+    editing.delete(id);
+    list.replaceChildren(skeletons(4));
+    await refresh();
+  }
+
   async function saveEdit(id, controls, change, message) {
     for (const control of controls) control.disabled = true;
     try {
@@ -147,7 +153,7 @@ async function render(root, params) {
   function segmentForm(s) {
     const title = h('input.input', { value: s.title, 'aria-label': 'Title' });
     const intent = h('input.input', { value: s.intent, 'aria-label': 'Intent' });
-    const cancel = btn('Cancel', { kind: 'ghost', onclick: () => { editing.delete(s.id); draw(); } });
+    const cancel = btn('Cancel', { kind: 'ghost', onclick: () => cancelEdit(s.id) });
     const save = btn('Save', { kind: 'primary', onclick: () => busy(save, () =>
       saveEdit(s.id, [title, intent, cancel],
         () => api.editSegment(s.id, { title: title.value.trim(), intent: intent.value.trim() }),
@@ -161,7 +167,7 @@ async function render(root, params) {
   function observationForm(o) {
     const seen = h('textarea.textarea', { style: 'min-height:5rem;font-family:var(--serif);font-size:1rem', 'aria-label': 'What was on screen' }, o.seen);
     const text = h('textarea.textarea', { style: 'min-height:4rem', maxlength: 300, 'aria-label': 'Captured on-screen text' }, o.visible_text);
-    const cancel = btn('Cancel', { kind: 'ghost', onclick: () => { editing.delete(o.id); draw(); } });
+    const cancel = btn('Cancel', { kind: 'ghost', onclick: () => cancelEdit(o.id) });
     const save = btn('Save', { kind: 'primary', onclick: () => busy(save, () =>
       saveEdit(o.id, [seen, text, cancel],
         () => api.editObservation(o.id, { seen: seen.value.trim(), visible_text: text.value.trim() }))) });

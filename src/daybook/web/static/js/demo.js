@@ -171,6 +171,19 @@ function segmentOut(s) {
   };
 }
 
+// Match Journal removal: remaining inferred summaries may contain erased notes.
+function removeObservations(matches) {
+  db.segments = db.segments.filter((s) => {
+    const before = s.observations.length;
+    s.observations = s.observations.filter((o) => !matches(o));
+    if (s.observations.length !== before && s.authored === 'model') {
+      s.title = s.intent = '(summary removed after forget)';
+      s.kind = 'other';
+    }
+    return s.observations.length > 0;
+  });
+}
+
 const captureState = () => (db.privacy.paused ? 'paused' : 'running');
 const ok = () => ({ ok: true, deletion_pending: db.deletion_pending });
 const privacyOut = () => ({ ...db.privacy, keep_frames: false, deletion_pending: db.deletion_pending, screenshots_stored: 'none' });
@@ -240,14 +253,13 @@ export async function handle(method, path, body) {
       return { ...o, segment: seg.id, active: secs(o.started_at, o.last_seen_at) };
     }
     case 'DELETE /observations':
-      for (const s of db.segments) s.observations = s.observations.filter((o) => o.id !== parts[1]);
-      db.segments = db.segments.filter((s) => s.observations.length);
+      removeObservations((o) => o.id === parts[1]);
       emit('SegmentChanged', { id: '' });
       return ok();
     case 'POST /forget': {
-      const from = new Date(body.from);
-      for (const s of db.segments) s.observations = s.observations.filter((o) => new Date(o.started_at) < from);
-      db.segments = db.segments.filter((s) => s.observations.length);
+      const from = new Date(body.from), to = new Date(body.to);
+      if (from < to) removeObservations((o) =>
+        new Date(o.started_at) < to && (new Date(o.last_seen_at) > from || new Date(o.started_at) >= from));
       emit('SegmentChanged', { id: '' });
       return ok();
     }

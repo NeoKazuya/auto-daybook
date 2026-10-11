@@ -17,13 +17,18 @@ async function render(root) {
       h('h1', { style: 'margin:0.2rem 0 0;font-size:2.6rem;font-weight:500;letter-spacing:-0.02em' }, longDay())),
     body);
 
+  let latestRefresh = null;
   async function refresh() {
+    const request = {};
+    latestRefresh = request;
     try {
       const [tl, kinds, sk, status] = await Promise.all([
         api.timeline(), supports.totals ? api.totals('kind') : null, api.skills(), api.status(),
       ]);
+      if (latestRefresh !== request) return;
       body.replaceChildren(...view(tl, kinds, sk.entries, status));
     } catch (err) {
+      if (latestRefresh !== request) return;
       body.replaceChildren(errorState(err, refresh));
     }
   }

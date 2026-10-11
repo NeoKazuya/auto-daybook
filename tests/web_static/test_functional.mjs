@@ -528,7 +528,7 @@ for(const kind of ['segment','observation']) test('Daily pending GET keeps a new
   pending.resolve(structuredClone(f.resource));await settle();
   assert.equal(f.field(kind)?.value,'Unsaved draft');
   assert.equal(f.field(kind),editor);assert.equal(editor.selectionStart,2);
-  walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Cancel').onclick();
+  await walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Cancel').onclick();
   assert.equal(f.field(kind),undefined);assert.match(f.p.root.textContent,/Remote title/);assert.match(f.p.root.textContent,/Remote note/);
   f.x.setRequest(f.request);f.open(kind);f.field(kind).value='Saved after Cancel';
   await walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick();await settle();
@@ -656,3 +656,146 @@ for(const kind of ['segment','observation']) {
     assert.equal(target[kind==='segment'?'intent':'visible_text'],'Later detail');
   });
 }
+
+
+for(const operation of ['forget','edit']) {
+  for(const fail of [false,true]) test('Contents ignores an older '+(fail?'error':'response')+' after '+operation,async()=>{
+    const x=await setup(),pending=defer();let gets=0;
+    let timeline={segments:[{id:'s1',title:'Deleted private title',kind:'coding',active:60,started_at:'2026-10-11T08:00:00Z'}],capture_spans:[]};
+    const old=structuredClone(timeline);
+    x.setRequest((path,options)=>{
+      if(path.startsWith('/api/timeline'))return structuredClone(timeline);
+      if(path==='/api/forget-all') {timeline={segments:[],capture_spans:[]};return {ok:true};}
+      if(path==='/api/segments/s1') {Object.assign(timeline.segments[0],JSON.parse(options.body));return structuredClone(timeline.segments[0]);}
+      if(path==='/api/skills')return {entries:[]};
+      if(path==='/api/status')return {capture:'running',gateway:{reachable:true,calls_per_minute:0}};
+      return {totals:[]};
+    });
+    const p=await x.page('contents'),normal=x.calls.length;
+    const handler=(path,options)=>{
+      if(path.startsWith('/api/timeline'))return ++gets===1?pending.promise:structuredClone(timeline);
+      if(path==='/api/forget-all') {timeline={segments:[],capture_spans:[]};return {ok:true};}
+      if(path==='/api/segments/s1') {Object.assign(timeline.segments[0],JSON.parse(options.body));return structuredClone(timeline.segments[0]);}
+      if(path==='/api/skills')return {entries:[]};
+      if(path==='/api/status')return {capture:'running',gateway:{reachable:true,calls_per_minute:0}};
+      return {totals:[]};
+    };
+    x.setRequest(handler);const older=p.hooks.onEvent();await settle();
+    if(operation==='forget')await x.api.forgetAll();
+    else await x.api.editSegment('s1',{title:'Updated wording'});
+    await p.hooks.onEvent();
+    assert.doesNotMatch(p.root.textContent,/Deleted private title/);
+    if(fail)pending.reject(Error('Old request failed'));else pending.resolve(old);
+    await older;await settle();
+    assert.doesNotMatch(p.root.textContent,/Deleted private title|isn.t responding/);
+    assert.match(p.root.textContent,operation==='forget'?/No notes yet/:/Updated wording/);
+    assert.ok(x.calls.length>normal);
+  });
+}
+async function standaloneDemo() {
+  const context=vm.createContext({Date,URL,setInterval:()=>{},setTimeout:fn=>fn()});
+  const module=new vm.SourceTextModule(await readFile('src/daybook/web/static/js/demo.js','utf8'),{context});
+  await module.link(()=>{throw Error('unexpected import');});await module.evaluate();
+  return module.namespace.handle;
+}
+for(const range of ['inside','boundaries','empty']) test('demo Forget '+range+' range matches live overlap and summary removal',async()=>{
+  const call=await standaloneDemo(),initial=await call('GET','/api/timeline');
+  const notes=initial.segments.flatMap(s=>s.observations),first=notes[0],second=notes[1];
+  const inside=new Date(new Date(first.started_at).getTime()+60000).toISOString();
+  const from=range==='boundaries'?first.last_seen_at:inside;
+  const to=range==='boundaries'?second.last_seen_at:range==='empty'?inside:new Date(new Date(inside).getTime()+60000).toISOString();
+  await call('POST','/api/forget',{from,to});
+  const current=await call('GET','/api/timeline'),remaining=current.segments.flatMap(s=>s.observations);
+  const removed=range==='empty'?[]:[range==='inside'?first.id:second.id];
+  assert.deepEqual(Array.from(remaining,o=>o.id),Array.from(notes.filter(o=>!removed.includes(o.id)),o=>o.id));
+  const segment=current.segments.find(s=>s.id===initial.segments[0].id);
+  if(range==='empty')assert.equal(segment.title,initial.segments[0].title);
+  else {assert.equal(segment.title,'(summary removed after forget)');assert.equal(segment.intent,'(summary removed after forget)');assert.equal(segment.kind,'other');}
+  assert.equal(JSON.stringify(current.capture_spans),JSON.stringify(initial.capture_spans));
+});
+test('demo note deletion clears affected inferred summaries and preserves user wording',async()=>{
+  for(const authored of ['model','user']) {
+    const call=await standaloneDemo(),initial=(await call('GET','/api/timeline')).segments;
+    const target=initial.find(s=>s.authored===authored&&s.observations.length>1);
+    await call('DELETE','/api/observations/'+target.observations[0].id);
+    const current=(await call('GET','/api/timeline')).segments.find(s=>s.id===target.id);
+    assert.equal(current.observations.length,target.observations.length-1);
+    assert.equal(current.title,authored==='model'?'(summary removed after forget)':target.title);
+    assert.equal(current.intent,authored==='model'?'(summary removed after forget)':target.intent);
+    assert.equal(current.kind,authored==='model'?'other':target.kind);
+  }
+});
+for(const stage of ['PUT','GET']) test('Skill Save preserves a newer reversion to the original text during '+stage,async()=>{
+  const x=await setup({developer:true}),pending=defer();let first=true,waitingGet=false;
+  let skill={id:'stand',name:'Stand',goal:'Stand.',status:'needs_review',origin:'user',hash:'old',text:'original version',signals:[],allow:[],rules:[],errors:[]};
+  x.setRequest((path,options)=>{
+    if(path==='/api/skills/stand'&&options.method==='PUT') {
+      skill={...skill,text:JSON.parse(options.body).text,hash:first?'saved-first':'saved-second'};
+      if(first) {first=false;if(stage==='PUT')return pending.promise;waitingGet=true;}
+      return structuredClone(skill);
+    }
+    if(path==='/api/skills') {
+      if(waitingGet) {waitingGet=false;return pending.promise;}
+      return {entries:[structuredClone(skill)],catalog:[]};
+    }
+    return {errors:[]};
+  });
+  const p=await x.page('skills','id=stand'),editor=walk(p.root).find(n=>n.spec.startsWith('textarea'));
+  editor.value='submitted version';editor.oninput();
+  let save=walk(p.root).find(n=>n.textContent==='Save edits');
+  const saving=save.onclick({currentTarget:save});await settle();
+  editor.value='original version';editor.oninput();editor.focus();editor.setSelectionRange(2,6);
+  pending.resolve(stage==='PUT'?structuredClone(skill):{entries:[structuredClone(skill)],catalog:[]});await saving;await settle();
+  const current=walk(p.root).find(n=>n.spec.startsWith('textarea'));
+  assert.equal(current.value,'original version');assert.equal(p.root.document.activeElement,current);assert.equal(current.selectionStart,2);
+  assert.equal(walk(p.root).find(n=>n.textContent==='Approve & enable').disabled,true);
+  save=walk(p.root).find(n=>n.textContent==='Save edits');await save.onclick({currentTarget:save});await settle();
+  assert.equal(skill.text,'original version');assert.equal(skill.hash,'saved-second');
+  assert.ok(!walk(p.root).find(n=>n.textContent==='Approve & enable').disabled);
+});
+
+
+for(const kind of ['segment','observation']) {
+  for(const fail of [false,true]) test('Daily '+kind+' Cancel never restores forgotten notes when fresh GET '+(fail?'fails':'completes'),async()=>{
+    const f=await dailyFixture(),older=defer(),fresh=defer();let gets=0;
+    const old=structuredClone(f.resource);
+    f.x.setRequest((path,options)=>{
+      if(path.startsWith('/api/timeline'))return ++gets===1?older.promise:fresh.promise;
+      if(path==='/api/forget-all') {f.resource.segments=[];return {ok:true};}
+      return f.request(path,options);
+    });
+    f.p.hooks.onEvent();await settle();f.open(kind);f.field(kind).value='User draft';
+    await f.x.api.forgetAll();f.p.hooks.onEvent();await settle();
+    const cancel=walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Cancel').onclick();
+    await settle();assert.equal(gets,2);
+    assert.doesNotMatch(f.p.root.textContent,/Original title|Original note/);
+    older.resolve(old);await settle();
+    assert.doesNotMatch(f.p.root.textContent,/Original title|Original note/);
+    if(fail)fresh.reject(Error('Fresh GET unavailable'));else fresh.resolve(structuredClone(f.resource));
+    await cancel;await settle();
+    assert.doesNotMatch(f.p.root.textContent,/Original title|Original note/);
+    assert.match(f.p.root.textContent,fail?/isn.t responding/:/No notes yet/);
+  });
+}
+for(const fail of [false,true]) test('Index totals ignore older '+(fail?'errors':'responses')+' after Forget',async()=>{
+  const x=await setup(),pending={kind:defer(),app:defer()};let forgotten=false;
+  const old={kind:[{label:'coding',active:240}],app:[{label:'Private Code',active:240}]};
+  x.setRequest(path=>path.startsWith('/api/totals')?{totals:path.includes('by=app')?old.app:old.kind}:{ok:true});
+  const p=await x.page('tags'),gets={kind:0,app:0};
+  x.setRequest((path,options)=>{
+    if(path.startsWith('/api/totals')) {
+      const by=path.includes('by=app')?'app':'kind';
+      return ++gets[by]===1?pending[by].promise:{totals:forgotten?[]:old[by]};
+    }
+    if(path==='/api/forget-all') {forgotten=true;return {ok:true};}
+    return {};
+  });
+  const older=p.hooks.onEvent();await settle();await x.api.forgetAll();await settle();
+  assert.match(p.root.textContent,/Nothing indexed yet/);
+  for(const by of ['kind','app']) {
+    if(fail)pending[by].reject(Error('Old totals unavailable'));else pending[by].resolve({totals:old[by]});
+  }
+  await older;await settle();
+  assert.doesNotMatch(p.root.textContent,/coding|Private Code|isn.t responding/);
+  assert.match(p.root.textContent,/Nothing indexed yet/);p.hooks.cleanup();
+});

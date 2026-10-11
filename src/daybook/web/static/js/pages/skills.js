@@ -89,7 +89,8 @@ async function render(root, params) {
     const dev = getPref('developer');
     let editor = null;
     let parse = null;
-    const dirty = () => Boolean(editor && editor.value !== s.text);
+    let savedText = s.text;
+    const dirty = () => Boolean(editor && editor.value !== savedText);
     getDraft = () => dirty() ? { id: s.id, text: editor.value,
       focused: document.activeElement === editor, start: editor.selectionStart, end: editor.selectionEnd } : null;
     let onEdit;
@@ -147,7 +148,11 @@ async function render(root, params) {
       enableButton,
       s.status === 'active' && btn('Disable', { icon: 'pause', onclick: act(() => api.disableSkill(s.id), `${s.name} disabled. Its approval is kept.`) }),
       dev && btn('Save edits', { icon: 'edit', title: 'Saving any edit returns the skill to needs review',
-        onclick: act(() => api.saveSkill(s.id, editor.value), 'Saved. Review the new version before it can run.') }),
+        onclick: act(async () => {
+          const submitted = editor.value;
+          await api.saveSkill(s.id, submitted);
+          savedText = submitted;
+        }, 'Saved. Review the new version before it can run.') }),
       s.origin !== 'builtin' && btn('Delete', { icon: 'trash', kind: 'danger', onclick: async (e) => {
         const button = e.currentTarget;
         const ok = await confirmDialog({ title: `Delete “${s.name}”?`, body: 'The skill file is removed. Notes it already caused stay in the timeline.', confirm: 'Delete skill', danger: true });

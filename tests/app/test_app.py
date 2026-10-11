@@ -504,3 +504,146 @@ async def test_real_cli_sigterm_cleans_up_even_with_connected_sse(
         if process.returncode is None:
             process.kill()
             await process.wait()
+
+
+@pytest.mark.parametrize("repeat_during_cleanup", [False, True])
+async def test_real_cli_startup_signal_closes_owned_child_and_runtime(
+    tmp_path: Path, monkeypatch, repeat_during_cleanup: bool
+):
+    monkeypatch.setattr(app, "CAPTURE_LOCK", tmp_path / "capture.lock")
+    config = library_config(tmp_path)
+    config_path = tmp_path / "daybook.toml"
+    config_path.write_text(
+        config_path.read_text().replace(
+            'music_dir = "~/Music/daybook"',
+            f"music_dir = {json.dumps(str(config.music_dir))}",
+        )
+    )
+    executable_dir = tmp_path / "bin"
+    executable_dir.mkdir()
+    executable = executable_dir / "mpv"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import os, signal, time\n"
+        "from pathlib import Path\n"
+        "home = Path(os.environ['DAYBOOK_HOME'])\n"
+        "def stop(*_):\n"
+        "    (home / 'closing-child').write_text('closing')\n"
+        "    time.sleep(0.3)\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "(home / 'startup-child.pid').write_text(str(os.getpid()))\n"
+        "time.sleep(60)\n"
+    )
+    executable.chmod(0o700)
+    # The real music owner launches an external child which deliberately never
+    # creates its IPC socket. No desktop, audio, model request, or shared lock.
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "from daybook import app; "
+        "app.CAPTURE_LOCK = app.load_config().home / 'capture.lock'; app.main()",
+        "run",
+        "--no-capture",
+        "--real-effects",
+        env={
+            **os.environ,
+            "DAYBOOK_HOME": str(tmp_path),
+            "PATH": str(executable_dir) + os.pathsep + os.environ["PATH"],
+        },
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    child_pid = None
+    try:
+        marker = tmp_path / "startup-child.pid"
+        for _ in range(200):
+            if marker.exists():
+                child_pid = int(marker.read_text())
+                break
+            assert process.returncode is None, "daemon exited before child startup"
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("owned child never started")
+        assert (tmp_path / "runtime.json").exists()
+        process.terminate()
+        if repeat_during_cleanup:
+            for _ in range(100):
+                if (tmp_path / "closing-child").exists():
+                    process.terminate()
+                    break
+                if process.returncode is not None:
+                    break
+                await asyncio.sleep(0.01)
+        await asyncio.wait_for(process.wait(), 5)
+        assert not (tmp_path / "runtime.json").exists(), (
+            "SIGTERM during startup left the runtime descriptor"
+        )
+        assert process.returncode == 0
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        assert not (tmp_path / "mpv.sock").exists()
+        with app.home_lock(tmp_path), app.capture_lock():
+            pass
+        if repeat_during_cleanup:
+            assert (tmp_path / "closing-child").exists()
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+        if child_pid is not None:
+            with suppress(ProcessLookupError):
+                os.kill(child_pid, signal.SIGKILL)
+
+
+async def test_runtime_cleanup_finishes_before_external_cancellation_propagates(
+    tmp_path: Path, monkeypatch
+):
+    from daybook.act import MusicPlayer
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import signal,time; "
+        "signal.signal(signal.SIGTERM, lambda *_: (time.sleep(0.3), exit(0))); "
+        "print('ready', flush=True); time.sleep(60)",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    assert process.stdout is not None
+    assert await process.stdout.readline() == b"ready\n"
+    started, finished = asyncio.Event(), asyncio.Event()
+    original_close = MusicPlayer.close
+
+    async def close(player):
+        started.set()
+        process.terminate()
+        await process.wait()
+        await original_close(player)
+        finished.set()
+
+    monkeypatch.setattr(MusicPlayer, "close", close)
+    config = library_config(tmp_path)
+
+    async def run():
+        async with app.open_runtime(config, no_capture=True):
+            pass
+
+    task = asyncio.create_task(run())
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set(), "cancellation interrupted runtime cleanup"
+        assert process.returncode == 0
+        with pytest.raises(ProcessLookupError):
+            os.kill(process.pid, 0)
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        if process.returncode is None:
+            process.kill()
+            await process.wait()

@@ -301,7 +301,7 @@ async def open_runtime(
 
     if real_effects and config.desktop_backend == "cua":
         raise ValueError("cua trial was rejected on GX10; use desktop_backend = 'xdo'")
-    async with AsyncExitStack() as stack:
+    async with runtime_stack() as stack:
         bus = Bus()
         journal = Journal(config.home / "journal.db", bus)
         stack.callback(journal.close)
@@ -363,6 +363,51 @@ async def open_runtime(
         )
 
 
+@contextmanager
+def daemon_signals() -> Iterator[None]:
+    """Cancel startup on the first stop signal and preserve resource cleanup."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    task = asyncio.current_task()
+    assert task is not None
+    stopped = False
+
+    def stop(_signum: int, _frame: object) -> None:
+        nonlocal stopped
+        if not stopped:
+            stopped = True
+            task.cancel()
+
+    previous = {
+        sig: signal.signal(sig, stop) for sig in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        yield
+    except asyncio.CancelledError:
+        if not stopped:
+            raise
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+@asynccontextmanager
+async def runtime_stack():
+    stack = AsyncExitStack()
+    try:
+        yield stack
+    finally:
+        # A stop arriving during normal teardown must not interrupt a child's
+        # terminate/wait/kill sequence. Finish cleanup before propagating it.
+        cleanup = asyncio.create_task(stack.aclose())
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await cleanup
+            raise
+
+
 class LifecycleServer(uvicorn.Server):
     @contextmanager
     def capture_signals(self) -> Iterator[None]:
@@ -404,6 +449,7 @@ async def run_daemon(config: Config, args: argparse.Namespace) -> None:
     )
     real_screen = not (args.replay is not None or args.no_capture or args.mock_api)
     with (
+        daemon_signals(),
         home_lock(config.home),
         capture_lock() if real_screen or effects else nullcontext(),
     ):

@@ -412,3 +412,23 @@ async def test_mpv_start_fake_is_safe_and_idle_child_is_supervised(
     await original_sleep(0.015)
     assert len(starts) == 2 and not real.status().playing
     await real.close()
+
+
+async def test_fake_overlay_records_without_shell_or_processes(monkeypatch):
+    from daybook.act import FakeOverlay
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("fake overlay must not create a process")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden)
+    bus = Bus()
+    overlay = FakeOverlay(bus)
+    overlay.shell_connected(False)
+    with bus.subscribe() as queue:
+        result = await overlay.show(OverlayRequest("Rest", "Stand"), "break")
+        assert result.ok and result.detail == "fake"
+        assert isinstance(queue.get_nowait(), OverlayShown)
+        assert overlay.state and overlay.state.owner == "break"
+        await overlay.hide()
+        assert isinstance(queue.get_nowait(), OverlayHidden)
+    await overlay.close()

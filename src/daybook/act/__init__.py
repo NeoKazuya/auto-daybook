@@ -304,6 +304,21 @@ class Overlay:
             self._state = None
 
 
+class FakeOverlay(Overlay):
+    """Records normal state/events without starting or requiring a shell."""
+
+    def __init__(self, bus: Bus, *, home: Path | None = None) -> None:
+        super().__init__(bus, home=home)
+        self._connected = True
+
+    def shell_connected(self, connected: bool) -> None:
+        super().shell_connected(True)
+
+    async def show(self, request: OverlayRequest, owner: str) -> Outcome:
+        result = await super().show(request, owner)
+        return Outcome(result.action, result.ok, "fake" if result.ok else result.detail)
+
+
 @dataclass(frozen=True)
 class MusicTrack:
     file: str

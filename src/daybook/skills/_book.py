@@ -280,8 +280,10 @@ class Book:
                     ),
                 )
             ]
-            # Explicit capture interruptions break continuity even when readings
-            # are less than the evaluator's five-minute missing-reading limit apart.
+            # Privacy and away gaps break continuity immediately. Short gaps
+            # for our own overlay preserve the streak key; the missing-reading
+            # limit still applies independently in the evaluator.
+            max_gap = 300
             capture_range = TimeRange(
                 datetime.min.replace(tzinfo=timezone.utc),
                 tick.at + timedelta(microseconds=1),
@@ -290,7 +292,12 @@ class Book:
                 (
                     span.end or capture_range.end
                     for span in self.portal.capture_spans(capture_range)
-                    if span.state != "running"
+                    if span.state not in ("running", "overlay")
+                    or (
+                        span.state == "overlay"
+                        and (span.end or capture_range.end) - span.start
+                        > timedelta(seconds=max_gap)
+                    )
                 ),
                 default=None,
             )
@@ -304,7 +311,7 @@ class Book:
                 occurrence = match(
                     rule,
                     streak_history if rule.trigger.form == "is" else history,
-                    max_gap=300,
+                    max_gap=max_gap,
                     now=tick.at,
                 )
                 if (

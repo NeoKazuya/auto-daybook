@@ -175,7 +175,7 @@ async def test_react_claim_cooldown_restart_and_pause(setup_book, tmp_path):
             SignalId("demo", "focused"), True, when, f"tick{offset}"
         )
         portal.history.append(reading)
-        return Tick(when, 0, when, (), None, (reading,))
+        return Tick(when, 0, when, (), (), (reading,))
 
     first = tick(0)
     await book.react(first)
@@ -198,7 +198,7 @@ async def test_old_tick_rejected_after_approval(setup_book):
     portal.history.append(old)
     saved = book.save("demo", text())
     book.approve("demo", saved.hash)
-    await book.react(Tick(old.at, 0, old.at, (), None, (old,)))
+    await book.react(Tick(old.at, 0, old.at, (), (), (old,)))
     assert not called
 
 
@@ -236,7 +236,7 @@ async def test_failing_hook_cannot_escape_permission_and_next_step_runs(tmp_path
     at = datetime.now(timezone.utc) + timedelta(seconds=1)
     reading = SignalReading(SignalId("music", "focused"), True, at, "one")
     portal.history = [reading]
-    await book.react(Tick(at, 0, at, (), None, (reading,)))
+    await book.react(Tick(at, 0, at, (), (), (reading,)))
     assert called
     with sqlite3.connect(tmp_path / "db") as db:
         outcomes = db.execute("SELECT outcomes FROM firings").fetchone()[0]
@@ -292,7 +292,7 @@ async def test_exact_placeholder_in_text_argument_is_rendered_as_text(setup_book
     at = datetime.now(timezone.utc) + timedelta(seconds=1)
     reading = SignalReading(SignalId("demo", "focused"), True, at, "one")
     portal.history = [reading]
-    await book.react(Tick(at, 0, at, (), None, (reading,)))
+    await book.react(Tick(at, 0, at, (), (), (reading,)))
     assert called[0][1]["body"] == "True"
 
 

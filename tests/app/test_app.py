@@ -148,6 +148,7 @@ async def test_shell_supervisor_restarts_updates_pid_and_reaps_on_shutdown(
         (sys.executable, "-c", "import time; time.sleep(60)"),
         dict(os.environ),
         pids.put_nowait,
+        on_quit=lambda: None,
         retry_seconds=0.01,
     )
     task = asyncio.create_task(supervisor.run())
@@ -796,6 +797,7 @@ async def test_shell_reaping_finishes_after_repeated_cancellation(tmp_path: Path
         ),
         dict(os.environ),
         pids.put_nowait,
+        on_quit=lambda: None,
     )
     task = asyncio.create_task(supervisor.run())
     pid = None
@@ -890,7 +892,7 @@ async def test_effects_enabled_daemon_only_supervises_a_runnable_shell(
         )
 
     class Supervisor:
-        def __init__(self, command, environment, on_pid):
+        def __init__(self, command, environment, on_pid, *, on_quit):
             launches.append((command, environment))
             self.on_pid = on_pid
 
@@ -1386,3 +1388,156 @@ async def test_question_disable_discards_queued_or_inflight_public_tick(
             assert retained.seen == original_observation.seen
             assert gateway.priorities.count(Priority.OBSERVE) == 1
             assert services.overlay.state is None
+
+
+async def test_shell_deliberate_quit_stops_daemon_and_owned_runtime(
+    tmp_path: Path, monkeypatch
+):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    import daybook.web
+
+    monkeypatch.setattr(app, "CAPTURE_LOCK", tmp_path / "capture.lock")
+    monkeypatch.setattr(app, "desktop_environment", lambda _: dict(os.environ))
+    monkeypatch.setattr(app, "shell_entry_available", lambda: True)
+    config = app.load_config(tmp_path)
+    events: list[str] = []
+    shell_pids: list[int | None] = []
+    music_pid: int | None = None
+    original_supervisor = app.ShellSupervisor
+
+    class Loop:
+        def __init__(self, name):
+            self.name = name
+
+        async def run(self):
+            events.append(self.name + "-started")
+            try:
+                await asyncio.Event().wait()
+            finally:
+                events.append(self.name + "-stopped")
+
+    @asynccontextmanager
+    async def runtime(_config, **kwargs):
+        nonlocal music_pid
+        music = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", "import time; time.sleep(60)"
+        )
+        music_pid = music.pid
+        try:
+            yield SimpleNamespace(
+                services=SimpleNamespace(sense=Loop("sense"), mind=Loop("mind")),
+                screen=SimpleNamespace(set_shell_pid=shell_pids.append),
+            )
+        finally:
+            music.terminate()
+            await music.wait()
+            events.append("music-stopped")
+
+    def supervisor(command, environment, on_pid, **kwargs):
+        return original_supervisor(
+            (sys.executable, "-c", "raise SystemExit(20)"),
+            environment,
+            on_pid,
+            retry_seconds=0.01,
+            **kwargs,
+        )
+
+    class Server:
+        should_exit = False
+
+        async def serve(self):
+            while not self.should_exit:
+                await asyncio.sleep(0.001)
+
+    monkeypatch.setattr(app, "open_runtime", runtime)
+    monkeypatch.setattr(app, "ShellSupervisor", supervisor)
+    monkeypatch.setattr(app, "http_server", lambda *_: Server())
+    monkeypatch.setattr(daybook.web, "create_app", lambda **_: object())
+    args = argparse.Namespace(
+        mock_api=False, no_capture=False, replay=None, real_effects=False
+    )
+    await asyncio.wait_for(app.run_daemon(config, args), 2)
+    assert sorted(events) == [
+        "mind-started",
+        "mind-stopped",
+        "music-stopped",
+        "sense-started",
+        "sense-stopped",
+    ]
+    assert len(shell_pids) == 2 and shell_pids[0] is not None and shell_pids[1] is None
+    assert music_pid is not None
+    for pid in (shell_pids[0], music_pid):
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    assert not (tmp_path / "runtime.json").exists()
+    with app.home_lock(tmp_path), app.capture_lock():
+        pass
+
+
+@pytest.mark.parametrize("exit_code", [0, 1, -signal.SIGTERM])
+async def test_unexpected_shell_exits_restart_without_quitting_daemon(
+    tmp_path: Path, exit_code: int
+):
+    from daybook.web.wire import SHELL_QUIT_EXIT_CODE
+
+    marker = tmp_path / "launch-count"
+    # The first child exits unexpectedly; the replacement stays alive for reap.
+    script = (
+        "import os,signal,time; from pathlib import Path; "
+        f"p=Path({str(marker)!r}); n=int(p.read_text()) if p.exists() else 0; "
+        "p.write_text(str(n+1)); "
+        f"code={exit_code}; "
+        "\nif n == 0:\n"
+        "    if code < 0: os.kill(os.getpid(), -code)\n"
+        "    raise SystemExit(code)\n"
+        "time.sleep(60)"
+    )
+    pids: asyncio.Queue[int | None] = asyncio.Queue()
+    quits: list[bool] = []
+    supervisor = app.ShellSupervisor(
+        (sys.executable, "-c", script),
+        dict(os.environ),
+        pids.put_nowait,
+        on_quit=lambda: quits.append(True),
+        retry_seconds=0.01,
+    )
+    task = asyncio.create_task(supervisor.run())
+    first = second = None
+    try:
+        first = await asyncio.wait_for(pids.get(), 2)
+        assert first is not None
+        assert await asyncio.wait_for(pids.get(), 2) is None
+        second = await asyncio.wait_for(pids.get(), 2)
+        assert second is not None and second != first
+        assert not quits
+        assert exit_code != SHELL_QUIT_EXIT_CODE
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+    assert await asyncio.wait_for(pids.get(), 2) is None
+    for pid in (first, second):
+        if pid is not None:
+            with pytest.raises(ProcessLookupError):
+                os.kill(pid, 0)
+
+
+async def test_deliberate_shell_quit_callback_runs_once_without_restart():
+    from daybook.web.wire import SHELL_QUIT_EXIT_CODE
+
+    pids: list[int | None] = []
+    quits: list[bool] = []
+    supervisor = app.ShellSupervisor(
+        (sys.executable, "-c", f"raise SystemExit({SHELL_QUIT_EXIT_CODE})"),
+        dict(os.environ),
+        pids.append,
+        on_quit=lambda: quits.append(True),
+        retry_seconds=0.01,
+    )
+    await asyncio.wait_for(supervisor.run(), 2)
+    assert quits == [True]
+    assert len(pids) == 2 and pids[0] is not None and pids[1] is None
+    with pytest.raises(ProcessLookupError):
+        os.kill(pids[0], 0)

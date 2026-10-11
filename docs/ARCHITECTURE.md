@@ -91,7 +91,7 @@ GNOME Xorg :1 ──────────────────────
 | `mpv --idle` | music playback over a JSON IPC socket | event-driven |
 | vLLM | the one model (external to the app) | bounded concurrent requests; configured by the gateway |
 
-`daybookd` spawns `mpv` and the shell, and restarts either if it exits. It runs inside `tmux` on the GX10, with the display environment from [gx10.md](gx10.md). Only one `daybookd` may watch the real screen, enforced with an flock on `/tmp/daybook-capture.lock`. Development instances run with `--replay` or `--no-capture` and their own `DAYBOOK_HOME`. In those modes `daybookd` doesn't spawn the shell or mpv, and the catalog uses fake music, overlay, and desktop backends that only record what they were asked to do, so a development instance never plays sound or draws on the presenter's screen. `--real-effects` turns the real backends back on, for someone working at the machine.
+`daybookd` spawns `mpv` and the shell, and restarts either after an unexpected exit. A deliberate tray Quit exits the shell with the shared `SHELL_QUIT_EXIT_CODE = 20` process contract; the supervisor requests normal daemon shutdown, which stops capture, Mind, and music and exits successfully. A service configured with `Restart=on-failure` stays stopped after Quit. It runs inside `tmux` on the GX10, with the display environment from [gx10.md](gx10.md). Only one `daybookd` may watch the real screen, enforced with an flock on `/tmp/daybook-capture.lock`. Development instances run with `--replay` or `--no-capture` and their own `DAYBOOK_HOME`. In those modes `daybookd` doesn't spawn the shell or mpv, and the catalog uses fake music, overlay, and desktop backends that only record what they were asked to do, so a development instance never plays sound or draws on the presenter's screen. `--real-effects` turns the real backends back on, for someone working at the machine.
 
 ## 4. Data model
 
@@ -169,7 +169,7 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 - `now() -> Situation`: capture state, open segment, latest observation, latest reading per signal.
 - `latest_tick_evidence_until() -> datetime | None`: the maximum `evidence_until` among surviving committed ticks, including ticks without signal readings, or `None` when no tick survives. Mind reads this journal-owned frontier before model admission and evidence batching. This is a read-only query with no independent cache, so each read reflects the ticks that remain after forget or trim.
 - `segments(range)`, `observations(range, unassigned_only=False)`, `capture_spans(range)`.
-- `search(text, range=None) -> [Hit]`: FTS5 over observation `seen`, `visible_text`, and title, plus segment title and intent.
+- `search(text, range=None, *, limit=None) -> [Hit]`: FTS5 over observation `seen`, `visible_text`, and title, plus segment title and intent. Apply the overlapping-observation window and optional positive result cap in the ranked SQL query before producing snippets; omitted `limit` preserves unlimited reads.
 - `totals(range, by="kind"|"title"|"app") -> [Total]`. All duration arithmetic lives here; the model never adds up times.
 - `readings(signal, range)`: the trigger evaluator's only input.
 - `context(range, budget_tokens, detail="segments"|"observations") -> str`: one line per segment, with observations indented if requested, and capture spans included as "10:10–10:25 paused". Under budget pressure it drops the oldest observation lines first, then the oldest segments. It estimates tokens as characters ÷ 3.5.
@@ -445,6 +445,8 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 | Method and path | Calls |
 |---|---|
 | `GET /api/timeline?from&to` | `portal.segments`, `capture_spans` |
+| `GET /api/search?q&from&to&limit` | `portal.search`, enriched with observation time and parent segment metadata |
+| `GET /api/totals?by=kind\|app\|title&from&to` | `portal.totals` |
 | `GET /api/now` | `portal.now` |
 | `PATCH/DELETE /api/segments/{id}` | `edit_segment`, `forget_segment` |
 | `PATCH/DELETE /api/observations/{id}` | `edit_observation`, `forget_observation` |
@@ -467,6 +469,8 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 - SSE delivers live timeline updates to the browser.
 - Every UI page in [§8](#8-user-interface) works against a replay instance.
 
+Search returns `{hits: [{segment_id, observation_id, at, kind, title, snippet}]}` in Portal rank order. An unassigned observation has null `segment_id` and `kind`, with its window title as the label; no activity classification is invented. Blank or punctuation-only queries return no hits. Queries are at most 500 characters; `limit` defaults to 50 and accepts 1–200. Totals returns `{totals: [{label, active}]}`, where active is seconds clipped to the query window and results sort by active descending. Search, totals, and timeline share local-today defaults (local midnight to now); supplied timestamps require an offset and the resulting range must be ordered. Both new routes are read-only, with the same GET authorization behavior as timeline. Journal publishes the existing `StatusChanged {component: "journal", status: "notes_invalidated"}` shape after a committed edit, deletion, or trim changes existing evidence. Clients clear retained recall answers on this status. Routine new observations, extensions, ticks, skill-reading resets, and no-op trims do not emit it; `notes_changed` remains the ordinary refresh notification. Rolled-back writes publish neither status.
+
 ### 6.10 `shell`: the tray and overlay process
 
 **Owns** nothing persistent. It's a separate process because Qt needs the main thread and its own event loop. It subscribes to `/api/events?client=shell`.
@@ -478,7 +482,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
   - Fullscreen uses WM_CLASS `daybook-shell`; bubble uses the dedicated WM_CLASS `daybook-bubble` so Sense can mask its visible rectangle in RAM.
 - **Tray.** A StatusNotifierItem icon. It needs GNOME's AppIndicator extension; see [setup.md](setup.md).
   - The icon shows the capture state: recording, paused, private, or locked.
-  - The menu has Pause/Resume (`PUT /api/privacy`), Open Daybook (`xdg-open http://127.0.0.1:<port>`, using the port the shell was started with), and Quit.
+  - The menu has Pause/Resume (`PUT /api/privacy`), Open Daybook (`xdg-open http://127.0.0.1:<port>`, using the port the shell was started with), and Quit. Quit calls `QApplication.exit(SHELL_QUIT_EXIT_CODE)`, and the shell entry point propagates that exit code to the supervisor; it does not call a separate HTTP quit endpoint.
 - **Resync on connect.** Every time the shell connects or reconnects to the event stream, it first fetches `GET /api/status` and applies the current overlay and capture state. Missed events can't leave an overlay up in `daybookd` with nothing on screen to dismiss.
 - **Environment** when spawned:
   - `DISPLAY=:1`

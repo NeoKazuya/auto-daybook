@@ -600,3 +600,45 @@ def test_tick_frontier_survives_restart_and_tracks_forgetting(tmp_path):
     journal.forget_all()
     assert journal.portal.latest_tick_evidence_until() is None
     journal.close()
+
+
+def test_limited_search_preserves_fts_rank_ties_snippets_and_overlap(journal: Journal):
+    outside = observe(journal, 0, 10, "needle outside")
+    spanning = observe(journal, 10, 20, "needle needle needle")
+    left_point = observe(journal, 20, 20, "needle equal")
+    inside_point = observe(journal, 25, 25, "needle equal")
+    right_point = observe(journal, 30, 30, "needle excluded")
+    current = segment(
+        journal,
+        (outside.id, spanning.id, left_point.id, inside_point.id, right_point.id),
+        31,
+        "needle summary",
+        "needle task",
+    )
+    window = TimeRange(time(15), time(30))
+    allowed = {spanning.id, left_point.id, inside_point.id, current.id}
+    # The original FTS ordering/snippet query is the independent ranking oracle.
+    ranked = journal._db.execute(
+        "SELECT id, snippet(note_search, 3, '', '', '…', 32) AS text "
+        "FROM note_search WHERE note_search MATCH ? ORDER BY rank, rowid",
+        ('"needle"',),
+    ).fetchall()
+    expected = [(row["id"], row["text"]) for row in ranked if row["id"] in allowed]
+    unlimited = journal.portal.search("needle", window)
+    assert [(hit.id, hit.text) for hit in unlimited] == expected
+    assert {hit.id for hit in unlimited} == allowed
+    tied = [hit.id for hit in unlimited if hit.id in {left_point.id, inside_point.id}]
+    assert tied == [left_point.id, inside_point.id]
+    for cap in (1, 3, 20):
+        assert journal.portal.search("needle", window, limit=cap) == unlimited[:cap]
+    assert len(journal.portal.search("needle")) == 6
+    assert (
+        journal.portal.search("needle", limit=1) == journal.portal.search("needle")[:1]
+    )
+    assert journal.portal.search("needle", TimeRange(time(20), time(20)), limit=1) == []
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5])
+def test_portal_search_rejects_invalid_limits(journal: Journal, limit):
+    with pytest.raises(ValueError, match="positive integer"):
+        journal.portal.search("needle", limit=limit)

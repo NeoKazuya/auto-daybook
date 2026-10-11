@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import os
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import HTTPException
 
@@ -18,24 +16,10 @@ from daybook.sense import PrivacySettings
 from daybook.skills import Skill, SkillEntry, SkillSource
 
 from . import wire as w
+from ._window import time_range
 
 if TYPE_CHECKING:
     from . import Services
-
-
-def _local_now() -> datetime:
-    name = os.environ.get("TZ", "").lstrip(":")
-    if name:
-        try:
-            return datetime.now(ZoneInfo(name))
-        except (ZoneInfoNotFoundError, ValueError):
-            pass
-    try:
-        with Path("/etc/localtime").open("rb") as source:
-            zone = ZoneInfo.from_file(source)
-        return datetime.now(zone)
-    except (OSError, ValueError):
-        return datetime.now(UTC)
 
 
 class LiveAPI:
@@ -55,17 +39,74 @@ class LiveAPI:
     def get_timeline(
         self, start: datetime | None, end: datetime | None
     ) -> w.TimelineResponse:
-        end = end or _local_now()
-        start = start or end.replace(hour=0, minute=0, second=0, microsecond=0)
-        if start >= end:
-            raise ValueError("invalid_time_range")
-        window = TimeRange(start.astimezone(UTC), end.astimezone(UTC))
+        window = time_range(start, end)
         portal = self.services.journal.portal
         return w.TimelineResponse(
             segments=[w.Segment.model_validate(s) for s in portal.segments(window)],
             capture_spans=[
                 w.CaptureSpan.model_validate(s) for s in portal.capture_spans(window)
             ],
+        )
+
+    def search(
+        self, text: str, start: datetime | None, end: datetime | None, limit: int
+    ) -> w.SearchResponse:
+        window = time_range(start, end)
+        portal = self.services.journal.portal
+        observations = {o.id: o for o in portal.observations(window)}
+        segments = {s.id: s for s in portal.segments(window)}
+        first_evidence: dict[str, datetime] = {}
+        for observation in observations.values():
+            if observation.segment is not None:
+                at = max(observation.started_at, window.start)
+                first_evidence[observation.segment] = min(
+                    first_evidence.get(observation.segment, at), at
+                )
+        hits: list[w.SearchHit] = []
+        for hit in portal.search(text, window, limit=limit):
+            if hit.kind == "segment":
+                segment = segments.get(hit.id)
+                if segment is None or segment.id not in first_evidence:
+                    continue
+                result = w.SearchHit(
+                    segment_id=segment.id,
+                    observation_id=None,
+                    at=first_evidence[segment.id],
+                    kind=segment.kind,
+                    title=segment.title,
+                    snippet=hit.text,
+                )
+            else:
+                observation = observations.get(hit.id)
+                if observation is None:
+                    continue
+                segment = segments.get(observation.segment or "")
+                result = w.SearchHit(
+                    segment_id=observation.segment,
+                    observation_id=observation.id,
+                    at=max(observation.started_at, window.start),
+                    kind=segment.kind if segment else None,
+                    title=segment.title if segment else observation.window.title,
+                    snippet=hit.text,
+                )
+            hits.append(result)
+            if len(hits) == limit:
+                break
+        return w.SearchResponse(hits=hits)
+
+    def totals(
+        self,
+        by: Literal["kind", "app", "title"],
+        start: datetime | None,
+        end: datetime | None,
+    ) -> w.TotalsResponse:
+        return w.TotalsResponse(
+            totals=[
+                w.Total.model_validate(total)
+                for total in self.services.journal.portal.totals(
+                    time_range(start, end), by
+                )
+            ]
         )
 
     def now(self) -> w.NowResponse:

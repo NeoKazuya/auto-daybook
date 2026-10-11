@@ -138,28 +138,55 @@ class Portal:
                 for row in rows
             ]
 
-    def search(self, text: str, range: TimeRange | None = None) -> list[Hit]:
+    def search(
+        self, text: str, range: TimeRange | None = None, *, limit: int | None = None
+    ) -> list[Hit]:
+        from ._store import bounds
+
+        if limit is not None and (type(limit) is not int or limit <= 0):
+            raise ValueError("search limit must be a positive integer")
         words = re.findall(r"\w+", text, flags=re.UNICODE)
         if not words:
             return []
         query = " AND ".join('"' + word + '"' for word in words)
+        parameters: list[str | int] = [query]
+        overlap = ""
+        if range is not None:
+            start, end = bounds(range)
+            if start == end:
+                return []
+            overlap = """
+                AND (
+                    (kind='observation' AND EXISTS (
+                        SELECT 1 FROM observations AS o
+                        WHERE o.id=note_search.id AND o.started_at<?
+                        AND (o.last_seen_at>? OR o.started_at>=?)))
+                    OR (kind='segment' AND EXISTS (
+                        SELECT 1 FROM observations AS o
+                        WHERE o.segment=note_search.id AND o.started_at<?
+                        AND (o.last_seen_at>? OR o.started_at>=?)))
+                )"""
+            parameters.extend((end, start, start, end, start, start))
+        parameters.extend((-1 if limit is None else limit, query))
         j = self._journal
         with j._lock:
             j._check_open()
-            allowed = None
-            if range is not None:
-                notes = self.observations(range)
-                allowed = {o.id for o in notes} | {
-                    o.segment for o in notes if o.segment is not None
-                }
+            # Select and cap ranked IDs before computing snippets or returning rows.
             rows = j._db.execute(
-                "SELECT id, kind, segment, snippet(note_search, 3, '', '', '…', 32) AS text FROM note_search WHERE note_search MATCH ? ORDER BY rank, rowid",
-                (query,),
+                f"""WITH ranked AS MATERIALIZED (
+                    SELECT rowid, rank FROM note_search
+                    WHERE note_search MATCH ? {overlap}
+                    ORDER BY rank, rowid LIMIT ?
+                )
+                SELECT note_search.id, kind, segment,
+                    snippet(note_search, 3, '', '', '…', 32) AS text
+                FROM note_search JOIN ranked ON ranked.rowid=note_search.rowid
+                WHERE note_search MATCH ?
+                ORDER BY ranked.rank, ranked.rowid""",
+                parameters,
             ).fetchall()
             return [
-                Hit(row["id"], row["kind"], row["text"], row["segment"])
-                for row in rows
-                if allowed is None or row["id"] in allowed
+                Hit(row["id"], row["kind"], row["text"], row["segment"]) for row in rows
             ]
 
     def totals(

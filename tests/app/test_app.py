@@ -1166,3 +1166,223 @@ async def test_public_skill_approval_refreshes_still_frame_evidence(
             assert len(gateway.prompts) == 6
             assert replacement in gateway.prompts[-1].user
             assert question not in gateway.prompts[-1].user
+
+
+async def test_newly_approved_questions_wait_for_fresh_observation_before_tick(
+    tmp_path, monkeypatch
+):
+    from datetime import UTC, datetime, timedelta
+
+    import httpx
+
+    import daybook.mind
+    import daybook.model
+    from daybook.model import Priority, ScriptedGateway
+    from daybook.web import create_app
+
+    now = [datetime.now(UTC) + timedelta(seconds=1)]
+
+    class RuntimeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now[0]
+
+    monkeypatch.setattr(app, "datetime", RuntimeDateTime)
+    original_mind = daybook.mind.Mind
+    monkeypatch.setattr(
+        daybook.mind,
+        "Mind",
+        lambda *args, **kwargs: original_mind(*args, clock=lambda: now[0], **kwargs),
+    )
+    question = "Is the visible result marked complete?"
+
+    class EvidenceGateway(ScriptedGateway):
+        async def call(self, priority, prompt):
+            built = await prompt() if callable(prompt) else prompt
+            if built is None:
+                return None
+            if priority == Priority.OBSERVE:
+                # The same frame includes a status detail omitted before the
+                # approved question asks the observer to preserve it.
+                seen = (
+                    "The result is marked complete."
+                    if question in built.user
+                    else "An editor displays source code."
+                )
+                self.replies.append(json.dumps({"seen": seen, "visible_text": ""}))
+            else:
+                current = built.user.split("CURRENT evidence;", 1)[1].split(
+                    "Questions about CURRENT evidence;", 1
+                )[0]
+                self.replies.append(
+                    json.dumps(
+                        {
+                            "segment": {
+                                "mode": "start",
+                                "title": "Code",
+                                "kind": "coding",
+                                "intent": "Likely working.",
+                            },
+                            "signals": {
+                                str(s.id): "result is marked complete" in current
+                                for s in services.skills.active_signals()
+                            },
+                        }
+                    )
+                )
+            return await super().call(priority, built)
+
+    gateway = EvidenceGateway([])
+    monkeypatch.setattr(daybook.model, "ModelGateway", lambda _: gateway)
+    text = (
+        "---\nid: result-check\nname: Result check\nsignals:\n"
+        f"  complete:\n    ask: {question}\n    type: bool\n"
+        "rules:\n  - when: complete becomes true\n    do:\n"
+        "      - overlay.show: {title: Result, body: Review the result}\n"
+        "allow: [overlay.show]\n---\nReview completed results.\n"
+    )
+    fixture = Path(__file__).resolve().parents[2] / "fixtures/replay/example"
+    async with app.open_runtime(library_config(tmp_path), replay=fixture) as runtime:
+        services = runtime.services
+        for entry in services.skills.entries():
+            services.skills.disable(entry.id)
+        assert isinstance(services.sense.screen, app.OverlayScreen)
+        raw = services.sense.screen.screen
+        facts = raw.state()
+        monkeypatch.setattr(raw, "state", lambda: facts)
+        await services.sense.poll(now[0])
+        await services.sense.wait_idle()
+        assert question not in gateway.prompts[-1].user
+        api = create_app(token="test", origin="http://test", services=services)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api),
+            base_url="http://test",
+            headers={"Origin": "http://test", "X-Daybook-Token": "test"},
+        ) as client:
+            saved = await client.put("/api/skills/result-check", json={"text": text})
+            approved = await client.post(
+                "/api/skills/result-check/approve", json={"hash": saved.json()["hash"]}
+            )
+            assert approved.status_code == 200
+            stale = await client.post("/api/tick")
+            stale_now = (await client.get("/api/now")).json()
+            now[0] += timedelta(seconds=40)
+            await services.sense.poll(now[0])
+            await services.sense.wait_idle()
+            assert question in gateway.prompts[-1].user
+            refreshed = await client.post("/api/tick")
+            assert refreshed.status_code == 200 and refreshed.json()["recorded"]
+            assert stale.json()["recorded"] is False, (
+                stale.json(),
+                stale_now["readings"],
+                "startup overlay fired",
+                services.overlay.state is not None,
+            )
+            assert services.overlay.state is None
+
+
+@pytest.mark.parametrize("stage", ["queued", "inflight"])
+async def test_question_disable_discards_queued_or_inflight_public_tick(
+    tmp_path, monkeypatch, stage
+):
+    from datetime import UTC, datetime, timedelta
+
+    import httpx
+
+    import daybook.mind
+    import daybook.model
+    from daybook.model import Priority, ScriptedGateway
+    from daybook.web import create_app
+
+    now = [datetime.now(UTC) + timedelta(seconds=1)]
+
+    class RuntimeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now[0]
+
+    monkeypatch.setattr(app, "datetime", RuntimeDateTime)
+    original_mind = daybook.mind.Mind
+    monkeypatch.setattr(
+        daybook.mind,
+        "Mind",
+        lambda *args, **kwargs: original_mind(*args, clock=lambda: now[0], **kwargs),
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class HeldTickGateway(ScriptedGateway):
+        async def call(self, priority, prompt):
+            if priority != Priority.TICK:
+                return await super().call(priority, prompt)
+            if stage == "queued":
+                entered.set()
+                await release.wait()
+            built = await prompt() if callable(prompt) else prompt
+            if built is None:
+                return None
+            if stage == "inflight":
+                entered.set()
+                await release.wait()
+            return await super().call(priority, built)
+
+    answer = json.dumps(
+        {
+            "segment": {
+                "mode": "start",
+                "title": "Code",
+                "kind": "coding",
+                "intent": "Working.",
+            },
+            "signals": {"result-check.complete": True},
+        }
+    )
+    gateway = HeldTickGateway(
+        ['{"seen":"The visible result is complete.","visible_text":""}', answer, answer]
+    )
+    monkeypatch.setattr(daybook.model, "ModelGateway", lambda _: gateway)
+    text = (
+        "---\nid: result-check\nname: Result check\nsignals:\n"
+        "  complete:\n    ask: Is the result complete?\n    type: bool\n"
+        "rules:\n  - when: complete becomes true\n    do:\n"
+        "      - overlay.show: {title: Result, body: Review the result}\n"
+        "allow: [overlay.show]\n---\nReview results.\n"
+    )
+    fixture = Path(__file__).resolve().parents[2] / "fixtures/replay/example"
+    async with app.open_runtime(library_config(tmp_path), replay=fixture) as runtime:
+        services = runtime.services
+        for entry in services.skills.entries():
+            services.skills.disable(entry.id)
+        api = create_app(token="test", origin="http://test", services=services)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api),
+            base_url="http://test",
+            headers={"Origin": "http://test", "X-Daybook-Token": "test"},
+        ) as client:
+            saved = await client.put("/api/skills/result-check", json={"text": text})
+            await client.post(
+                "/api/skills/result-check/approve", json={"hash": saved.json()["hash"]}
+            )
+            await services.sense.poll(now[0])
+            await services.sense.wait_idle()
+            original_observation = services.journal.portal.now().observation
+            ticking = asyncio.create_task(client.post("/api/tick"))
+            await asyncio.wait_for(entered.wait(), 1)
+            epoch = services.journal.epoch
+            await client.post("/api/skills/result-check/disable")
+            assert services.journal.epoch == epoch  # No forget barrier masks this race.
+            release.set()
+            result = await ticking
+            assert result.json()["recorded"] is False
+            assert gateway.priorities.count(Priority.TICK) == int(stage == "inflight")
+            assert not services.journal.portal.now().readings
+            # Retained approval with identical questions can reuse the same facts.
+            await client.post("/api/skills/result-check/enable")
+            now[0] += timedelta(seconds=30)
+            result = await client.post("/api/tick")
+            assert result.json()["recorded"]
+            retained = services.journal.portal.now().observation
+            assert retained is not None and original_observation is not None
+            assert retained.id == original_observation.id
+            assert retained.seen == original_observation.seen
+            assert gateway.priorities.count(Priority.OBSERVE) == 1
+            assert services.overlay.state is None

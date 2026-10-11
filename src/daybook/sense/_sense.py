@@ -79,6 +79,20 @@ class Sense:
         self._sequence = 0
         self._closed = False
 
+    def evidence_ready(self, observation_id: str, questions: tuple[str, ...]) -> bool:
+        """Whether these questions still match the successfully observed facts."""
+        if (
+            self._observation is None
+            or self._observation.id != observation_id
+            or self._observed_questions != questions
+        ):
+            return False
+        try:
+            return questions == self._question_provider()
+        except Exception:
+            self.bus.publish(StatusChanged("sense", "questions_unavailable"))
+            return False
+
     @property
     def privacy(self) -> PrivacySettings:
         return self._privacy

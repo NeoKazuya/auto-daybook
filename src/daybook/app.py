@@ -377,7 +377,14 @@ async def open_runtime(
             clear_readings=journal.clear_skill_readings,
         )
         mind = Mind(
-            journal, gateway, skills, config.tick_interval, effort=config.tick_effort
+            journal,
+            gateway,
+            skills,
+            config.tick_interval,
+            effort=config.tick_effort,
+            evidence_ready=lambda observation_id, questions: sense.evidence_ready(
+                observation_id, questions
+            ),
         )
         x11 = None
         raw: Screen

@@ -621,3 +621,38 @@ for(const kind of ['segment','observation']) {
     assert.equal(f.x.toasts.length,notices);
   });
 }
+
+
+for(const kind of ['segment','observation']) {
+  test('Daily '+kind+' Save owns its editor until the post-save GET completes',async()=>{
+    const f=await dailyFixture(),pending=defer();f.open(kind);f.field(kind).value='Saved latest';
+    f.x.setRequest((path,options)=>path.startsWith('/api/timeline')?pending.promise:f.request(path,options));
+    const editor=f.field(kind);
+    const saving=walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick();await settle();
+    assert.equal(editor.disabled,true);
+    f.open('segment');await settle();
+    assert.equal(f.field(kind),editor);
+    assert.ok(f.x.toasts.some(([message])=>/save.*cancel/i.test(message)));
+    pending.resolve(structuredClone(f.resource));await saving;await settle();
+    assert.equal(f.field(kind),undefined);assert.match(f.p.root.textContent,/Saved latest/);
+    f.open(kind);assert.equal(f.field(kind).value,'Saved latest');
+  });
+  test('Daily '+kind+' Save retains its confirmed record when the post-save GET fails',async()=>{
+    const f=await dailyFixture(),pending=defer(),older=defer();let gets=0;
+    const old=structuredClone(f.resource);
+    f.x.setRequest((path,options)=>path.startsWith('/api/timeline')?(++gets===1?older.promise:pending.promise):f.request(path,options));
+    f.p.hooks.onEvent();await settle();f.open(kind);f.field(kind).value='Saved latest';
+    const saving=walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick();await settle();
+    assert.equal(gets,2);older.resolve(old);await settle();
+    pending.reject(Error('Refresh offline'));await saving;await settle();
+    assert.equal(f.field(kind),undefined);assert.match(f.p.root.textContent,/Saved latest/);
+    assert.ok(f.x.toasts.some(([message])=>/refresh/i.test(message)));
+    f.open(kind);assert.equal(f.field(kind).value,'Saved latest');
+    const secondary=walk(f.p.root).find(n=>n['aria-label']===(kind==='segment'?'Intent':'Captured on-screen text'));
+    secondary.value='Later detail';f.x.setRequest(f.request);
+    await walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick();await settle();
+    const target=kind==='segment'?f.resource.segments[0]:f.resource.segments[0].observations[0];
+    assert.equal(target[kind==='segment'?'title':'seen'],'Saved latest');
+    assert.equal(target[kind==='segment'?'intent':'visible_text'],'Later detail');
+  });
+}

@@ -131,10 +131,14 @@ async function render(root, params) {
   async function saveEdit(id, controls, change, message) {
     for (const control of controls) control.disabled = true;
     try {
-      await change();
-      editing.delete(id);
+      const saved = await change();
+      // The confirmed PATCH is our fallback if the following GET is unavailable.
+      const current = data.segments.flatMap(s => [s, ...s.observations]).find(item => item.id === id);
+      if (current) Object.assign(current, saved);
       if (message) toast(message);
       await refresh();
+      editing.delete(id);
+      draw();
     } finally {
       for (const control of controls) control.disabled = false;
     }

@@ -143,3 +143,73 @@ def test_run_reports_a_lost_stream():
     Backend(8765, "t", http).run(statuses.append, on_event, stop)
     assert statuses == []
     assert events == ["Disconnected"]
+
+
+@pytest.mark.parametrize("hide_at", ["before_subscription", "during_snapshot"])
+def test_reconnect_does_not_leave_overlay_hidden_in_subscription_gap(hide_at):
+    """HTTP headers can arrive before the server's event generator subscribes."""
+    stop = threading.Event()
+    current: dict[str, dict[str, str] | None] = {"overlay": {"id": "old-overlay"}}
+    displayed = []
+    queued = []
+    subscribed = False
+
+    def hide():
+        current["overlay"] = None
+        if subscribed:
+            queued.append(b'event: OverlayHidden\ndata: {"id": "old-overlay"}\n\n')
+
+    class DelayedSubscription(httpx.SyncByteStream):
+        def __iter__(self):
+            nonlocal subscribed
+            if hide_at == "before_subscription":
+                hide()
+            subscribed = True
+            yield b": connected\n\n"
+            while queued:
+                yield queued.pop(0)
+
+    def handler(request):
+        if request.url.path == "/api/events":
+            return httpx.Response(200, stream=DelayedSubscription())
+        snapshot = dict(current)
+        if hide_at == "during_snapshot":
+            hide()
+        return httpx.Response(200, json=snapshot)
+
+    def on_status(status):
+        displayed.append(status["overlay"])
+
+    def on_event(name, data):
+        if name == "OverlayHidden":
+            displayed.append(None)
+        elif name == "Disconnected":
+            stop.set()
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="http://x"
+    ) as http:
+        Backend(8765, "t", http).run(on_status, on_event, stop)
+
+    assert displayed
+    assert displayed[-1] is None
+
+
+def test_stream_ending_before_ready_never_applies_unsynchronized_snapshot():
+    stop = threading.Event()
+    statuses = []
+
+    def handler(request):
+        if request.url.path == "/api/events":
+            return httpx.Response(200, content=b": heartbeat\n\n")
+        return httpx.Response(200, json={"overlay": {"id": "stale"}})
+
+    def on_event(name, data):
+        assert name == "Disconnected"
+        stop.set()
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="http://x"
+    ) as http:
+        Backend(8765, "t", http).run(statuses.append, on_event, stop)
+    assert statuses == []

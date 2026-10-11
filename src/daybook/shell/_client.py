@@ -106,11 +106,22 @@ class Backend:
                     timeout=httpx.Timeout(5, read=30),
                 ) as response:
                     response.raise_for_status()
-                    # Connected first, then read status: any event after this point
-                    # is queued in the stream, so nothing falls between the two.
+                    # Headers precede the server generator's bus subscription.
+                    # Its ready comment confirms events are now queued. Keep this
+                    # iterator: it can already hold events buffered with the marker.
+                    lines = response.iter_lines()
+                    for line in lines:
+                        if stop.is_set():
+                            return
+                        if line == ": connected":
+                            break
+                    else:
+                        raise httpx.RemoteProtocolError(
+                            "Event stream ended before subscription was ready"
+                        )
                     on_status(self.status())
                     delay = 1.0
-                    for name, data in sse_events(response.iter_lines()):
+                    for name, data in sse_events(lines):
                         if stop.is_set():
                             return
                         try:

@@ -57,4 +57,19 @@ Status: **decided** (the user answered), **default** (proposed by the planner an
 - Product name (`daybook` is the working name).
 - Whether withheld (excluded-app) time shows as a "private" gap on the timeline (current design) or not at all.
 - Whether to switch to Qwen3.8 once it downloads (gated on `accept.py --vision` and the replay fixtures).
-- The cua trial result (D15).
+
+## GX10 cua trial — 2026-10-10
+
+**Result: no; use `XdoDesktop`.** This closes D15 for the hackathon build.
+The optional adapter was tested for about 10 minutes, within the one-hour limit
+in ARCHITECTURE §11.1. No `CuaDesktop` is shipped.
+
+- Downloaded the official [cua-driver 0.34.1 Linux ARM64 release](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.34.1), verified its archive against the release's SHA256SUMS, and extracted it into an isolated trial directory on the GX10. No service or extension was installed.
+- `gx10 status` passed. The test ran on the existing unlocked GNOME/Xorg `:1` session through `gx10 run`, holding the capture lock. Telemetry was disabled.
+- A temporary daemon with a private socket successfully listed the desktop windows. A Python `CuaDesktop` trial adapter called the driver CLI for the named desktop operations.
+- `launch_app` with the desktop ID `org.gnome.TextEditor` opened the editor and returned a visible window. Repeating the same launch while the editor was already running failed after 8 seconds with `launch_handoff_timeout`, `effect: refused`, and `handoff: dbus_activation`; the existing editor window remained visible. This fails the required `desktop.launch` behavior.
+- The focus and URL tests were not reached after this failure. The temporary daemon was stopped and the lock released. No screenshots or recordings were written by the trial.
+
+The result is a failure of this release in the tested session, not a claim that
+all cua versions fail on Xorg. The existing xdotool/wmctrl/gtk-launch backend
+remains the implementation for the three named desktop actions.

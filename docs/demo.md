@@ -11,7 +11,7 @@ The live demo runs on the GX10. A presenter really uses the machine while the au
 - [ ] Skills:
   - `music` active
   - `break` disabled
-  - `break-demo` approved but **disabled** (it's enabled at step 6)
+  - `break-demo` approved (built-in, unmodified) but **disabled**; it's enabled at step 6
   - no `stand-after-meeting` yet (it's created at step 4)
 - [ ] Windows ready:
   - VS Code with this repo open on a file with a visible failing test
@@ -28,7 +28,7 @@ The live demo runs on the GX10. A presenter really uses the machine while the au
 | 1 | Shows the Daybook UI: empty timeline, model footer, privacy page | A local model, nothing stored yet | "Everything runs on this box. Screenshots never touch disk; only text notes are kept." |
 | 2 | Works in VS Code for ~1 min: reads the failing test, edits a line | A "coding" segment appears with an inferred intent; focus music starts | "It writes notes from what's on screen, and separately guesses intent. You can see which is which." |
 | 3 | Switches to the PDF and reads for ~1 min | A new "reading" segment; music changes to calm within about 30–60 s | "The music skill asks the model one question: which mood fits right now? Code picks the tracks." |
-| 4 | In chat: "remind me to stand up every time I finish a meeting" | A review card: the question it will ask, the rule in words, the permission (`overlay.show`). Click **Enable** | "Skills are short text files. This one was just written by the model, and nothing runs until I approve exactly this version." |
+| 4 | In chat: "remind me to stand up every time I finish a meeting" | A review card: the question it will ask, the rule in words, the permission (`overlay.show`). Click **Approve & enable** | "Skills are short text files. This one was just written by the model, and nothing runs until I approve exactly this version." |
 | 5 | Opens the meeting tab for ~1 min, then goes back to VS Code | A "meeting" segment, then the full-screen "Meeting's over" overlay. Dismiss it | "It fired once, when the meeting ended." |
 | 6 | Enables `break-demo`, then codes for ~2 min | The full-screen break overlay with break music. Dismiss it; focus music returns on the next tick | "The real break reminder waits 50 minutes. This demo copy waits 2." |
 | 7 | In chat: "what did I do in the last 10 minutes?" | An answer with durations and links into the timeline | "Recall uses the same notes. Durations come from code, not the model." |

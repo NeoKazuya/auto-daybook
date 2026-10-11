@@ -96,10 +96,10 @@ An invalid file is still saved, and shows as **invalid** in the UI so it can be 
 
 ## Approval
 
-- **Hash-bound.** A skill runs only when an approval exists for `sha256(skill file + hook file)`.
+- **Approved and enabled are separate.** A skill runs only when it's enabled *and* `sha256(skill file + hook file)` is approved. Disabling a skill keeps its approval, so turning it back on needs no new review.
 - **Edits reset approval.** Any edit, whether by hand, in the UI editor, or by the generator, returns the skill to **needs review**.
-- **Stale approvals are refused.** Enabling posts the hash the user reviewed. If the file changed since, the server refuses and shows the new text.
-- **Built-in exception.** Skills in `skills/builtin/` count as approved, because they're reviewed through the repo's PR process.
+- **Stale approvals are refused.** "Approve & enable" posts the hash the user reviewed. If the file changed since, the server refuses and shows the new text.
+- **Built-in exception.** A skill in `skills/builtin/` counts as approved while its file is identical to the committed version, because it was reviewed through the repo's PR process. A locally modified built-in needs review like any other skill. Built-ins other than `music` start disabled.
 
 ## Writing good signals
 

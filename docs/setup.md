@@ -31,19 +31,7 @@ If the extension isn't found, GNOME Shell hasn't picked up the new package yet. 
 
 **Check:** `gnome-extensions list --enabled` includes `ubuntu-appindicators@ubuntu.com`.
 
-## 3. Python environment
-
-```sh
-curl -LsSf https://astral.sh/uv/install.sh | sh     # installs uv to ~/.local/bin
-git clone https://github.com/NeoKazuya/auto-daybook ~/auto-daybook
-cd ~/auto-daybook && uv sync                        # Python 3.12 + dependencies, including PySide6-Essentials (~84 MB)
-```
-
-**Check:** `uv run daybook --help` works. `scripts/check.sh` passes (once the Contracts work has landed).
-
-Agents work in their own worktrees next to `~/auto-daybook` (see [CONTRIBUTING.md](../CONTRIBUTING.md)). Each development instance sets its own `DAYBOOK_HOME`, for example `~/.daybook-<agent>`.
-
-## 4. GitHub access
+## 3. GitHub access
 
 Everyone shares the `asus` Unix account, so a single `gh auth login` would make every agent act as one person. Instead, each person gives their agent sessions their own token:
 
@@ -53,7 +41,19 @@ export GH_TOKEN=<your personal token with repo scope>
 gh auth status
 ```
 
-**Check:** `gh auth status` shows your own account.
+**Check:** `gh auth status` shows your own account. The repo is private, so this has to work before cloning.
+
+## 4. Python environment
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh     # installs uv to ~/.local/bin
+gh repo clone NeoKazuya/auto-daybook ~/auto-daybook   # private repo: uses GH_TOKEN from step 3
+cd ~/auto-daybook && uv sync                        # Python 3.12 + dependencies, including PySide6-Essentials (~84 MB)
+```
+
+**Check:** `uv run daybook --help` works. `scripts/check.sh` passes (once the Contracts work has landed).
+
+Agents work in their own worktrees next to `~/auto-daybook` (see [CONTRIBUTING.md](../CONTRIBUTING.md)). Each development instance sets its own `DAYBOOK_HOME`, for example `~/.daybook-<agent>`.
 
 ## 5. Music library
 

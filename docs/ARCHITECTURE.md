@@ -95,7 +95,7 @@ GNOME Xorg :1 ──────────────────────
 
 ## 4. Data model
 
-All notes live in one SQLite file, `$DAYBOOK_HOME/journal.db`, in WAL mode with `secure_delete=ON` and an FTS5 index. The `journal` package is its only writer, except for the `approvals` and `firings` tables, which only `skills` writes. There is no image column anywhere.
+All notes live in one SQLite file, `$DAYBOOK_HOME/journal.db`, in WAL mode with `secure_delete=ON` and an FTS5 index. The `journal` package is its only writer, except for the `skill_state` and `firings` tables, which only `skills` writes. There is no image column anywhere.
 
 | Type | Fields | Rules |
 |---|---|---|
@@ -104,7 +104,7 @@ All notes live in one SQLite file, `$DAYBOOK_HOME/journal.db`, in WAL mode with 
 | `SignalReading` | `signal: SignalId(skill, name)`, `value: bool\|str\|float\|None`, `at`, `tick` | One row per signal per tick. `None` means the model couldn't tell or answered outside the type. "Held for 50 minutes" is computed from readings, so it survives a restart |
 | `CaptureSpan` | `state: running\|paused\|locked\|withheld\|overlay`, `start`, `end` | Why capture was or wasn't happening. The timeline shows gaps honestly, and recall won't invent activity inside them |
 | `Tick` | `at`, `observations`, `segment: Continue\|Start`, `readings` | Applied in one transaction. Unique on its newest observation, so re-applying is a no-op. Observations deleted mid-tick are skipped |
-| `Approval` | `skill`, `source_hash`, `at` | A skill is active only if an approval exists for its current hash |
+| `SkillState` | `skill`, `enabled`, `approved_hash` (or none), `at` | Enablement and approval are stored separately. A skill is **active** only if `enabled` is true *and* its current hash is approved. Disabling keeps the approval, so re-enabling needs no new review; any edit changes the hash, so the skill needs review again |
 | `Firing` | `skill`, `rule`, `key`, `at`, `outcomes` | Unique on (skill, rule, key). This makes each rule fire at most once per occurrence |
 
 `ActivityKind` is one of: `coding`, `writing`, `reading`, `browsing`, `meeting`, `chatting`, `media`, `admin`, `other`.
@@ -149,7 +149,7 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 | `daybook.model` | endpoint config, the single slot, request formats per dialect, structured output | `ModelGateway`, `Prompt`, `Priority`, `ScriptedGateway` |
 | `daybook.sense` | the screen, `privacy.json`, the gate, change detection, the observe prompt | `Sense`, `Screen` (`X11Screen`, `ReplayScreen`), `gate()`, `PrivacySettings` |
 | `daybook.mind` | tick scheduling, the tick prompt, closing a segment after a gap | `Mind.run/nudge/tick_now`, `parse_tick` |
-| `daybook.skills` | skill files, the `approvals` and `firings` tables, the trigger evaluator, the generator | `SkillBook`, `parse_skill`, `evaluate`, `draft_skill`, `HookContext` |
+| `daybook.skills` | skill files, the `skill_state` and `firings` tables, the trigger evaluator, the generator | `SkillBook`, `parse_skill`, `evaluate`, `draft_skill`, `HookContext` |
 | `daybook.act` | the action catalog, the music library and player, overlay state, desktop control | `Catalog`, `Actions`, `build_catalog`, `OverlayRequest`, `DesktopControl` |
 | `daybook.chat` | intent routing, the recall prompt, time-window resolution | `Chat.respond` |
 | `daybook.web` | HTTP routes, the JSON wire format, the static UI | `create_app` |
@@ -232,8 +232,8 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
    - our own overlay is up → `OVERLAY`
    - any *viewable* top-level window on the current desktop matches an exclusion → `WITHHELD`
 2. **Thumbnail.** Grab a 32×18 grayscale thumbnail. If it's black → `LOCKED`.
-3. **Unchanged screen.** If the window is the same and the thumbnail differs by less than 3%, call `extend_observation`. No model call.
-4. **Otherwise,** if at least 10 s have passed since the last observe (or the app switched), call the gateway with an OBSERVE builder. The builder rechecks the gate, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it re-lists the windows.** If the window set changed, it discards the frame.
+3. **Keep time continuous.** Every poll that passes the gate extends the latest observation (`extend_observation`), whether or not the screen changed. An observation therefore covers the time until the next one starts, and totals don't lose the seconds between a change and the next model call.
+4. **New observation** if the window changed or the thumbnail differs by 3% or more, and at least 10 s have passed since the last observe (an app switch skips the wait). Call the gateway with an OBSERVE builder. The builder rechecks the gate, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it re-lists the windows.** If the window set changed, it discards the frame.
 5. **Write the result.** `add_observation`, then `mind.nudge(app_switched)`. A result is discarded if the consent generation changed while it was in flight (see [§7](#7-privacy)).
 
 **Observe prompt:** describe only what's visible, in 1–2 sentences, plus up to 300 characters of salient on-screen text. No guesses about goals or feelings; that's the tick's job. The window app and title are given to the model as facts.
@@ -255,7 +255,7 @@ Our overlay is recognized by `_NET_WM_PID` matching the shell process that `dayb
 
 - `gate()` has a table test for every branch, including an excluded window in the background and an unreadable lock state.
 - The black-frame check passes against the real locked-screen capture from grounding.
-- A replay run writes observations, and unchanged frames extend instead of calling the model.
+- A replay run writes observations, and unchanged frames extend instead of calling the model. A changed frame inside the 10 s cooldown still extends the current observation, so `totals()` has no gap.
 - A frame whose window set changed after the grab is discarded.
 - On the GX10, an unlocked screen yields a correct observation, and a locked screen yields `LOCKED` with no model call.
 - `privacy.json` round-trips, and changes apply within one poll.
@@ -299,7 +299,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
 ### 6.6 `skills`: format, approval, triggers, and generator
 
-**Owns** the skill files (`skills/builtin/` in the repo, `$DAYBOOK_HOME/skills/` for user skills), the `approvals` and `firings` tables, the only parser, the trigger evaluator, and the chat skill generator. The full format is in [skills.md](skills.md).
+**Owns** the skill files (`skills/builtin/` in the repo, `$DAYBOOK_HOME/skills/` for user skills), the `skill_state` and `firings` tables, the only parser, the trigger evaluator, and the chat skill generator. The full format is in [skills.md](skills.md).
 
 - **`parse_skill(text, catalog, hook_text) -> Skill | [SkillError]`.** The only parser. The loader, the UI editor's live check, the CLI, and the generator all use it. It checks that:
   - every `do` action is in `allow`
@@ -309,11 +309,12 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
   - a skill has at most 4 signals, and there are at most 12 active signals overall
   - a hook step has a matching function in `<id>.hook.py`
 - **`evaluate(rule, history, max_gap=5 min, now) -> Occurrence | None`.** Pure. It covers the four trigger forms and the keys that make firing idempotent.
-- **Approval.**
-  - A skill is active only if an approval exists for `sha256(skill file + hook file)`.
+- **Approval and enablement** (stored separately, in `skill_state`).
+  - A skill is active only if it is enabled *and* `sha256(skill file + hook file)` is approved.
+  - `approve(id, hash)` approves that exact hash and enables the skill. `disable(id)` and `enable(id)` flip only `enabled`. Enabling a skill whose current hash isn't approved is refused, so it has to be reviewed.
   - Any edit, whether by hand, in the UI, or by the generator, returns it to "needs review".
   - Approving an outdated hash fails with `StaleApproval`.
-  - Built-in skills in the repo count as approved.
+  - A built-in skill in `skills/builtin/` counts as approved only while its file is identical to the committed version (`git diff --quiet HEAD -- <file>` and no untracked changes). A locally modified built-in loses that exception and needs review like any other skill. New installs start with only `music` enabled; every other built-in starts approved but disabled.
 - **`react(tick)`.** For each active skill and each rule:
   1. evaluate the rule
   2. check its cooldown
@@ -330,7 +331,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
 - The parser accepts the built-in skills and the generated example from [skills.md](skills.md), and rejects a table of bad files with precise error locations.
 - `evaluate` is table-tested for all four forms, including gaps, startup (an edge needs a prior reading), and streak keys.
-- Approve, edit, and approve again works; the stale hash case is covered.
+- Approve, edit, and approve again works; the stale hash case is covered. Disable then enable keeps the approval. A locally edited built-in needs review.
 - `react` fires once per occurrence (proven by applying a tick twice), and cooldown is respected.
 - A disallowed action can't run, even from a hook.
 - The generator turns the demo request into a valid skill with the real model, in under 30 s.
@@ -421,7 +422,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 | `PATCH/DELETE /api/observations/{id}` | `edit_observation`, `forget_observation` |
 | `POST /api/forget {from,to}`, `POST /api/forget-all` | `forget_range`, `forget_all` |
 | `POST /api/chat {message}` | `chat.respond` |
-| `GET /api/skills`, `PUT /api/skills/{id}`, `POST /api/skills/{id}/approve {hash}` (409 if stale), `POST /api/skills/{id}/disable`, `DELETE /api/skills/{id}`, `POST /api/skills/parse {text}` | `SkillBook` methods and `parse_skill` |
+| `GET /api/skills`, `PUT /api/skills/{id}`, `POST /api/skills/{id}/approve {hash}` (409 if stale), `POST /api/skills/{id}/enable` (409 if needs review), `POST /api/skills/{id}/disable`, `DELETE /api/skills/{id}`, `POST /api/skills/parse {text}` | `SkillBook` methods and `parse_skill` |
 | `GET/PUT /api/privacy` | `sense.privacy`, `set_privacy` |
 | `POST /api/overlay/{id}/dismiss` | `overlay.hide` |
 | `GET /api/status` | gateway, music, overlay, and capture status |
@@ -502,7 +503,7 @@ One web page with tabs, titled `Daybook · <tab>`. That title is excluded from c
   - the permissions (from the catalog)
   - the raw file
 
-  Under the card are an editor with live parse errors and Enable (posts the reviewed hash), Disable, and Delete buttons.
+  Under the card are an editor with live parse errors and Approve & enable (posts the reviewed hash), Enable / Disable (once approved), and Delete buttons.
 - **Privacy.** Pause toggle, exclusions editor, "screenshots stored: none", the forget buttons, and the model status.
 - **Footer** on every page. Capture state, now playing, model name, reachability, and calls per minute.
 
@@ -515,7 +516,7 @@ pyproject.toml            # Python 3.12, uv; deps: fastapi, uvicorn, httpx, pyda
 src/daybook/
   app.py  events.py
   journal/  model/  sense/  mind/  skills/  act/  chat/  web/ (static/)  shell/ (overlay.qml)
-skills/builtin/           # music, break, break-demo (approved by being in the repo)
+skills/builtin/           # music, break, break-demo (approved while unmodified from the committed version)
 fixtures/replay/<scenario>/   # recorded steps: frame PNGs, window.json, lock flags, expected labels
 scripts/check.sh          # the local checks
 scripts/check_boundaries.py

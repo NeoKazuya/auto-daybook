@@ -1,5 +1,7 @@
 import asyncio
+import tempfile
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -158,11 +160,20 @@ async def test_xdo_invalid_requests_do_not_spawn(monkeypatch):
     assert not (await desktop.launch("bad;command")).ok
 
 
-async def test_real_mpv_ipc_transcript_and_restart(tmp_path):
+@pytest.fixture
+def short_home():
+    # macOS caps AF_UNIX socket paths at 104 bytes, and pytest's tmp_path there is
+    # longer than that, so a home holding a socket lives under a short /tmp path.
+    with tempfile.TemporaryDirectory(dir="/tmp") as short:
+        home = Path(short) / "home"
+        home.mkdir()
+        yield home
+
+
+async def test_real_mpv_ipc_transcript_and_restart(short_home):
     from daybook.act._music import Mpv
 
-    home = tmp_path / "home"
-    home.mkdir()
+    home = short_home
     mpv = Mpv(home)
 
     # Existing external IPC peer simulates an mpv child without speakers.

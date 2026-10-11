@@ -603,3 +603,21 @@ test('successful exclusion Add keeps newer pending input and clears only an unch
   assert.equal(privacy.exclude_titles.length,1);
   assert.equal(walk(p.root).find(n=>n.spec==='form.excl-form').querySelector('input').value,'');
 });
+
+
+for(const kind of ['segment','observation']) {
+  for(const fail of [false,true]) test('older Daily '+(fail?'error':'response')+' cannot replace the newer post-save '+kind+' view',async()=>{
+    const f=await dailyFixture(),pending=defer();let gets=0;
+    const old=structuredClone(f.resource);
+    f.x.setRequest((path,options)=>path.startsWith('/api/timeline')&&++gets===1?pending.promise:f.request(path,options));
+    f.p.hooks.onEvent();await settle();f.open(kind);f.field(kind).value='Saved latest';
+    await walk(f.p.root).find(n=>n.spec.startsWith('button')&&n.textContent==='Save').onclick();await settle();
+    assert.match(f.p.root.textContent,/Saved latest/);
+    const notices=f.x.toasts.length;
+    if(fail) pending.reject(Error('Old request failed'));
+    else pending.resolve(old);
+    await settle();
+    assert.match(f.p.root.textContent,/Saved latest/);
+    assert.equal(f.x.toasts.length,notices);
+  });
+}

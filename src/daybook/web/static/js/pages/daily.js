@@ -37,12 +37,18 @@ async function render(root, params) {
     panel(isToday ? "Today's entries" : `Entries for ${dayStamp(day)}`, 'calendar', count, list));
 
   let data = null;
+  let latestRefresh = null;
 
   async function refresh() {
+    const request = {};
+    latestRefresh = request;
     try {
-      data = await api.timeline(from, to);
+      const next = await api.timeline(from, to);
+      if (latestRefresh !== request) return;
+      data = next;
       if (!editing.size) draw();
     } catch (err) {
+      if (latestRefresh !== request) return;
       if (editing.size) toast("Couldn't refresh timeline: " + err.message, 'error');
       else list.replaceChildren(errorState(err, refresh));
     }

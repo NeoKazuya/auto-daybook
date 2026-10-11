@@ -7,6 +7,7 @@ import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import HTTPException
 
@@ -15,6 +16,7 @@ from daybook.act import OverlayRequest, build_catalog
 from daybook.skills import Skill, SkillEntry, SkillSource, parse_skill
 
 from . import wire as w
+from ._window import time_range
 
 
 class MockAPI:
@@ -41,11 +43,13 @@ class MockAPI:
     def get_timeline(
         self, start: datetime | None, end: datetime | None
     ) -> w.TimelineResponse:
+        window = time_range(start, end)
+
         def overlaps(a: datetime | None, b: datetime | None) -> bool:
             return (
                 a is not None
-                and (end is None or a <= end)
-                and (start is None or b is None or b >= start)
+                and a < window.end
+                and (b is None or b > window.start or a >= window.start)
             )
 
         return w.TimelineResponse(
@@ -55,6 +59,88 @@ class MockAPI:
             capture_spans=[
                 s for s in self.timeline.capture_spans if overlaps(s.start, s.end)
             ],
+        )
+
+    def search(
+        self, text: str, start: datetime | None, end: datetime | None, limit: int
+    ) -> w.SearchResponse:
+        window = time_range(start, end)
+        words = re.findall(r"\w+", text.casefold())
+        if not words:
+            return w.SearchResponse(hits=[])
+        hits: list[w.SearchHit] = []
+        for segment in self.get_timeline(window.start, window.end).segments:
+            if segment.started_at is not None and all(
+                word in (segment.title + " " + segment.intent).casefold()
+                for word in words
+            ):
+                hits.append(
+                    w.SearchHit(
+                        segment_id=segment.id,
+                        observation_id=None,
+                        at=segment.started_at,
+                        kind=segment.kind,
+                        title=segment.title,
+                        snippet=segment.title + " " + segment.intent,
+                    )
+                )
+            for observation in segment.observations:
+                if not (
+                    observation.started_at < window.end
+                    and (
+                        observation.last_seen_at > window.start
+                        or observation.started_at >= window.start
+                    )
+                ):
+                    continue
+                snippet = observation.seen + " " + observation.visible_text
+                if all(word in snippet.casefold() for word in words):
+                    hits.append(
+                        w.SearchHit(
+                            segment_id=segment.id,
+                            observation_id=observation.id,
+                            at=observation.started_at,
+                            kind=segment.kind,
+                            title=segment.title,
+                            snippet=snippet,
+                        )
+                    )
+        return w.SearchResponse(hits=hits[:limit])
+
+    def totals(
+        self,
+        by: Literal["kind", "app", "title"],
+        start: datetime | None,
+        end: datetime | None,
+    ) -> w.TotalsResponse:
+        window = time_range(start, end)
+        sums: dict[str, float] = {}
+        for segment in self.get_timeline(window.start, window.end).segments:
+            for observation in segment.observations:
+                seconds = max(
+                    0.0,
+                    (
+                        min(observation.last_seen_at, window.end)
+                        - max(observation.started_at, window.start)
+                    ).total_seconds(),
+                )
+                if seconds == 0:
+                    continue
+                label = (
+                    observation.window.app
+                    if by == "app"
+                    else segment.title
+                    if by == "title"
+                    else segment.kind
+                )
+                sums[label] = sums.get(label, 0.0) + seconds
+        return w.TotalsResponse(
+            totals=[
+                w.Total(label=label, active=seconds)
+                for label, seconds in sorted(
+                    sums.items(), key=lambda item: (-item[1], item[0])
+                )
+            ]
         )
 
     def now(self) -> w.NowResponse:

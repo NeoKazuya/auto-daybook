@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -158,11 +158,24 @@ def create_app(
         start: Annotated[datetime | None, Query(alias="from")] = None,
         end: Annotated[datetime | None, Query(alias="to")] = None,
     ):
-        if any(t is not None and t.tzinfo is None for t in (start, end)) or (
-            start is not None and end is not None and start >= end
-        ):
-            raise HTTPException(422, "invalid_time_range")
         return backend.get_timeline(start, end)
+
+    @app.get("/api/search", response_model=w.SearchResponse)
+    async def search(
+        q: Annotated[str, Query(max_length=500)] = "",
+        start: Annotated[datetime | None, Query(alias="from")] = None,
+        end: Annotated[datetime | None, Query(alias="to")] = None,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    ):
+        return backend.search(q, start, end, limit)
+
+    @app.get("/api/totals", response_model=w.TotalsResponse)
+    async def totals(
+        by: Literal["kind", "app", "title"] = "kind",
+        start: Annotated[datetime | None, Query(alias="from")] = None,
+        end: Annotated[datetime | None, Query(alias="to")] = None,
+    ):
+        return backend.totals(by, start, end)
 
     @app.get("/api/now", response_model=w.NowResponse)
     async def now():

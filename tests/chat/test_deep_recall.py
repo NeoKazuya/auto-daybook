@@ -318,3 +318,77 @@ async def test_answer_after_neighbor_read_does_not_repeat_the_same_read(journal)
     answer = await chat(journal, gateway).respond("/ask What happened next?", (turn,))
     assert isinstance(answer, Answer) and answer.cites == (second,)
     assert len(gateway.prompts) == 2
+
+
+@pytest.mark.parametrize("routed", [False, True])
+@pytest.mark.asyncio
+async def test_forget_while_waiting_for_model_admission_never_transmits_old_notes(
+    journal, monkeypatch, routed
+):
+    import asyncio
+
+    import httpx
+
+    from daybook.model import ModelConfig, ModelGateway, Priority, Prompt
+
+    at = datetime.now(UTC) - timedelta(hours=1)
+    _, segment = note(journal, at, "Secret task", "QUEUED_SECRET_NOTE")
+    turn = RecallTurn(
+        "QUEUED_SECRET_QUESTION",
+        (segment,),
+        TimeRange(at, at + timedelta(minutes=1)),
+        journal.epoch,
+    )
+    occupied, release = asyncio.Event(), asyncio.Event()
+    transmitted = []
+
+    async def transport(request):
+        body = json.loads(request.content)
+        user = body["messages"][1]["content"]
+        if user == "occupy":
+            occupied.set()
+            await release.wait()
+            content = "ready"
+        else:
+            transmitted.append(user)
+            content = (
+                '{"route":"recall"}'
+                if body["messages"][0]["content"].startswith("Classify")
+                else reply("I don't have notes for that.")
+            )
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": content}}]}
+        )
+
+    client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: client(transport=httpx.MockTransport(transport), **kwargs),
+    )
+    gateway = ModelGateway(ModelConfig(base_url="http://model.test/v1"))
+    blocker = asyncio.create_task(
+        gateway.call(
+            Priority.INTERACTIVE, Prompt(system="hold", user="occupy", output=str)
+        )
+    )
+    try:
+        await asyncio.wait_for(occupied.wait(), 2)
+        question = "What happened next?" if routed else "/ask What happened next?"
+        task = asyncio.create_task(chat(journal, gateway).respond(question, (turn,)))
+        for _ in range(20):
+            if gateway.status().queue_depth:
+                break
+            await asyncio.sleep(0)
+        assert gateway.status().queue_depth == 1
+        journal.forget_all()
+        release.set()
+        await asyncio.wait_for(blocker, 2)
+        answer = await asyncio.wait_for(task, 2)
+        assert isinstance(answer, Answer)
+        assert transmitted
+        assert all("QUEUED_SECRET" not in text for text in transmitted)
+        assert not answer.cites
+    finally:
+        release.set()
+        await gateway.close()

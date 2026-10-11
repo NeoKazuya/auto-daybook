@@ -43,7 +43,7 @@ async function render(root, params) {
       h('button', { type: 'button', onclick: () => prefix('/skill ') }, h('span.tag.quiet', '/skill  draft a skill'))));
 
   root.append(
-    ribbon(page, [h('button.pill', { type: 'button', onclick: () => { notes.length = 0; draw(); } }, icon('x'), 'Clear board')]),
+    ribbon(page, [h('button.pill', { type: 'button', onclick: () => { notesRevision++; notes.length = 0; draw(); } }, icon('x'), 'Clear board')]),
     panel('Ask your Daybook', 'sticky', null, composer),
     board);
 
@@ -96,13 +96,22 @@ async function render(root, params) {
     message = message.trim();
     if (!message) return;
     input.value = '';
+    // Carry references only: generated answer text must never revive forgotten notes.
+    const history = notes.filter(note => !note.pending && !note.error
+      && note.reply?.type === 'answer' && Number.isInteger(note.reply.epoch))
+      .slice(-4).map(note => ({
+        question: note.message.slice(0, 2000),
+        cites: note.reply.cites.slice(0, 8),
+        window: note.reply.window,
+        epoch: note.reply.epoch,
+      }));
     const n = { message, at: new Date(), pending: true };
     const revision = notesRevision;
     notes.push(n);
     draw();
     send.disabled = true;
     try {
-      n.reply = await api.chat(message);
+      n.reply = await api.chat(message, history);
       if (n.reply.type !== 'draft' && revision !== notesRevision) return;
       // Answers cite segment IDs; look up their titles for the links.
       if (n.reply.type === 'answer' && n.reply.cites.length) {

@@ -440,7 +440,7 @@ Tab navigation supports Firefox/LibreWolf and Chrome/Chromium/Brave/Edge with th
 3. Combine bounded day summaries and code-computed totals with ranked searches. Interleave search results so early generic words do not crowd out later terms. Portal.read_notes(ids, range=None, neighbors="none", budget_tokens=4000) reads fresh underlying observations, prioritizes exact matches, and can include next/previous observations for follow-ups. It returns bounded text, surviving citation IDs, an evidence window, and a truncation flag.
 4. Answer immediately when evidence is sufficient, or request up to two bounded rounds of targeted searches/reads, then answer. Each round permits three queries with 24 hits each and up to eight selected IDs; text, note counts and prompt sizes are bounded. No embedding service or persisted chat transcript is involved.
 5. Give the detail the question warrants. Distinguish visible observations from inferred intent; titles alone do not establish video/page content. Copy code-computed duration strings when answering time questions. Cite only freshly read segments and return a window covering cited evidence.
-6. Check the journal epoch after every awaited model call and before returning. A forget/edit discards the attempt, retrieval plans and prior references; retry against current notes at most three times. Capture gaps and missing details remain missing.
+6. Build prompts at gateway admission, rechecking the journal epoch before queued evidence is transmitted. Check it again after every awaited model call and before returning. A forget/edit discards the attempt, retrieval plans and prior references; retry against current notes at most three times. Capture gaps and missing details remain missing.
 
 **Done when:**
 

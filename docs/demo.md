@@ -16,7 +16,7 @@ The live demo runs on the GX10. A presenter really uses the machine while the au
 - [ ] Windows ready:
   - VS Code with this repo open on a file with a visible failing test
   - a PDF (a paper or the docs) in a viewer
-  - a browser tab that looks like a video meeting (a Google Meet "ready to join" page, or a local mock if the network is off)
+  - a video call that's actually joined, for example a Google Meet or Jitsi call with a teammate on their phone, showing participants and a "Leave call" button. A "ready to join" page isn't enough: it correctly reads as *not* in a meeting, so the reminder wouldn't fire. If the network is off, use a local page that looks like an active call (participant tiles, a running call timer, a "Leave call" button) and keeps the microphone open
   - the Daybook web UI
   - a password manager window, for step 8
 - [ ] The privacy page shows "screenshots stored: none" and the footer shows the model and calls per minute.
@@ -29,7 +29,7 @@ The live demo runs on the GX10. A presenter really uses the machine while the au
 | 2 | Works in VS Code for ~1 min: reads the failing test, edits a line | A "coding" segment appears with an inferred intent; focus music starts | "It writes notes from what's on screen, and separately guesses intent. You can see which is which." |
 | 3 | Switches to the PDF and reads for ~1 min | A new "reading" segment; music changes to calm within about 30–60 s | "The music skill asks the model one question: which mood fits right now? Code picks the tracks." |
 | 4 | In chat: "remind me to stand up every time I finish a meeting" | A review card: the question it will ask, the rule in words, the permission (`overlay.show`). Click **Approve & enable** | "Skills are short text files. This one was just written by the model, and nothing runs until I approve exactly this version." |
-| 5 | Opens the meeting tab for ~1 min, then goes back to VS Code | A "meeting" segment, then the full-screen "Meeting's over" overlay. Dismiss it | "It fired once, when the meeting ended." |
+| 5 | Sits in the joined call for ~1 min, then leaves it and goes back to VS Code | A "meeting" segment, then the full-screen "Meeting's over" overlay. Dismiss it | "It fired once, when the meeting ended." |
 | 6 | Enables `break-demo`, then codes for ~2.5 min (the first reading arrives within 30 s of enabling, then the streak needs 2 min) | The full-screen break overlay with break music. Dismiss it; focus music returns on the next tick | "The real break reminder waits 50 minutes. This demo copy waits 2." |
 | 7 | In chat: "what did I do in the last 10 minutes?" | An answer with durations and links into the timeline | "Recall uses the same notes. Durations come from code, not the model." |
 | 8 | Brings the password manager forward, then pauses from the tray | The timeline shows a "private" gap, then a "paused" gap; the tray icon changes. Use "forget last 15 minutes" to show deletion | "Exclusions, pause, and delete are built in." |

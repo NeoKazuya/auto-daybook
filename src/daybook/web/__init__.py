@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import inspect
 import secrets
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -16,14 +17,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from daybook.act import MusicPlayer, Overlay
+from daybook.act import Catalog, MusicPlayer, Overlay
 from daybook.chat import Chat
 from daybook.events import Bus
 from daybook.journal import Journal
 from daybook.mind import Mind
 from daybook.model import ModelGateway
 from daybook.sense import Sense
-from daybook.skills import SkillBook
+from daybook.skills import NeedsReview, SignalLimit, SkillBook, StaleApproval
 
 from . import wire as w
 
@@ -39,30 +40,43 @@ class Services:
     music: MusicPlayer
     overlay: Overlay
     bus: Bus
+    catalog: Catalog
+    keep_frames: bool = False
 
 
 def create_app(
     *, mock: bool = False, token: str, origin: str, services: Services | None = None
 ) -> FastAPI:
     """Bind to loopback. Mutations require both token and exact configured Origin."""
-    if not mock:
-        raise NotImplementedError(
-            "Real services are implemented after the shared skeleton; use --mock-api"
-        )
+    from ._live import LiveAPI
     from ._mock import MockAPI
 
-    bus = Bus()
-    backend = MockAPI(bus)
+    if mock:
+        bus = Bus()
+        backend = MockAPI(bus)
+    else:
+        if services is None:
+            raise ValueError("services are required outside mock mode")
+        bus = services.bus
+        backend = LiveAPI(services)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        task = asyncio.create_task(backend.script())
+        task = (
+            asyncio.create_task(backend.script())
+            if isinstance(backend, MockAPI)
+            else None
+        )
         try:
             yield
         finally:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+    async def resolved(result):
+        return await result if inspect.isawaitable(result) else result
 
     app = FastAPI(
         title="Daybook",
@@ -88,6 +102,27 @@ def create_app(
             status_code=422,
         )
 
+    @app.exception_handler(KeyError)
+    async def missing(request: Request, exc: KeyError):
+        return JSONResponse({"detail": "not_found"}, status_code=404)
+
+    @app.exception_handler(ValueError)
+    async def invalid(request: Request, exc: ValueError):
+        return JSONResponse({"detail": "invalid_request"}, status_code=422)
+
+    async def conflict(request: Request, exc: Exception):
+        reasons = {
+            StaleApproval: "stale_approval",
+            NeedsReview: "needs_review",
+            SignalLimit: "active_signal_limit",
+        }
+        return JSONResponse(
+            {"detail": reasons.get(type(exc), "conflict")}, status_code=409
+        )
+
+    for error_type in (StaleApproval, NeedsReview, SignalLimit):
+        app.add_exception_handler(error_type, conflict)
+
     @app.middleware("http")
     async def authorize(request: Request, call_next):
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
@@ -105,7 +140,7 @@ def create_app(
         page = (
             path.read_text()
             if path.exists()
-            else '<!doctype html><html><head><title>Daybook · API</title></head><body><p>Daybook mock API is running.</p><a href="/docs">API reference</a></body></html>'
+            else '<!doctype html><html><head><title>Daybook · API</title></head><body><p>Daybook API is running.</p><a href="/docs">API reference</a></body></html>'
         )
         meta = f'<meta name="daybook-token" content="{html.escape(token, quote=True)}">'
         return (
@@ -159,7 +194,7 @@ def create_app(
 
     @app.post("/api/chat", response_model=w.ChatResponse)
     async def chat(body: w.ChatRequest):
-        return backend.chat(body.message)
+        return await resolved(backend.chat(body.message))
 
     @app.get("/api/skills", response_model=w.SkillsResponse)
     async def skills():
@@ -195,20 +230,29 @@ def create_app(
 
     @app.put("/api/privacy", response_model=w.PrivacyResponse)
     async def set_privacy(body: w.PrivacyPut):
-        return backend.set_privacy(body)
+        return await resolved(backend.set_privacy(body))
+
+    @app.post("/api/music/play", response_model=w.MusicStatus)
+    async def music_play(body: w.MusicPlayRequest):
+        return await resolved(backend.music_play(body.mood))
+
+    @app.post("/api/overlay/test", response_model=w.OverlayState)
+    async def overlay_test():
+        return await resolved(backend.overlay_test())
 
     @app.post("/api/overlay/{id}/dismiss", response_model=w.MutationResponse)
     async def dismiss(id: str):
-        return backend.dismiss(id)
+        return await resolved(backend.dismiss(id))
 
     @app.get("/api/status", response_model=w.StatusResponse)
     async def status():
-        backend.status.shell_connected = backend.shells > 0
-        return backend.status
+        result = backend.status
+        result.shell_connected = backend.shells > 0
+        return result
 
     @app.post("/api/tick", response_model=w.TickResponse)
     async def tick():
-        return backend.tick()
+        return await resolved(backend.tick())
 
     @app.get(
         "/api/events",

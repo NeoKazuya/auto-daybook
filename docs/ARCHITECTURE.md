@@ -179,7 +179,7 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 
 Every commit publishes a domain event on the bus.
 
-**Forgetting part of a segment.** If a forget removes some of a segment's observations, and the segment's text is model-authored, its title and intent are cleared to `(summary removed after forget)`, along with their search entries, in the same transaction, because they may describe the forgotten activity. An open segment gets new text on the next tick; a closed one keeps the placeholder. User-authored text is kept.
+**Forgetting part of a segment.** If a forget removes some of a segment's observations, and the segment's text is model-authored, its title and intent are cleared to `(summary removed after forget)` and its kind is reset to `other`, along with their search entries, in the same transaction, because they may describe the forgotten activity. An open segment gets new text on the next tick; a closed one keeps the placeholder. User-authored text is kept.
 
 **Forget barrier.** The journal keeps a **forget epoch** that every forget *and every `trim_after`* increments in the same transaction as the delete. Sense and mind read `journal.epoch` when a model call starts and pass it with the result (`add_observation(draft, epoch)`, `Tick.epoch`). The journal rejects any write whose epoch is older, so a result computed from content that was just forgotten can't be written back. Rejections are logged as `discarded_after_forget` and published as a status event.
 
@@ -435,7 +435,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 | `PATCH/DELETE /api/observations/{id}` | `edit_observation`, `forget_observation` |
 | `POST /api/forget {from,to}`, `POST /api/forget-all` | `forget_range`, `forget_all` |
 | `POST /api/chat {message}` | `chat.respond` |
-| `GET /api/skills`, `PUT /api/skills/{id}`, `POST /api/skills/{id}/approve {hash}` (409 if stale), `POST /api/skills/{id}/enable` (409 if needs review), `POST /api/skills/{id}/disable`, `DELETE /api/skills/{id}`, `POST /api/skills/parse {text}` | `SkillBook` methods and `parse_skill` |
+| `GET /api/skills`, `PUT /api/skills/{id}`, `POST /api/skills/{id}/approve {hash}` (409 if stale), `POST /api/skills/{id}/enable` (409 if needs review), `POST /api/skills/{id}/disable`, `DELETE /api/skills/{id}`, `POST /api/skills/parse {id, text}` (checked through `SkillBook`, so the file name and origin are known) | `SkillBook` methods and `parse_skill` |
 | `GET/PUT /api/privacy` | `sense.privacy`, `set_privacy` |
 | `POST /api/overlay/{id}/dismiss` | `overlay.hide` |
 | `GET /api/status` | gateway, music, overlay, and capture status |

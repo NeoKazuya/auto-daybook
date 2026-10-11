@@ -56,7 +56,7 @@ rules:
 | `<signal> is <value> for <duration>` | when the value has been `<value>` continuously for at least `<duration>`. A gap of more than 5 minutes (lock, pause, away) breaks the streak | the streak's first tick: once per streak |
 | `every <duration>` | at most once per wall-clock bucket, and only on ticks, so only while the user is present | the bucket |
 
-**Durations:** `30s`, `10m`, `2h`.
+**Durations:** a non-negative integer followed by `s`, `m`, or `h`, for example `30s`, `2m`, `50m`, `2h`. Zero (`0s`) is allowed only where a parameter says so (`min_dwell`); trigger durations and cooldowns must be greater than zero.
 
 **Arguments:**
 

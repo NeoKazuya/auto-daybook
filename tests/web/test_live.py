@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,7 +26,7 @@ from daybook.journal import (
 )
 from daybook.mind import Mind
 from daybook.model import ScriptedGateway
-from daybook.sense import PrivacySettings, Sense
+from daybook.sense import PrivacySettings, Screen, Sense
 from daybook.skills import (
     NeedsReview,
     Skill,
@@ -549,3 +550,62 @@ def test_repeated_note_delete_is_404_without_invalidating_work(live, kind):
     epoch = live.services.journal.epoch
     assert live.client.delete(path, headers=HEADERS).status_code == 404
     assert live.services.journal.epoch == epoch
+
+
+@pytest.mark.parametrize("mock", [False, True])
+def test_conditional_privacy_preserves_intervening_exclusion_without_writes(
+    live, tmp_path, mock
+):
+    sense = Sense(
+        cast(Screen, SimpleNamespace()),
+        live.services.journal,
+        live.services.gateway,
+        live.services.bus,
+        tmp_path / "privacy-home",
+        lambda _: None,
+    )
+    services = replace(live.services, sense=sense)
+    app = create_app(
+        mock=mock, token="test-token", origin="http://testserver", services=services
+    )
+    fields = ("paused", "exclude_apps", "exclude_titles")
+    with TestClient(app) as client:
+        initial = {k: client.get("/api/privacy").json()[k] for k in fields}
+        edited = {
+            **initial,
+            "exclude_titles": [*initial["exclude_titles"], "*private*"],
+        }
+        first = client.put(
+            "/api/privacy", headers=HEADERS, json={**edited, "expected": initial}
+        )
+        assert first.status_code == 200
+        assert "expected" not in first.json()
+        generation = sense.generation
+        path = sense.home / "privacy.json"
+        persisted = (path.read_bytes(), path.stat().st_mtime_ns) if not mock else None
+        status = client.get("/api/status").json()
+        with live.services.bus.subscribe() as queue:
+            conflict = client.put(
+                "/api/privacy",
+                headers=HEADERS,
+                json={**initial, "paused": True, "expected": initial},
+            )
+            assert conflict.status_code == 409
+            assert conflict.json() == {"detail": "privacy_conflict"}
+            assert queue.empty()
+        assert {k: client.get("/api/privacy").json()[k] for k in fields} == edited
+        assert client.get("/api/status").json()["capture"] == status["capture"]
+        assert sense.generation == generation
+        assert live.overlay.hidden == []
+        if persisted is not None:
+            assert (path.read_bytes(), path.stat().st_mtime_ns) == persisted
+        # Reapply the original pause operation to the new snapshot.
+        retried = client.put(
+            "/api/privacy",
+            headers=HEADERS,
+            json={**edited, "paused": True, "expected": edited},
+        )
+        assert retried.status_code == 200
+        assert retried.json()["paused"] is True
+        assert retried.json()["exclude_titles"] == edited["exclude_titles"]
+        assert "expected" not in retried.json()

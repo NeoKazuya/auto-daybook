@@ -123,6 +123,11 @@ def test_set_paused_changes_only_paused_with_token_and_origin():
         "paused": True,
         "exclude_apps": ["keepassxc"],
         "exclude_titles": ["*Bank*"],
+        "expected": {
+            "paused": False,
+            "exclude_apps": ["keepassxc"],
+            "exclude_titles": ["*Bank*"],
+        },
     }
     assert put.headers["X-Daybook-Token"] == "t0k"
     assert put.headers["Origin"] == "http://127.0.0.1:8765"
@@ -213,3 +218,51 @@ def test_stream_ending_before_ready_never_applies_unsynchronized_snapshot():
     ) as http:
         Backend(8765, "t", http).run(statuses.append, on_event, stop)
     assert statuses == []
+
+
+def test_pause_retries_conflict_and_preserves_new_exclusion():
+    saved = {"paused": False, "exclude_apps": [], "exclude_titles": []}
+    puts = []
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=saved)
+        body = json.loads(request.content)
+        puts.append(body)
+        if len(puts) == 1:
+            saved["exclude_titles"] = ["*private*"]
+        if body.get("expected") != saved:
+            return httpx.Response(409, json={"detail": "privacy_conflict"})
+        saved.update({k: body[k] for k in saved})
+        return httpx.Response(200, json=saved)
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="http://x"
+    ) as http:
+        result = Backend(8765, "t", http).set_paused(True)
+    assert result == {
+        "paused": True,
+        "exclude_apps": [],
+        "exclude_titles": ["*private*"],
+    }
+    assert len(puts) == 2
+    assert puts[-1]["expected"]["exclude_titles"] == ["*private*"]
+
+
+def test_pause_conflicts_stop_after_three_attempts():
+    puts = []
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(
+                200, json={"paused": False, "exclude_apps": [], "exclude_titles": []}
+            )
+        puts.append(request)
+        return httpx.Response(409, json={"detail": "privacy_conflict"})
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="http://x"
+    ) as http:
+        with pytest.raises(httpx.HTTPStatusError):
+            Backend(8765, "t", http).set_paused(True)
+    assert len(puts) == 3

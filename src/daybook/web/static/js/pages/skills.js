@@ -1,0 +1,240 @@
+// Skills: the reference page. A list of skills with their status, and a review card
+// for the selected one: its name, its prompt, its rules in words, and the approval controls.
+// Questions and permissions are part of every review. Developer mode adds the raw
+// skill file with live parse errors.
+import { api } from '../api.js';
+import { getPref } from '../prefs.js';
+import { h, icon, btn, busy, ribbon, panel, split, emptyState, errorState, skeletons, confirmDialog, toast, folio } from '../ui.js';
+
+const page = { route: 'skills', label: 'Skills', icon: 'quill', render };
+export default page;
+
+const STATUS = {
+  active: { label: 'Active', check: '', mark: 'check', tag: '' },
+  needs_review: { label: 'Needs review', check: '.warn', mark: 'alert', tag: '.ember' },
+  disabled: { label: 'Disabled', check: '.off', mark: 'pause', tag: '.quiet' },
+  invalid: { label: 'Invalid', check: '.bad', mark: 'x', tag: '.danger' },
+};
+
+async function render(root, params) {
+  let skills = [];
+  let catalog = [];
+  let selected = params.get('id');
+  let notice = null;
+  let getDraft = () => null;
+  const count = h('span.counter', '…');
+  const newSkill = h('a.btn', { href: '#/board?q=' + encodeURIComponent('/skill ') }, icon('plus'), 'New skill');
+  const list = h('div.rows.skill-scroll', skeletons(3));
+  const detail = h('div');
+
+  root.append(
+    ribbon(page),
+    split(panel('Skills & toggles', 'check', [count, newSkill], list), detail,
+      { key: 'skills', initial: 60, label: 'Resize skills and review card' }));
+
+  let latestRefresh = null;
+  async function refresh() {
+    const request = {};
+    latestRefresh = request;
+    try {
+      const result = await api.skills();
+      if (latestRefresh !== request) return;
+      // Read the current draft after the request: typing may have started during
+      // the GET, or continued while a Save PUT was in flight.
+      const draft = getDraft();
+      ({ entries: skills, catalog } = result);
+      if (!skills.some((s) => s.id === selected)) selected = skills.find((s) => s.status === 'needs_review')?.id ?? skills[0]?.id;
+      draw(draft);
+    } catch (err) {
+      if (latestRefresh !== request) return;
+      list.replaceChildren(errorState(err, refresh));
+    }
+  }
+
+  function draw(draft = null) {
+    const active = skills.filter((s) => s.status === 'active').length;
+    count.textContent = `${active} / ${skills.length} enabled`;
+    if (!skills.length) {
+      list.replaceChildren(emptyState('quill', 'No skills yet', 'Describe one on the Sticky Board, for example “remind me to stand up after meetings”.'));
+      detail.replaceChildren();
+    } else {
+      list.replaceChildren(...skills.map(row));
+      list.querySelector('.selected')?.scrollIntoView({ block: 'nearest' });
+      const s = skills.find((x) => x.id === selected);
+      const currentDraft = draft?.id === s.id ? draft : null;
+      detail.replaceChildren(review(s, currentDraft));
+      const editor = detail.querySelector('textarea');
+      if (editor && currentDraft) {
+        if (currentDraft.focused) editor.focus({ preventScroll: true });
+        if (currentDraft.start != null) editor.setSelectionRange(currentDraft.start, currentDraft.end);
+      }
+    }
+  }
+
+  function row(s, i) {
+    const st = STATUS[s.status] ?? STATUS.invalid;
+    return h(`div.row.clickable${s.id === selected ? '.selected' : ''}${s.status === 'disabled' ? '.dim' : ''}`,
+      { onclick: () => {
+          if (s.id === selected) return;
+          if (getDraft()) { toast('Save your edits before choosing another skill.', 'error'); return; }
+          selected = s.id; notice = null; draw(); history.replaceState(null, '', `#/skills?id=${s.id}`); },
+        role: 'button', tabindex: 0, onkeydown: (e) => e.key === 'Enter' && e.currentTarget.click() },
+      h('div.row-main',
+        h(`span.check${st.check}`, icon(st.mark)),
+        h('div.row-text',
+          h('span.row-title', s.name),
+          h('span.row-sub', s.goal.split('. ')[0].replace(/\.$/, '')))),
+      h('div.row-end',
+        h('span.folio', folio(i + 1)),
+        h(`span.tag${st.tag}`, st.label)));
+  }
+
+  function review(s, draft) {
+    const st = STATUS[s.status] ?? STATUS.invalid;
+    const dev = getPref('developer');
+    let editor = null;
+    let parse = null;
+    let savedText = s.text;
+    const dirty = () => Boolean(editor && editor.value !== savedText);
+    getDraft = () => dirty() ? { id: s.id, text: editor.value,
+      focused: document.activeElement === editor, start: editor.selectionStart, end: editor.selectionEnd } : null;
+    let onEdit;
+    const editNotice = h('p.muted', { hidden: true }, 'Save edits before approving or enabling this version.');
+    if (dev) {
+      editor = h('textarea.textarea', { spellcheck: false, 'aria-label': 'Skill file' }, draft?.text ?? s.text);
+      parse = h('div.errors', parseView(s.errors));
+      let timer;
+      let editRevision = 0;
+      onEdit = () => {
+        const revision = ++editRevision;
+        const submitted = editor.value;
+        const unsaved = dirty();
+        if (enableButton) enableButton.disabled = unsaved;
+        editNotice.hidden = !unsaved;
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          try {
+            const r = await api.parseSkill(s.id, submitted);
+            if (revision !== editRevision) return;
+            parse.replaceChildren(...parseView(r.errors));
+          } catch (err) {
+            if (revision !== editRevision) return;
+            parse.replaceChildren(h('div', `Couldn't check the file: ${err.message}`));
+          }
+        }, 350);
+      };
+      editor.addEventListener('input', onEdit);
+    }
+
+    const run = async (button, fn, done) => {
+      try {
+        await busy(button, fn);
+        if (done) toast(done);
+        notice = null;
+      } catch (err) {
+        if (err.status === 409) notice = err.message;
+        if (dirty()) {
+          editNotice.textContent = 'The action failed. Your unsaved edits are still here.';
+          return;
+        }
+      }
+      await refresh();
+    };
+    const act = (fn, done) => (e) => run(e.currentTarget, fn, done);
+
+    const approveOrEnable = (fn, done) => (e) => {
+      if (dirty()) return;
+      return run(e.currentTarget, fn, done);
+    };
+    const enableButton = s.status === 'needs_review'
+      ? btn('Approve & enable', { icon: 'check', kind: 'ember',
+        onclick: approveOrEnable(() => api.approveSkill(s.id, s.hash), s.name + ' is now active.') })
+      : s.status === 'disabled'
+        ? btn('Enable', { icon: 'check', kind: 'primary',
+          onclick: approveOrEnable(() => api.enableSkill(s.id), s.name + ' enabled.') })
+        : null;
+    if (dirty()) onEdit();
+    const buttons = [
+      enableButton,
+      s.status === 'active' && btn('Disable', { icon: 'pause', onclick: act(() => api.disableSkill(s.id), `${s.name} disabled. Its approval is kept.`) }),
+      dev && btn('Save edits', { icon: 'edit', title: 'Saving any edit returns the skill to needs review',
+        onclick: act(async () => {
+          const submitted = editor.value;
+          await api.saveSkill(s.id, submitted);
+          savedText = submitted;
+        }, 'Saved. Review the new version before it can run.') }),
+      s.origin !== 'builtin' && btn('Delete', { icon: 'trash', kind: 'danger', onclick: async (e) => {
+        const button = e.currentTarget;
+        const ok = await confirmDialog({ title: `Delete “${s.name}”?`, body: 'The skill file is removed. Notes it already caused stay in the timeline.', confirm: 'Delete skill', danger: true });
+        if (ok) await run(button, () => api.deleteSkill(s.id), 'Skill deleted.');
+      } }),
+    ];
+
+    return panel('Review card', 'shield', h(`span.tag${st.tag}`, st.label),
+      h('div.review',
+        notice && h('div.notice', notice),
+        h('h2', s.name),
+        h('p.goal', s.goal),
+        h('div.review-sec', h('div.label', 'Questions'), h('ul', s.signals.map((g) => h('li', g.ask)))),
+        h('div.review-sec', h('div.label', 'Rules'), h('ul', s.rules.map((r) => h('li', ruleInWords(r))))),
+        h('div.review-sec', h('div.label', 'Permissions'), h('ul', s.allow.map((action) =>
+          h('li.perm', h('span', catalog.find((c) => c.name === action)?.description ?? action), h('span.tag.quiet', action))))),
+        dev && h('div.review-sec', h('div.label', 'Skill file'), editNotice, editor, parse),
+        h('div.actions-bar', buttons)));
+  }
+
+  await refresh();
+  return { onEvent: (types) => {
+    if ((types.has('SkillsChanged') || types.has('Reconnected')) && !getDraft() && !document.activeElement?.matches('textarea')) refresh();
+  } };
+}
+
+function parseView(errors) {
+  if (!errors?.length) return [h('span.parse-ok', '✓ The file parses.')];
+  return errors.map((e) => h('div', `${e.location}: ${e.message}`));
+}
+
+/* ---------- rules in words ---------- */
+
+const human = (name) => name.replace(/_/g, ' ').replace(/^in /, 'in a ');
+const DUR = { s: 'seconds', m: 'minutes', h: 'hours' };
+const dur = (d) => { const m = /^(\d+)([smh])$/.exec(d); return m ? `${m[1]} ${DUR[m[2]]}` : d; };
+
+function trigger(when) {
+  let m;
+  if ((m = /^(\w+) updates$/.exec(when))) return ['On every tick, with the current ', h('em', human(m[1])), ':'];
+  if ((m = /^(\w+) becomes (\S+)$/.exec(when))) return ['When ', h('em', human(m[1])), ' becomes ', h('em', m[2]), ':'];
+  if ((m = /^(\w+) is (\S+) for (\S+)$/.exec(when))) return ['When ', h('em', human(m[1])), ' has been ', h('em', m[2]), ` for ${dur(m[3])}:`];
+  if ((m = /^every (\S+)$/.exec(when))) return [`Every ${dur(m[1])} while you're here:`];
+  return [`When ${when}:`];
+}
+
+function step({ action, arguments: args = {} }) {
+  const v = (x) => (typeof x === 'string' && x.startsWith('$') ? `the current ${human(x.slice(1))}` : x);
+  switch (action) {
+    case 'overlay.show': return `show a ${args.layout === 'bubble' ? 'bubble reminder' : 'full-screen overlay'} “${args.title}”${args.minutes ? ` for up to ${args.minutes} min` : ''}`;
+    case 'overlay.hide': return 'hide the overlay';
+    case 'music.play_mood': return `play ${v(args.mood)} music`;
+    case 'music.stop': return 'stop the music';
+    case 'notify.send': return `send a notification “${args.title}”`;
+    case 'desktop.open_url': return `open ${args.url}`;
+    case 'desktop.launch': return `start ${args.app}`;
+    case 'desktop.focus': return `bring ${args.app} to the front`;
+    default: return action;
+  }
+}
+
+// Cooldowns arrive in seconds.
+function seconds(n) {
+  if (n % 3600 === 0) return `${n / 3600} ${n === 3600 ? 'hour' : 'hours'}`;
+  if (n % 60 === 0) return `${n / 60} ${n === 60 ? 'minute' : 'minutes'}`;
+  return `${n} seconds`;
+}
+
+function ruleInWords(rule) {
+  return [
+    ...trigger(rule.when), ' ',
+    rule.steps.map(step).join(', then '), '.',
+    rule.cooldown ? ` At most once every ${seconds(rule.cooldown)}.` : '',
+  ];
+}

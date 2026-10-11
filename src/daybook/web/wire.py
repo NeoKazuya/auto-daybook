@@ -245,13 +245,18 @@ ChatResponse = Annotated[
 ]
 
 
-class PrivacyPut(WireModel):
+class PrivacySettings(WireModel):
     paused: bool
     exclude_apps: list[str]
     exclude_titles: list[str]
 
 
-class PrivacyResponse(PrivacyPut):
+class PrivacyPut(PrivacySettings):
+    # Omit only for an intentional unconditional complete replacement.
+    expected: PrivacySettings | None = None
+
+
+class PrivacyResponse(PrivacySettings):
     keep_frames: bool = False
     deletion_pending: bool = False
     screenshots_stored: Literal["none", "debug"] = "none"
@@ -615,11 +620,12 @@ _example(
     PlainResponse, text="Ask about your day, or describe a skill you want to create."
 )
 _privacy = _example(
-    PrivacyPut,
+    PrivacySettings,
     paused=False,
     exclude_apps=["KeePassXC", "1Password", "Bitwarden"],
     exclude_titles=["*Private Browsing*", "*Incognito*", "*Daybook ·*"],
 )
+_example(PrivacyPut, **_privacy, expected=_privacy)
 _example(PrivacyResponse, **_privacy)
 _gateway = _example(
     GatewayStatus,

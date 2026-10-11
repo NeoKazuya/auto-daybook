@@ -3,77 +3,32 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
-from enum import IntEnum
-from typing import Awaitable, Callable, Generic, Literal, TypeVar
+from typing import Awaitable, Callable
 
 from pydantic import BaseModel
 
-T = TypeVar("T", bound=BaseModel | str)
-
-
-class Priority(IntEnum):
-    INTERACTIVE = 0
-    TICK = 1
-    OBSERVE = 2
-
-
-@dataclass(frozen=True)
-class Prompt(Generic[T]):
-    system: str
-    user: str
-    output: type[T]
-    images: tuple[bytes, ...] = ()
-    effort: Literal["none", "low"] = "none"
-    max_tokens: int = 1024
-
-
-@dataclass(frozen=True)
-class ModelConfig:
-    base_url: str = "http://127.0.0.1:11434/v1"
-    model: str = "qwen3.6:35b"
-    api_key_file: str = ""
-    dialect: Literal["ollama", "vllm", "openai"] = "ollama"
-
-
-@dataclass(frozen=True)
-class GatewayStatus:
-    model: str
-    reachable: bool
-    in_flight: str | None
-    queue_depth: int
-    latency: float | None
-    calls_per_minute: int
-    background_calls_per_minute: int
-
-
-class ModelUnavailable(Exception):
-    pass
-
-
-class ObserveReplaced(Exception):
-    pass
-
-
-class ModelGateway:
-    def __init__(self, config: ModelConfig) -> None:
-        raise NotImplementedError
-
-    async def call(
-        self,
-        priority: Priority,
-        prompt: Prompt[T] | Callable[[], Awaitable[Prompt[T] | None]],
-    ) -> T | None:
-        raise NotImplementedError
-
-    def drop_observe(self) -> None:
-        raise NotImplementedError
-
-    def status(self) -> GatewayStatus:
-        raise NotImplementedError
-
-    async def close(self) -> None:
-        raise NotImplementedError
+from ._gateway import ModelGateway as ModelGateway
+from ._types import (
+    GatewayStatus as GatewayStatus,
+)
+from ._types import (
+    ModelConfig as ModelConfig,
+)
+from ._types import (
+    ModelUnavailable as ModelUnavailable,
+)
+from ._types import (
+    ObserveReplaced as ObserveReplaced,
+)
+from ._types import (
+    Priority as Priority,
+)
+from ._types import (
+    Prompt as Prompt,
+)
+from ._types import (
+    T,
+)
 
 
 class ScriptedGateway(ModelGateway):

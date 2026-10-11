@@ -1,4 +1,4 @@
-"""Tick scheduling and pure parsing contracts."""
+"""Tick scheduling, Upcoming extraction, and pure parsing contracts."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Literal, Mapping
 
-from daybook.journal import Journal, Tick
-from daybook.model import ModelGateway
+from daybook.journal import Journal, Tick, UpcomingDraft
+from daybook.model import ModelGateway, Priority
 from daybook.skills import Signal, SkillBook
 
 
@@ -46,6 +46,7 @@ class Mind:
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         evidence_ready: Callable[[str, tuple[str, ...]], bool] = lambda *_: True,
+        upcoming: bool = False,
     ) -> None:
         from ._runner import Runner
 
@@ -58,6 +59,7 @@ class Mind:
             clock,
             sleep,
             evidence_ready,
+            upcoming,
         )
 
     async def run(self) -> None:
@@ -68,3 +70,18 @@ class Mind:
 
     async def tick_now(self) -> Tick | None:
         return await self._runner.tick_now()
+
+    async def scan_upcoming(self) -> None:
+        """Extract Upcoming items from notes of recorded ticks (run() does this)."""
+        await self._runner.scan_upcoming()
+
+
+async def extract_upcoming(
+    gateway: ModelGateway, message: str, *, now: datetime
+) -> list[UpcomingDraft]:
+    """Items the user names in a chat message, such as 'CSE 130 due at 11:59'."""
+    from ._upcoming import extract
+
+    return await extract(
+        gateway, message=message, now=now, priority=Priority.INTERACTIVE
+    )

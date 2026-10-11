@@ -307,6 +307,10 @@ class Book:
                 else history
             )
             actions = self.catalog.allowed(skill.allow, skill.id)
+            upcoming = None
+            if "upcoming" in skill.reads:
+                soonest = self.portal.upcoming(tick.at, limit=1)
+                upcoming = soonest[0].describe(tick.at) if soonest else "nothing due"
             for index, rule in enumerate(skill.rules):
                 occurrence = match(
                     rule,
@@ -358,6 +362,7 @@ class Book:
                                     .parameters[key]
                                     .type
                                     == "str",
+                                    upcoming=upcoming,
                                 )
                                 for key, value in step.arguments.items()
                             }
@@ -375,6 +380,7 @@ def render(
     history: list[SignalReading],
     *,
     textual: bool = False,
+    upcoming: str | None = None,
 ) -> object:
     if not isinstance(value, str):
         return value
@@ -382,6 +388,8 @@ def render(
         return occurrence.values.get(value[1:])
 
     def replace(match: re.Match[str]) -> str:
+        if match[0] == "$upcoming.next" and upcoming is not None:
+            return upcoming
         name = match[1]
         if match[2]:
             held = streak(
@@ -400,4 +408,7 @@ def render(
             )
         return str(occurrence.values.get(name, "unknown"))
 
-    return re.sub(r"\$([a-zA-Z_][a-zA-Z0-9_]*)(\.for)?", replace, value)
+    # One pass, so an Upcoming title containing "$" is never re-expanded.
+    return re.sub(
+        r"\$upcoming\.next|\$([a-zA-Z_][a-zA-Z0-9_]*)(\.for)?", replace, value
+    )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
@@ -39,6 +40,11 @@ class MockAPI:
         }
         self.shells = 0
         self.tick_count = 0
+        upcoming = w.example(w.UpcomingItem)
+        upcoming.due_at = now + timedelta(hours=6)
+        upcoming.added_at = now - timedelta(minutes=5)
+        upcoming.source = segment.observations[0].id
+        self.upcoming_items: dict[str, w.UpcomingItem] = {upcoming.id: upcoming}
 
     def get_timeline(
         self, start: datetime | None, end: datetime | None
@@ -201,6 +207,7 @@ class MockAPI:
     def forget_segment(self, id: str) -> w.MutationResponse:
         self.segment(id)
         self.timeline.segments = [s for s in self.timeline.segments if s.id != id]
+        self._drop_orphaned_upcoming()
         self.bus.publish(events.SegmentChanged(id))
         self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return w.MutationResponse()
@@ -211,8 +218,20 @@ class MockAPI:
             segment = self.segment(observation.segment)
             segment.observations = [o for o in segment.observations if o.id != id]
             self._shrink(segment)
+        self._drop_orphaned_upcoming()
         self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return w.MutationResponse()
+
+    def _drop_orphaned_upcoming(self) -> bool:
+        notes = {o.id for s in self.timeline.segments for o in s.observations}
+        orphans = [
+            i.id
+            for i in self.upcoming_items.values()
+            if i.source is not None and i.source not in notes
+        ]
+        for id in orphans:
+            del self.upcoming_items[id]
+        return bool(orphans)
 
     def _shrink(self, segment: w.Segment) -> None:
         if not segment.observations:
@@ -240,6 +259,16 @@ class MockAPI:
             if before != len(segment.observations):
                 changed = True
                 self._shrink(segment)
+        if window is None and self.upcoming_items:
+            self.upcoming_items.clear()
+            changed = True
+        elif window is not None:
+            # Like the journal: user items by added time, screen items with their note.
+            for item in list(self.upcoming_items.values()):
+                if item.source is None and window.start <= item.added_at < window.end:
+                    del self.upcoming_items[item.id]
+                    changed = True
+            changed = self._drop_orphaned_upcoming() or changed
         if changed:
             self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return w.MutationResponse()
@@ -336,9 +365,67 @@ class MockAPI:
         self.bus.publish(events.SkillsChanged(id))
         return w.MutationResponse()
 
+    def upcoming(self) -> w.UpcomingResponse:
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=w.UPCOMING_OVERDUE_SECONDS
+        )
+        return w.UpcomingResponse(
+            items=sorted(
+                (i for i in self.upcoming_items.values() if i.due_at >= cutoff),
+                key=lambda i: (i.due_at, i.id),
+            )
+        )
+
+    def add_upcoming(self, body: w.UpcomingPost) -> w.UpcomingItem:
+        # Same identity as the journal: case and spacing variants are one item.
+        def key(title: str) -> str:
+            return " ".join(re.findall(r"\w+", title.casefold()))
+
+        if (datetime.now(timezone.utc) - body.due_at).total_seconds() > (
+            w.UPCOMING_OVERDUE_SECONDS
+        ):
+            raise HTTPException(422, "invalid_request: due_at is in the past")
+        if any(
+            key(i.title) == key(body.title) and i.due_at == body.due_at
+            for i in self.upcoming_items.values()
+        ):
+            raise HTTPException(409, "already_listed")
+        item = w.UpcomingItem(
+            id=uuid.uuid4().hex,
+            title=body.title,
+            due_at=body.due_at,
+            source=None,
+            added_at=datetime.now(timezone.utc),
+            kind=body.kind,
+        )
+        self.upcoming_items[item.id] = item
+        self.bus.publish(events.StatusChanged("journal", "upcoming_changed"))
+        return item
+
+    def dismiss_upcoming(self, id: str) -> w.MutationResponse:
+        del self.upcoming_items[id]
+        self.bus.publish(events.StatusChanged("journal", "upcoming_changed"))
+        return w.MutationResponse()
+
     def chat(
         self, message: str
     ) -> w.AnswerResponse | w.DraftResponse | w.PlainResponse:
+        if message.startswith("/remember") or "remember" in message.lower():
+            try:
+                item = self.add_upcoming(
+                    w.UpcomingPost(
+                        title="CSE 130 Assignment 3",
+                        due_at=datetime.now(timezone.utc).replace(
+                            second=0, microsecond=0
+                        )
+                        + timedelta(hours=6),
+                    )
+                )
+            except HTTPException:
+                return w.PlainResponse(text="That's already on your Upcoming list.")
+            return w.PlainResponse(
+                text=f"Added to Upcoming: {item.title} (due in 6 h)."
+            )
         if message.startswith("/skill") or any(
             word in message.lower()
             for word in ("remind", "create a skill", "make a skill")

@@ -34,6 +34,12 @@ class Signal:
     descriptions: Mapping[str, str] | None = None
     minimum: float | None = None
     maximum: float | None = None
+    # Daybook lists this skill reads besides the screen; see READABLE.
+    reads: tuple[str, ...] = ()
+
+
+# Lists a skill may opt into with `reads:`. The tick shows each as current facts.
+READABLE = ("upcoming",)
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,7 @@ class Skill:
     allow: tuple[str, ...]
     created_by: Literal["builtin", "user", "chat"] = "user"
     request: str | None = None
+    reads: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -135,12 +142,16 @@ def evaluate(
 
 
 async def draft_skill(
-    request: str, *, book: SkillBook, gateway: ModelGateway
+    request: str, *, book: SkillBook, gateway: ModelGateway, context: str = ""
 ) -> tuple[SkillEntry, str]:
-    """Save a reviewable draft, or raise UnsupportedSkill without saving one."""
+    """Save a reviewable draft, or raise UnsupportedSkill without saving one.
+
+    context is recent notes and the Upcoming list, used to fill in specifics the
+    request points at ("this assignment"); it is evidence, never instructions.
+    """
     from ._draft import generate
 
-    return await generate(request, book=book, gateway=gateway)
+    return await generate(request, book=book, gateway=gateway, context=context)
 
 
 class SkillBook:

@@ -22,7 +22,7 @@ At the end, someone who has never seen Daybook can run the [demo](../demo.md) on
 ## Constraints
 
 - **No build step.** Plain HTML, CSS, and ES modules (§6.9). One page with tabs, each titled `Daybook · <tab>`. Capture excludes that title, so the UI never shows up in the notes.
-- **Data only through the API.** The UI and the shell talk only to the HTTP routes and the SSE stream (`/api/events?client=ui` or `client=shell`), as shaped by `wire.py`. They never import backend modules.
+- **Data only through the API.** The UI and the shell talk only to the HTTP routes and the SSE stream (`/api/events?client=ui` or `client=shell`), as shaped by `wire.py`. They never import backend modules. This applies to the UI and the shell only: if Lane B takes chat, chat uses the Python interfaces §6.8 names (`Portal`, the journal epoch, `ModelGateway`, and the skill generator), like any backend module.
 - **Token on every change.** Every mutating request sends `X-Daybook-Token`, which is embedded in the served HTML.
 - **Projector-readable.** Use large type and strong contrast. Nothing important goes in small grey text.
 - **Plain copy.** Say what happened and what the user can do. Label inferred intent as *inferred*.

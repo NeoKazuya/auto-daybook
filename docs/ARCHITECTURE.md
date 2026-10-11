@@ -579,7 +579,7 @@ daybook overlay test                                   # show a test overlay thr
 
 ## 10. Development and testing
 
-- **Local checks** (`scripts/check.sh`, referenced from [CONTRIBUTING.md](../CONTRIBUTING.md)): `ruff check`, `ruff format --check`, `pyright`, `pytest -q`, and `check_boundaries.py`. The boundary check fails on:
+- **Local checks** (`scripts/check.sh`, referenced from [CONTRIBUTING.md](../CONTRIBUTING.md)): `ruff check`, `ruff format --check`, `pyright`, `pytest -q`, and `check_boundaries.py`. The boundary check covers the `daybook` package (`src/daybook/`) only; standalone tools under `scripts/` (such as `record_fixture.py`, which uses `mss` and `python-xlib` directly) are outside it. Within the package it fails on:
   - any import of `daybook.<x>._*` from outside `<x>`
   - `sqlite3` outside `journal` and `skills._ledger`
   - `httpx` outside `model` and `shell`

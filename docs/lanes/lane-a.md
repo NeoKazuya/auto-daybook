@@ -16,7 +16,7 @@ Lane B builds against the API from the start, so the first thing Lane A merges i
   - `pyproject.toml`: Python 3.12 with `uv`, src layout, console script `daybook = "daybook.app:main"`.
     - runtime dependencies: `fastapi`, `uvicorn`, `httpx`, `pydantic`, `pyyaml`, `mss`, `python-xlib`, `pillow`, `PySide6-Essentials`
     - dev dependencies: `ruff`, `pyright`, `pytest`, `pytest-asyncio`
-  - `scripts/check_boundaries.py`, enforcing the rules in ARCHITECTURE §10, with a test per rule.
+  - `scripts/check_boundaries.py`, enforcing the rules in ARCHITECTURE §10 on `src/daybook/` only (standalone scripts are exempt), with a test per rule.
   - `scripts/check.sh` runs green.
 - **Every package with its public interface** from §6. Signatures are typed, and their bodies may be stubs. The data types in §4 are real frozen dataclasses. `events.py` has every event and a working `Bus`. The action catalog lists every action in §6.7 with its real parameters. `skills/builtin/` holds the three built-in skills from [skills.md](../skills.md).
 - **`web/wire.py` and `--mock-api`, as working code.**

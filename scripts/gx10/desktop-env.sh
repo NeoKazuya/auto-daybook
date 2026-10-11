@@ -8,7 +8,8 @@ for proc in pathlib.Path('/proc').glob('[0-9]*'):
             continue
         env = dict(item.split(b'=', 1) for item in (proc / 'environ').read_bytes().split(b'\0') if b'=' in item)
         if env.get(b'DISPLAY') and env.get(b'XAUTHORITY'):
-            for key in ('DISPLAY', 'XAUTHORITY', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'XDG_SESSION_TYPE'):
+            # Keep desktop launchers (including Snap browsers) discoverable.
+            for key in ('DISPLAY', 'XAUTHORITY', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'XDG_SESSION_TYPE', 'XDG_DATA_DIRS'):
                 if key.encode() in env:
                     print(f'export {key}={shlex.quote(os.fsdecode(env[key.encode()]))}')
             break

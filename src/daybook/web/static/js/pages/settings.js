@@ -279,8 +279,14 @@ async function render(root) {
   }
 
   await refresh();
-  const WATCH = ['CaptureStateChanged', 'SegmentChanged', 'StatusChanged', 'MusicChanged', 'Reconnected'];
-  return { onEvent: (types) => { if (WATCH.some((t) => types.has(t))) refresh(); } };
+  // Redraw only for events that change what this page shows. StatusChanged fires on
+  // every capture poll, so it's ignored here; the footer already tracks the model.
+  // Never redraw under someone typing or with unsaved text in a form.
+  const WATCH = ['CaptureStateChanged', 'MusicChanged', 'Reconnected'];
+  const editing = () =>
+    root.contains(document.activeElement) && document.activeElement.matches('input, select, textarea')
+    || [...root.querySelectorAll('form input')].some((i) => i.value.trim());
+  return { onEvent: (types) => { if (WATCH.some((t) => types.has(t)) && !editing()) refresh(); } };
 }
 
 function setting(title, text, control) {

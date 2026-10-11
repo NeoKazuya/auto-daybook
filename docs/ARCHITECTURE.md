@@ -140,7 +140,7 @@ Every model call goes through `ModelGateway.call(priority, prompt)`. The gateway
 
 ## 6. Modules
 
-Each module is a package with a public `__init__.py`. Internals live in `_*.py` files, and importing another package's `_*` module fails the local checks. The sketches in [planning/arena/candidate-opus/sketch/](planning/arena/candidate-opus/sketch/) are the starting point for the signatures. This section is the authority where the two differ.
+Each module is a package with a public `__init__.py`. Internals live in `_*.py` files, and importing another package's `_*` module fails the local checks. This section is the authority for every interface. The arena sketches in [planning/arena/](planning/arena/) are a **historical record** of the candidates: several of their contracts were changed during synthesis and review (active-time formula, AWAY, the forget epoch, `SkillSource`, separate enablement, built-in-only hooks). Don't copy them; write the Contracts work from this document.
 
 | Package | Single owner of | Public surface |
 |---|---|---|
@@ -171,7 +171,7 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 
 **`Journal`** (writes):
 
-- **sense:** `add_observation`, `extend_observation`, `trim_observation` (when going away), `set_capture_state` (idempotent).
+- **sense:** `add_observation`, `extend_observation`, `trim_after(t)` (when going away or after a failed observe), `set_capture_state` (idempotent). `trim_after(t)` deletes every observation that started after `t` (with its FTS rows), cuts the one spanning `t` back to `t`, and deletes signal readings after `t`, all in one transaction.
 - **mind:** `record_tick` (one transaction; idempotent; rejected if started before the last forget) and `close_open_segment`.
 - **web, on user request:**
   - `edit_segment` (sets `authored=user`), `edit_observation`
@@ -236,9 +236,10 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
    - no active window → `LOCKED`
    - our own overlay is up → `OVERLAY`
    - no keyboard or mouse input for 5 minutes (X11 idle time from the XScreenSaver extension) → `AWAY`. Idle time is ignored while any app is recording from the microphone (`pactl list short source-outputs` isn't empty), so listening in a call doesn't count as away
-   - any excluded window has a visible part on screen → `WITHHELD`. "Visible" is computed from the stacking order (`_NET_CLIENT_LIST_STACKING`) and window geometry: an excluded window counts only if its rectangle isn't fully covered by the windows above it. A password manager or the Daybook UI hidden behind VS Code doesn't block capture
+   - any excluded window has a visible part on screen → `WITHHELD`. "Visible" is computed from the stacking order (`_NET_CLIENT_LIST_STACKING`) and window geometry: an excluded window counts only if its rectangle isn't fully covered by the windows above it. A covering window that sets `_NET_WM_WINDOW_OPACITY` below fully opaque doesn't count as covering. A password manager or the Daybook UI hidden behind VS Code doesn't block capture
 2. **Thumbnail.** Grab a 32×18 grayscale thumbnail. If it's black → `LOCKED`.
-3. **Keep time continuous, but never across a gap.** If the previous poll was also `RUNNING`, extend the latest observation (`extend_observation`) whether or not the screen changed, so totals don't lose the seconds between a change and the next model call. If the previous poll was in any other state, don't extend: the next observation starts fresh, and step 4 skips the cooldown. When `AWAY` begins, the latest observation is trimmed back to the last input time (`trim_observation`), so the idle minutes don't count as activity.
+3. **Keep time continuous, but never across a gap.** If the previous poll was also `RUNNING`, extend the latest observation (`extend_observation`) whether or not the screen changed, so totals don't lose the seconds between a change and the next model call. If the previous poll was in any other state, don't extend: the next observation starts fresh, and step 4 skips the cooldown. When `AWAY` begins, everything after the last input time is removed with `trim_after(last_input)`: later observations (for example, from a video that kept changing) and readings, so the idle minutes count as neither activity nor focus.
+   **A failed observe also breaks continuity.** If an observe triggered by a change times out, fails validation, or is discarded, sense calls `trim_after(t)` with `t` = the poll where the change was first seen, then stops extending until a new observation is written. The time in between is a gap, not credit to the previous activity.
 4. **New observation** if the window changed, the thumbnail differs by 3% or more, or capture just resumed after a gap. At least 10 s must have passed since the last observe; an app switch or a resume skips that wait. Call the gateway with an OBSERVE builder. The builder rechecks the gate, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it reruns the full gate** (lock, pause, overlay, away, and the stacking, geometry, and visibility check for exclusions) against the post-grab state. If any check fails, or the window set or stacking changed, it discards the frame.
 5. **Write the result.** `add_observation(draft, epoch)`, then `mind.nudge(app_switched)`. A result is discarded if the consent generation changed while it was in flight (see [§7](#7-privacy)), and the journal rejects it if a forget happened since the call started.
 
@@ -260,7 +261,7 @@ Our overlay is recognized by `_NET_WM_PID` matching the shell process that `dayb
 **Done when:**
 
 - `gate()` has a table test for every branch, including an unreadable lock state, idle input, an excluded window that's partly visible (withheld), and one that's fully covered (not withheld). The visibility calculation is a pure function with its own geometry tests.
-- After a pause, lock, or away span, the first running poll starts a new observation; the gap's time is attributed to nothing. Going away trims the last observation to the last input time.
+- After a pause, lock, or away span, the first running poll starts a new observation; the gap's time is attributed to nothing. Going away removes every observation and reading after the last input time, including several observations created by a changing screen. A failed observe after a change leaves a gap rather than extending the previous observation.
 - The black-frame check passes against the real locked-screen capture from grounding.
 - A replay run writes observations, and unchanged frames extend instead of calling the model. A changed frame inside the 10 s cooldown still extends the current observation, so `totals()` has no gap.
 - A frame whose window set changed after the grab is discarded.
@@ -644,6 +645,7 @@ The system is finished when all of these pass live on the GX10, with the real mo
 | Qwen3.8 isn't ready, or can't read images | Stay on `qwen3.6:35b`. Switching is a config change gated on `accept.py --vision` plus the fixtures |
 | Venue Wi‑Fi is shared with the 124 GiB Qwen3.8 download | The music download and package installs are small. Avoid large downloads (for example, PySide6-Addons isn't used) |
 | One screen and one capture loop for everyone | `--replay` development instances and the capture flock. Real-screen checks happen at the machine |
+| A translucent window that doesn't set `_NET_WM_WINDOW_OPACITY` (some apps draw transparency through a 32-bit visual instead) could cover an excluded window and still show it | Known limitation. Treating every 32-bit-visual window as see-through would withhold capture behind Chrome and Electron apps. Keep translucent terminals and widgets off in the demo; revisit with a per-app opacity list if needed |
 | Passive time (a long video, reading without scrolling) counts as away after 5 minutes without input | Microphone use counts as presence, so calls are covered. Five minutes keeps normal reading inside the threshold. Tune it from the replay fixtures if needed |
 | A "meeting ended" false positive from a brief tab switch | `becomes false` needs a prior known reading within 5 min, and the tick sees the last 30 min of context. The demo uses a clear switch from Meet to the editor |
 

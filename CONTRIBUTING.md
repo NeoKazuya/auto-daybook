@@ -106,7 +106,7 @@ git pull --rebase origin main    # if main moved: run the checks again, then pus
 gh pr merge <number> --squash --delete-branch
 ```
 
-The exception is **shared-contract work**. Wait up to 20 minutes for the review, triage it (step 6), fix any "Act on" findings, then merge. If no review arrives in 20 minutes, merge anyway, note it in the PR, and triage the review when it comes.
+The exception is **shared-contract work**. Wait up to 20 minutes for the review, triage it (step 6), fix any "Act on" findings, then merge. If no review arrives in 20 minutes, merge anyway, note it in the PR, and triage the review when it comes. **Exception:** a PR that changes anything under `skills/builtin/` never merges without a completed review, because built-in skills and their hooks are trusted on `main` without in-app review. If its review doesn't arrive, escalate.
 
 After merging:
 

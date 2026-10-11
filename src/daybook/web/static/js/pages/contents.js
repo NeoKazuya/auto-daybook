@@ -44,7 +44,7 @@ function view(tl, kinds, skills, status) {
     return [stats, emptyState('contents', 'No notes yet',
       status.capture === 'running'
         ? 'Daybook is watching. The first chapter appears a few seconds after you start working.'
-        : 'Capture is paused. Resume it from Auto-Daybook or the tray to start taking notes.')];
+        : 'Capture is paused. Turn it back on in Settings or from the tray to start taking notes.')];
   }
 
   // Interleave segments and capture gaps by start time.

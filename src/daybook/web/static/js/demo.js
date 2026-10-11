@@ -91,6 +91,10 @@ const db = {
       { match: 'title', value: 'Daybook ·' },
     ],
     keep_frames: false,
+    schedule: { enabled: false, days: [1, 2, 3, 4, 5], start: '09:00', end: '18:00' },
+    apps_mode: 'all',
+    allowed_apps: ['Code', 'Firefox', 'Terminal'],
+    retention_days: null,
   },
   deletion_pending: false,
   skills: [

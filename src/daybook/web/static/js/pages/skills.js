@@ -18,12 +18,13 @@ async function render(root, params) {
   let selected = params.get('id');
   let notice = null;
   const count = h('span.counter', '…');
+  const newSkill = h('a.btn', { href: '#/board?q=' + encodeURIComponent('/skill ') }, icon('plus'), 'New skill');
   const list = h('div.rows.skill-scroll', skeletons(3));
   const detail = h('div');
 
   root.append(
-    ribbon(page, [h('a.pill', { href: '#/board?q=' + encodeURIComponent('/skill ') }, icon('plus'), 'New skill from chat')]),
-    split(panel('Skills & toggles', 'check', [count], list), detail,
+    ribbon(page),
+    split(panel('Skills & toggles', 'check', [count, newSkill], list), detail,
       { key: 'skills', initial: 60, label: 'Resize skills and review card' }));
 
   async function refresh() {

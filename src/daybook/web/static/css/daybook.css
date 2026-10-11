@@ -58,7 +58,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 /* Everything set in rem scales from here; the columns above stay fixed. */
-html { font-size: 87.5%; }
+html { font-size: 81.25%; }
 body {
   background: var(--desk);
   color: var(--ink);
@@ -445,15 +445,50 @@ body.resizing { cursor: col-resize; user-select: none; }
 .hit-snippet { font-size: 1rem; color: var(--ink-2); }
 .hit-snippet mark { background: color-mix(in srgb, var(--ember) 25%, transparent); color: var(--ink); padding: 0 0.15rem; border-radius: 2px; }
 
-/* ---------- Auto-Daybook (privacy & system) ---------- */
+/* ---------- Switch, exclusion form, key-value list ---------- */
 
-.switch { position: relative; width: 3.6rem; height: 2rem; flex: none; }
+.switch { position: relative; display: inline-block; vertical-align: middle; width: 3.6rem; height: 2rem; flex: none; }
 .switch input { position: absolute; opacity: 0; inset: 0; cursor: pointer; margin: 0; }
 .switch span { position: absolute; inset: 0; border-radius: var(--r-md); background: var(--chip); border: 1px solid var(--chip-line); transition: background 0.15s; pointer-events: none; }
 .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--ink-2); transition: transform 0.15s, background 0.15s; }
 .switch input:checked + span { background: var(--ember); border-color: var(--ember); }
 .switch input:checked + span::after { transform: translateX(1.6rem); background: var(--ink); }
 .excl-form { display: flex; gap: 0.5rem; }
+
+/* ---------- Settings ---------- */
+
+.stack { display: flex; flex-direction: column; gap: 1.5rem; min-width: 0; }
+.setting { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem 1.25rem; padding: 0.4rem 0; }
+.setting + .setting { border-top: 1px dashed var(--rule); padding-top: 1rem; }
+.setting-text { min-width: 0; flex: 1 1 14rem; }
+.setting-text h3 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+.setting-text p { margin: 0.2rem 0 0; color: var(--ink-2); }
+.setting-control { flex: none; }
+.segmented { display: inline-flex; align-self: flex-start; border: 1px solid var(--line-strong); border-radius: var(--r-sm); overflow: hidden; }
+.segmented button {
+  white-space: nowrap;
+  background: var(--on-ink); border: none; border-right: 1px solid var(--line-strong); color: var(--ink-2);
+  font-family: var(--mono); font-size: 0.85rem; letter-spacing: 0.04em; padding: 0.5rem 0.8rem;
+}
+.segmented button:last-child { border-right: none; }
+.segmented button:hover { color: var(--ink); background: var(--chip); }
+.segmented button[aria-pressed="true"] { background: var(--ink); color: var(--on-ink); font-weight: 700; }
+.hours { display: flex; flex-direction: column; gap: 0.6rem; }
+.hours.off { opacity: 0.45; }
+.days { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.day {
+  min-width: 3.4rem; padding: 0.5rem 0.6rem; border-radius: var(--r-sm); border: 1px solid var(--line-strong);
+  background: var(--on-ink); color: var(--ink-2); font-family: var(--mono); font-size: 0.85rem; letter-spacing: 0.06em;
+}
+.day:hover:not([disabled]) { border-color: var(--ink-3); color: var(--ink); }
+.day[aria-pressed="true"] { background: color-mix(in srgb, var(--ember) 14%, transparent); border-color: var(--ember); color: var(--ember-soft); font-weight: 700; }
+.day[disabled] { cursor: not-allowed; }
+.time-row { display: flex; align-items: center; gap: 0.75rem; }
+.input.time { width: auto; font-family: var(--mono); color-scheme: dark; }
+.input.select { width: auto; min-width: 12rem; }
+.app-list { display: flex; flex-direction: column; gap: 0.6rem; padding-top: 0.5rem; border-top: 1px dashed var(--rule); }
+.row.compact { padding: 0.5rem 0.9rem; }
+.row.compact .row-main { gap: 0.75rem; font-size: 1.05rem; }
 .excl-form select { background: var(--well); border: 1px solid var(--well-line); border-radius: var(--r-sm); padding: 0 0.6rem; font-family: var(--mono); font-size: 0.9rem; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 0.6rem 1.25rem; align-items: baseline; }
 .kv dt { font-family: var(--mono); font-size: 0.8rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-2); }

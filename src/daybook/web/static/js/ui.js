@@ -1,5 +1,6 @@
 // Small DOM and formatting helpers shared by every page.
 import { icon } from './icons.js';
+import { getPref } from './prefs.js';
 
 /** h('div.cls', {attrs}, ...children). Strings become text nodes; null/false are skipped. */
 export function h(spec, attrs, ...children) {
@@ -53,7 +54,7 @@ export async function busy(button, fn) {
 /* ---------- time ---------- */
 
 export const clock = (iso) =>
-  new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: getPref('hour12') });
 
 export function duration(seconds) {
   const m = Math.round(seconds / 60);

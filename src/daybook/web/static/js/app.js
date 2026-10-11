@@ -3,6 +3,7 @@
 import { api, subscribe, DEMO } from './api.js';
 import { h, icon, ribbon } from './ui.js';
 import { hydrateIcons } from './icons.js';
+import { applyPrefs, getPref } from './prefs.js';
 import contents from './pages/contents.js';
 import daily from './pages/daily.js';
 import board from './pages/board.js';
@@ -19,7 +20,7 @@ let status = null;
 
 function parseHash() {
   const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
-  return { route: path || 'contents', params: new URLSearchParams(query) };
+  return { route: path || getPref('startPage') || 'contents', params: new URLSearchParams(query) };
 }
 
 function renderNav(active) {
@@ -73,6 +74,7 @@ async function refreshStatus() {
 
 /* ---------- boot ---------- */
 
+applyPrefs();
 hydrateIcons();
 if (DEMO) {
   document.getElementById('sidebar-foot').append(

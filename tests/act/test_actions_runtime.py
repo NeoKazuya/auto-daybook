@@ -673,7 +673,7 @@ async def test_xdo_close_tab_targets_only_the_checked_window(monkeypatch):
     screen["window"] = ""
     assert (await desktop.close_tab("*Instagram*")).detail == "window_unreadable"
 
-    for broad in ("*", "*?*", "[a]*", " * "):
+    for broad in ("*", "*?*", "[a]*", " * ", "[a-z]*", "[a-z][a-z][a-z]*", "*[!x]*"):
         assert (await desktop.close_tab(broad)).detail == "pattern_too_broad"
     assert len(ran) == 1
 

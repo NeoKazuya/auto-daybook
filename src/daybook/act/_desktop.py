@@ -92,7 +92,8 @@ async def output(*args: str) -> str | None:
 def specific(pattern: str) -> bool:
     """A title pattern must name something: at least 3 non-wildcard characters,
     so a skill can never close whatever tab happens to be active."""
-    return len(re.sub(r"[*?\[\]]", "", pattern).strip()) >= 3
+    literal = re.sub(r"\[[^\]]*\]?", "", pattern)  # a [...] class is a wildcard
+    return len(re.sub(r"[*?\]]", "", literal).strip()) >= 3
 
 
 async def close_tab(title: str) -> Outcome:

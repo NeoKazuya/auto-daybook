@@ -11,7 +11,7 @@ from PIL import Image
 
 from daybook.act import Catalog
 from daybook.events import Bus, TickRecorded
-from daybook.journal import Journal, Observation, WindowInfo
+from daybook.journal import Journal, Observation, TimeRange, WindowInfo
 from daybook.mind import Mind
 from daybook.model import (
     ModelUnavailable,
@@ -630,7 +630,16 @@ async def test_sense_resume_mind_cadence(
         clear_readings=journal.clear_skill_readings,
     )
     screen = FakeScreen()
-    observe_gateway = ScriptedGateway(['{"seen":"code","visible_text":""}'] * 2)
+    expected_observations = (
+        [0, 5]
+        if initial_tick
+        else [0, 60, 100]
+        if gap_state == "overlay"
+        else [0, 60, 100, 160]
+    )
+    observe_gateway = ScriptedGateway(
+        ['{"seen":"code","visible_text":""}'] * len(expected_observations)
+    )
     tick_gateway = ScriptedGateway(
         [
             json.dumps(
@@ -670,7 +679,7 @@ async def test_sense_resume_mind_cadence(
         await obj.wait_idle()
         if gap_start <= elapsed < resume_at:
             assert tick_gateway.priorities == ([Priority.TICK] if initial_tick else [])
-            assert len(observe_gateway.prompts) == 1
+            assert len(observe_gateway.prompts) == (1 if initial_tick else 2)
 
     mind = Mind(journal, tick_gateway, book, clock=lambda: now[0], sleep=sleep)
     obj = Sense(screen, journal, observe_gateway, bus, tmp_path, mind.nudge)
@@ -683,7 +692,13 @@ async def test_sense_resume_mind_cadence(
             with pytest.raises(asyncio.CancelledError):
                 await mind.run()
         assert ticks == ([0, expected_tick] if initial_tick else [expected_tick])
-        assert len(observe_gateway.prompts) == 2
+        assert len(observe_gateway.prompts) == len(expected_observations)
+        assert [
+            row.started_at
+            for row in journal.portal.observations(
+                TimeRange(BASE, BASE + timedelta(seconds=expected_tick + 2))
+            )
+        ] == [BASE + timedelta(seconds=second) for second in expected_observations]
         assert tick_gateway.priorities == [Priority.TICK] * len(ticks)
     finally:
         await obj.close()
@@ -942,3 +957,164 @@ async def test_admission_question_reconciliation_cannot_capture_old_epoch(tmp_pa
     gw.release.set()
     await obj.wait_idle()
     assert not gw.prompts and not journal.rows and screen.grabs == 0
+
+
+@pytest.mark.parametrize("tiny_change", [False, True])
+async def test_still_frame_refreshes_small_visible_changes_within_one_minute(
+    tmp_path, tiny_change
+):
+    # A small control/text change may vanish in the 32x18 change detector.
+    # The real journal must still receive fresh facts without losing continuity.
+    bus = Bus()
+    journal = Journal(tmp_path / "journal.db", bus)
+    screen = FakeScreen()
+    gw = ScriptedGateway(
+        [
+            '{"seen":"Status: waiting.","visible_text":"waiting"}',
+            '{"seen":"Status: complete.","visible_text":"complete"}',
+        ]
+    )
+    nudges = []
+    obj = Sense(screen, journal, gw, bus, tmp_path, nudges.append)
+    try:
+        await poll(obj, 0)
+        if tiny_change:
+            screen.pixels = screen.pixels[:-1] + bytes([150])
+        for second in range(5, 60, 5):
+            await poll(obj, second)
+        assert len(gw.prompts) == 1
+        await poll(obj, 60)
+        rows = journal.portal.observations(
+            TimeRange(BASE, BASE + timedelta(seconds=61))
+        )
+        assert [row.seen for row in rows] == [
+            "Status: waiting.",
+            "Status: complete.",
+        ]
+        assert rows[0].last_seen_at == rows[1].started_at
+        assert rows[1].started_at == BASE + timedelta(seconds=60)
+        assert gw.priorities == [Priority.OBSERVE, Priority.OBSERVE]
+        assert screen.grabs == 2 and nudges == [False, False]
+    finally:
+        await obj.close()
+        journal.close()
+
+
+@pytest.mark.parametrize("phase", ["queued", "inflight"])
+async def test_periodic_refresh_does_not_duplicate_pending_observe(tmp_path, phase):
+    obj, screen, journal, gw, _ = sense(tmp_path)
+    await poll(obj, 0)
+    held = QuestionAdmissionGateway() if phase == "queued" else HeldGateway()
+    obj.gateway = held
+    screen.pixels = bytes([200]) * 576
+    await obj.poll(BASE + timedelta(seconds=55))
+    await held.entered.wait()
+    for second in range(60, 101, 5):
+        await obj.poll(BASE + timedelta(seconds=second))
+        assert len(obj._tasks) == 1
+        assert screen.grabs == (1 if phase == "queued" else 2)
+    held.release.set()
+    await obj.wait_idle()
+    assert len(journal.rows) == screen.grabs == 2
+    obj.gateway = gw
+    # Admission at 100 is fresh; pixels captured at 55 have aged during inference.
+    next_refresh = 160 if phase == "queued" else 115
+    await poll(obj, next_refresh - 5)
+    assert screen.grabs == 2
+    await poll(obj, next_refresh)
+    assert len(journal.rows) == screen.grabs == 3
+
+
+@pytest.mark.parametrize(
+    "blocked", ["paused", "locked", "away", "overlay", "withheld", "black"]
+)
+async def test_periodic_refresh_stays_behind_privacy_gate(tmp_path, blocked):
+    obj, screen, journal, gw, _ = sense(tmp_path)
+    await poll(obj, 0)
+    await poll(obj, 55)
+    if blocked == "paused":
+        obj.set_privacy(PrivacySettings(paused=True))
+    elif blocked == "locked":
+        screen.facts = state(locked=True)
+    elif blocked == "away":
+        screen.facts = state(idle_ms=300_000)
+    elif blocked == "overlay":
+        screen.facts = state(overlay=True)
+    elif blocked == "withheld":
+        screen.facts = state(windows=(VisibleWindow("private", PASSWORD, RECT),))
+    else:
+        screen.pixels = bytes(576)
+    await poll(obj, 60)
+    assert len(gw.prompts) == screen.grabs == 1
+    assert not obj._tasks
+    obj.set_privacy(PrivacySettings())
+    screen.facts = state()
+    screen.pixels = bytes([100]) * 576
+    await poll(obj, 65)
+    assert len(gw.prompts) == screen.grabs == 2
+    assert journal.rows[-1].started_at == BASE + timedelta(seconds=65)
+
+
+@pytest.mark.parametrize("mutation", ["pause", "exclusions", "forget", "lock"])
+async def test_periodic_refresh_discards_result_after_consent_or_forget(
+    tmp_path, mutation
+):
+    obj, screen, journal, _, _ = sense(tmp_path)
+    await poll(obj, 0)
+    held = HeldGateway()
+    obj.gateway = held
+    await obj.poll(BASE + timedelta(seconds=60))
+    await held.entered.wait()
+    if mutation == "pause":
+        obj.set_privacy(PrivacySettings(paused=True))
+    elif mutation == "exclusions":
+        obj.set_privacy(PrivacySettings(exclude_apps=("Code",)))
+    elif mutation == "forget":
+        journal.epoch += 1
+    else:
+        screen.facts = state(locked=True)
+        await obj.poll(BASE + timedelta(seconds=65))
+    held.release.set()
+    await obj.wait_idle()
+    assert len(journal.rows) == 1
+    assert journal.rows[0].started_at == BASE
+    assert screen.grabs == 2
+    assert not obj._tasks
+
+
+async def test_periodic_refresh_failure_leaves_gap_and_recovers(tmp_path):
+    obj, _, journal, _, _ = sense(
+        tmp_path,
+        [
+            '{"seen":"code","visible_text":""}',
+            ModelUnavailable("timeout"),
+            '{"seen":"recovered","visible_text":""}',
+        ],
+    )
+    await poll(obj, 0)
+    await poll(obj, 55)
+    await poll(obj, 60)
+    assert journal.states[-1] == ("withheld", BASE + timedelta(seconds=60))
+    assert journal.trims == [BASE + timedelta(seconds=60)]
+    await poll(obj, 65)
+    assert journal.rows[0].last_seen_at == BASE + timedelta(seconds=60)
+    assert journal.rows[1].started_at == BASE + timedelta(seconds=65)
+
+
+async def test_periodic_refresh_keeps_normal_request_spacing_and_load(tmp_path):
+    obj, screen, journal, gw, _ = sense(tmp_path)
+    for second in range(0, 301, 5):
+        await poll(obj, second)
+    assert len(gw.prompts) == screen.grabs == 6
+    assert [row.started_at for row in journal.rows] == [
+        BASE + timedelta(seconds=second) for second in range(0, 301, 60)
+    ]
+
+    obj, screen, journal, gw, _ = sense(tmp_path)
+    for second in range(61):
+        screen.pixels = bytes([100 if (second // 10) % 2 == 0 else 200]) * 576
+        await poll(obj, second)
+    assert len(gw.prompts) == screen.grabs == 7
+    assert [row.started_at for row in journal.rows] == [
+        BASE + timedelta(seconds=second) for second in range(0, 61, 10)
+    ]

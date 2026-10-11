@@ -456,3 +456,72 @@ def test_segment_output_depends_on_new_evidence():
     assert still.model_validate({"segment": None, "signals": values})
     with pytest.raises(ValidationError):
         still.model_validate({"segment": SEGMENT, "signals": values})
+
+
+async def test_backlog_batches_do_not_span_long_capture_gap(runtime):
+    journal, clock, before, skills = runtime
+    clock.advance(10)
+    journal.set_capture_state("paused", clock())
+    clock.advance(301)
+    journal.set_capture_state("running", clock())
+    after = journal.add_observation(
+        ObservationDraft(clock(), WindowInfo("Code", "resumed.py"), "Resumed work."),
+        journal.epoch,
+    )
+    assert after
+    gateway = ScriptedGateway([reply(), reply()])
+    mind = Mind(journal, gateway, skills, clock=clock)
+    first = await mind.tick_now()
+    assert first and first.observations == (before.id,)
+    assert journal.portal.now().segment is None
+    clock.advance(30)
+    second = await mind.tick_now()
+    assert second and second.observations == (after.id,)
+    assert isinstance(second.segment, Start)
+    segments = journal.portal.segments(TimeRange(NOW, clock() + timedelta(seconds=1)))
+    assert len(segments) == 2
+    assert [tuple(o.id for o in segment.observations) for segment in segments] == [
+        (before.id,),
+        (after.id,),
+    ]
+
+
+async def test_resume_waits_for_fresh_observation_before_readings_and_actions(runtime):
+    journal, clock, before, skills = runtime
+    clock.advance(10)
+    journal.set_capture_state("paused", clock())
+    clock.advance(10)
+    journal.set_capture_state("running", clock())
+    gateway = ScriptedGateway([reply()])
+    mind = Mind(journal, gateway, skills, clock=clock)
+    # Sense publishes running before its asynchronous observation finishes.
+    assert await mind.tick_now() is None
+    assert not gateway.prompts and not skills.fired
+    assert not journal.portal.now().readings
+    after = journal.add_observation(
+        ObservationDraft(
+            clock(), WindowInfo("Code", "resumed.py"), "Fresh resumed screen."
+        ),
+        journal.epoch,
+    )
+    assert after
+    assert await mind.tick_now()
+    assert len(gateway.prompts) == 1
+
+
+async def test_in_flight_tick_is_discarded_after_pause_and_resume(runtime):
+    journal, clock, observation, skills = runtime
+
+    class ResumeGateway(ScriptedGateway):
+        async def call(self, priority, prompt):
+            clock.advance(1)
+            journal.set_capture_state("paused", clock())
+            clock.advance(1)
+            journal.set_capture_state("running", clock())
+            return await super().call(priority, prompt)
+
+    gateway = ResumeGateway([reply()])
+    mind = Mind(journal, gateway, skills, clock=clock)
+    assert await mind.tick_now() is None
+    assert not skills.fired and not journal.portal.now().readings
+    assert journal.portal.latest_tick_evidence_until() is None

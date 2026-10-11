@@ -338,3 +338,24 @@ def test_disappeared_user_file_cannot_restore_approval_or_bypass_limit(
     assert len(book.active_signals()) == 12
     with pytest.raises(SignalLimit):
         book.approve("demo", restored.hash)
+
+
+async def test_immediate_condition_fires_on_first_detection_once_per_streak(setup_book):
+    book, portal, called, _ = setup_book
+    saved = book.save("demo", text(trigger="focused is true for 0s"))
+    assert saved.status == "needs_review", saved.errors
+    book.approve("demo", saved.hash)
+    at = datetime.now(timezone.utc) + timedelta(seconds=1)
+    for offset, value, expected in [
+        (0, True, 1),
+        (30, True, 1),
+        (60, False, 1),
+        (90, True, 2),
+    ]:
+        when = at + timedelta(seconds=offset)
+        reading = SignalReading(SignalId("demo", "focused"), value, when, f"t{offset}")
+        portal.history.append(reading)
+        tick = Tick(when, 0, when, (), (), (reading,))
+        await book.react(tick)
+        await book.react(tick)
+        assert len(called) == expected

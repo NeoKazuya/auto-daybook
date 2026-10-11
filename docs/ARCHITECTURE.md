@@ -43,7 +43,7 @@ These are fixed. The rest of the document is built on them.
 
 ## 2. The core idea
 
-**Skills never call the model.** A skill declares *signals*: named, typed questions such as "Is the user doing sustained, focused work?" (`bool`) or "Which kind of music fits right now?" (`music.mood`). About every 90 seconds, one text-only model call, the **tick**, does two jobs:
+**Skills never call the model.** A skill declares *signals*: named, typed questions such as "Is the user doing sustained, focused work?" (`bool`) or "Which kind of music fits right now?" (`music.mood`). One text-only model call, the **tick**, does two jobs. With enabled signals it is requested as soon as a fresh observation arrives (at least 30 seconds between attempts); otherwise the regular interval is 90 seconds:
 
 1. **Rollup.** It groups new observations chronologically by activity, continuing the current segment or starting a segment at each task boundary, with a title, a kind, and an inferred intent.
 2. **Signals.** It answers every active skill's questions in one JSON object. The JSON schema is generated from those questions, so the answers come back typed.
@@ -52,7 +52,7 @@ The answers are stored as readings. A **pure** evaluator then checks each skill'
 
 Consequences:
 
-- **Fixed model load.** Background load is one observe call per admitted screen change or one-minute freshness refresh, plus one tick per ~90 s, however many skills are enabled. A chat-made skill adds a few prompt tokens to the tick, not a model call.
+- **Fixed model load.** Background load is one observe call per admitted screen change or one-minute freshness refresh, plus at most one tick attempt per 30 s when fresh observations arrive for enabled signals (otherwise the regular interval is ~90 s), however many skills are enabled. A chat-made skill adds a few prompt tokens to the tick, not a model call.
 - **Predictable triggers.** Given the same readings, the same rules fire. That makes the demo predictable and the evaluator unit-testable without a model.
 - **Expressive without core changes.** Any new question a user wants answered becomes a signal. The core schema never changes.
 
@@ -85,7 +85,7 @@ GNOME Xorg :1 ──────────────────────
 | Process | What runs | Cadence |
 |---|---|---|
 | `daybookd` | **sense:** the privacy gate, change detection, observe calls | polls every 5 s; at most one model observe per 10 s; immediately on app switch |
-| | **mind:** the tick (rollup + signals), then `skills.react` | every 90 s; 20 s after an app switch; at least 30 s apart; only when there are new observations |
+| | **mind:** the tick (rollup + signals), then `skills.react` | fresh observations with enabled signals; otherwise every 90 s or 20 s after an app switch; at least 30 s apart; only with fresh evidence |
 | | **web:** FastAPI with Server-Sent Events (SSE) and the static UI | on request |
 | `daybook.shell` | Qt: tray icon and fullscreen or speech-bubble overlays. It's a stateless view of `daybookd` events | event-driven |
 | `mpv --idle` | music playback over a JSON IPC socket | event-driven |
@@ -296,7 +296,7 @@ Our fullscreen overlay is recognized by `_NET_WM_PID` matching the shell process
 
 **Schedule:**
 
-- A tick runs every 90 s (30 s in demo mode, `tick_interval` in `daybook.toml`), or 20 s after an app switch (or after an overlay is dismissed).
+- Fresh observations request an immediate tick when there are enabled skill signals, including browser tab changes and resumed capture. Repeated observations coalesce without postponing a pending check. With no enabled signals, the regular schedule remains every 90 s (30 s in demo mode, `tick_interval` in `daybook.toml`), or 20 s after an app switch (or after an overlay is dismissed).
 - Ticks are never less than 30 s apart.
 - A tick runs only when there is new evidence since the last tick: either new unassigned observations, or the latest observation was extended (the user is still there on an unchanged screen). No new evidence (locked, paused, withheld, fullscreen overlay up, or away) means no tick, no readings, and no firings.
 - When there are no new observations, the tick still answers every signal and writes readings, but makes no segment decision. That keeps `is … for` streaks and `every` triggers working while someone reads or types on a still screen.
@@ -344,7 +344,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
   - every referenced signal is declared
   - a skill has at most 4 signals
   - a hook step appears only when `source.origin` is `builtin`, and has a matching function in `<id>.hook.py`. Hooks in user or chat-made skills are parse errors, and `.hook.py` files outside `skills/builtin/` are never loaded
-- **`evaluate(rule, history, max_gap=5 min, now) -> Occurrence | None`.** Pure. It covers the four trigger forms and the keys that make firing idempotent. For duration rules, SkillBook cuts history after explicit pause, lock, private, or away interruptions. A completed app overlay lasting at most five minutes preserves the original streak key when adjacent known readings remain within the evaluator's five-minute limit; dismissing a reminder cannot create another occurrence for the same continued activity. Longer overlay gaps reset continuity. Streak duration retains elapsed-time semantics.
+- **`evaluate(rule, history, max_gap=5 min, now) -> Occurrence | None`.** Pure. It covers the four trigger forms and the keys that make firing idempotent. A zero-duration held-state rule (`is true for 0s`) fires on first detection, once per continuous streak; transition rules still require a previous known reading. For duration rules, SkillBook cuts history after explicit pause, lock, private, or away interruptions. A completed app overlay lasting at most five minutes preserves the original streak key when adjacent known readings remain within the evaluator's five-minute limit; dismissing a reminder cannot create another occurrence for the same continued activity. Longer overlay gaps reset continuity. Streak duration retains elapsed-time semantics.
 - **Approval and enablement** (stored separately, in `skill_state`).
   - A skill is active only if it is enabled *and* `sha256(skill file + hook file)` is approved.
   - `approve(id, hash)` approves that exact hash and enables the skill. Approving a *different* hash than before also deletes that skill's old signal readings and firings, so answers to the old version's questions can't form edges or streaks under the new one; `react` ignores readings from a tick that started before the approval. `disable(id)` and `enable(id)` flip only `enabled`. Enabling a skill whose current hash isn't approved is refused, so it has to be reviewed.

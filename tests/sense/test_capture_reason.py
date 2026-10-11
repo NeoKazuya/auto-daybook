@@ -249,3 +249,33 @@ async def test_post_grab_exclusion_keeps_specific_reason(real_sense, window, rea
     assert sense.status == CaptureStatus("withheld", reason)
     assert not sense.gateway.prompts
     assert journal.portal.now().observation is None
+
+
+@pytest.mark.parametrize(
+    "blocked,reason",
+    [
+        (facts(DAYBOOK), "daybook_visible"),
+        (facts(PRIVATE), "excluded_window"),
+        (facts(locked=None), "screen_unavailable"),
+    ],
+)
+async def test_queued_admission_gate_keeps_specific_reason(real_sense, blocked, reason):
+    sense, screen, journal, _ = real_sense
+    screen.facts = facts()
+
+    class SwitchingGateway(ScriptedGateway):
+        async def call(self, priority, prompt):
+            screen.facts = blocked
+            return await super().call(priority, prompt)
+
+    def unexpected_grab(expected):
+        raise AssertionError("An excluded queued request must not capture")
+
+    screen.grab = unexpected_grab
+    sense.gateway = SwitchingGateway([])
+    await sense.poll(BASE)
+    await sense.wait_idle()
+    # Preserve the existing discard state; only the explanation changes.
+    assert sense.status == CaptureStatus("withheld", reason)
+    assert not sense.gateway.prompts
+    assert journal.portal.now().observation is None

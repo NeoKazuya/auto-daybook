@@ -305,12 +305,14 @@ class Sense:
                 captured_at, \
                 discard_reason
             before = self.screen.state()
+            decision = gate(before, self._privacy)
             if (
                 epoch != self.journal.epoch
                 or consent != self._generation
                 or continuity != self._continuity
-                or gate(before, self._privacy).state != "running"
+                or decision.state != "running"
             ):
+                discard_reason = decision.reason
                 return None
             # Resolve current questions only after admission and consent checks,
             # before pixels. The provider owns approval and source reconciliation.

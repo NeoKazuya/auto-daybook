@@ -32,7 +32,7 @@ When it merges, post on the Tracker so Lane B can start. Everything after it is 
 Each item is complete when its ARCHITECTURE "Done when" checks pass. This is a checklist, not an order.
 
 - [ ] **Notes and events:** the journal with derived segment times, the forget epoch, `trim_after`, partial-forget clearing, FTS5 with `secure-delete`, and WAL truncation, plus the bus (§6.1, §6.2, §4).
-- [ ] **Model gateway:** one slot, priorities, the starvation guard, a single pending observe, structured output with one repair retry, timeouts, dialects, and live status (§6.3, §5).
+- [ ] **Model gateway:** configurable bounded concurrency with serialized background work, priorities, the starvation guard, a single pending observe, structured output with one repair retry, timeouts, dialects, and live status (§6.3, §5).
 - [ ] **Screen capture and privacy gate:** X11 and replay screens; the lock, pause, away, overlay, and visible-exclusion gate, including the rerun after the grab; continuity rules; the consent generation (§6.4, §7).
 - [ ] **The tick:** schedule (including the 30 s demo interval), prompt, per-tick schema, `parse_tick`, readings on a still screen, and the quality gate on fixtures (§6.5).
 - [ ] **Skills:** the parser with `SkillSource`, the four-form evaluator, `SkillBook` with separate enablement and the cross-skill limit, `react` with firing claims, the generator, and built-in-only hooks (§6.6, [skills.md](../skills.md)).
@@ -49,8 +49,8 @@ Each item is complete when its ARCHITECTURE "Done when" checks pass. This is a c
 
 - **Without the screen or the model.** Most work runs on `ReplayScreen`, `ScriptedGateway`, a temporary journal, and fake desktop, music, and overlay backends.
 - **Development instances:** `daybook run --replay fixtures/replay/<scenario> --port 8770–8779` with `DAYBOOK_HOME=~/.daybook-a-<agent>`. These never touch the real screen or speakers.
-- **Real model:** Ollama `qwen3.6:35b` at `http://127.0.0.1:11434/v1`. It was already verified on a real screenshot ([gx10-unattended.md](../gx10-unattended.md)). Don't start a second large model.
-- **Real screen and effects:** hold the capture lock with the wrapper in [gx10-unattended.md](../gx10-unattended.md), and use `--real-effects`. Run `gx10 status` first.
+- **Real model:** vLLM `qwen3.8-flash-next` at `http://127.0.0.1:18300/v1`, using `~/.config/qwen38/api-key` (never print or commit the key). Vision and fixed-recording quality passed; see [ARCHITECTURE §5](../ARCHITECTURE.md#5-model-use-and-budget). The app starts with configurable concurrency two and serialized background work. Ollama is deliberately stopped; do not start it or another large model beside vLLM.
+- **Real screen and effects:** hold the capture lock with the wrapper in [gx10-unattended.md](../gx10-unattended.md), and use `--real-effects`. Run the [capture-locked GX10 status check and configured-model assertion](../agents/teammate-handoff.md#connect) first; the installed checker's bare command still targets stopped Ollama.
 
 ## Watch for
 

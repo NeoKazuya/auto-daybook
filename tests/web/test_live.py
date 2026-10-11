@@ -226,6 +226,10 @@ def live(tmp_path):
             mind=mind,
             music=music,
             observation=observation,
+            time_range={
+                "from": at.isoformat(),
+                "to": (at + timedelta(minutes=5)).isoformat(),
+            },
             tick=tick,
         )
     journal.close()
@@ -233,7 +237,9 @@ def live(tmp_path):
 
 def test_real_timeline_now_and_note_edits_validate(live):
     client = live.client
-    timeline = w.TimelineResponse.model_validate(client.get("/api/timeline").json())
+    timeline = w.TimelineResponse.model_validate(
+        client.get("/api/timeline", params=live.time_range).json()
+    )
     assert len(timeline.segments) == 1
     segment = timeline.segments[0]
     assert segment.active == 300
@@ -265,7 +271,7 @@ def test_real_timeline_now_and_note_edits_validate(live):
 def test_real_forget_removes_database_notes_and_search(live, operation):
     journal = live.services.journal
     client = live.client
-    timeline = client.get("/api/timeline").json()
+    timeline = client.get("/api/timeline", params=live.time_range).json()
     if operation == "observation":
         response = client.delete(
             f"/api/observations/{live.observation.id}", headers=HEADERS
@@ -287,7 +293,7 @@ def test_real_forget_removes_database_notes_and_search(live, operation):
         response = client.post("/api/forget-all", headers=HEADERS)
     assert response.status_code == 200
     assert w.MutationResponse.model_validate(response.json()).ok
-    assert not client.get("/api/timeline").json()["segments"]
+    assert not client.get("/api/timeline", params=live.time_range).json()["segments"]
     assert not journal.portal.search("imports")
 
 
@@ -532,7 +538,9 @@ def test_persisted_skill_approval_and_external_edit_through_http(live, tmp_path)
 @pytest.mark.parametrize("kind", ["segments", "observations"])
 def test_repeated_note_delete_is_404_without_invalidating_work(live, kind):
     id = (
-        live.client.get("/api/timeline").json()["segments"][0]["id"]
+        live.client.get("/api/timeline", params=live.time_range).json()["segments"][0][
+            "id"
+        ]
         if kind == "segments"
         else live.observation.id
     )

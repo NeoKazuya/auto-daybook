@@ -2,7 +2,7 @@
 
 How to bring the GX10 to the state [ARCHITECTURE.md](ARCHITECTURE.md) assumes. Access and the rules for sharing the machine are in [gx10.md](gx10.md), and the machine's current state is recorded in [planning/grounding.md](planning/grounding.md). Run everything as `asus`. Each step says how to check it worked.
 
-The venue Wi‑Fi is shared with the Qwen3.8 download (124 GiB). Keep downloads to what's listed here.
+The model weights are already local. Keep new downloads to what is needed for setup.
 
 ## 1. System packages
 
@@ -71,20 +71,82 @@ Record the license and source URL for every track. CC BY requires attribution, a
 
 ## 6. The model
 
-The default backend is Ollama with `qwen3.6:35b`, already installed (see [grounding](planning/grounding.md)).
+The adopted backend is the already-running Qwen3.8 Flash Next service on vLLM
+0.31. Ollama is deliberately stopped and must stay stopped while vLLM is running;
+the model uses about 97 GiB of the shared GX10's memory. Do not run the old
+Ollama warm-up or the legacy `gx10 smoke --vision` default beside it.
+
+Check the existing deployment without starting another model:
 
 ```sh
-ollama run qwen3.6:35b "" >/dev/null   # warm it up; the first load takes a while
-ollama ps                             # should list qwen3.6:35b
+cd ~/gx10-model-plan
+./gx10.sh status
 ```
 
-Confirm the model server doesn't log request contents (the privacy design in [ARCHITECTURE.md §7](ARCHITECTURE.md#7-privacy)):
+The installed desktop checker is also configurable; its bare status command
+still targets Ollama. For the shared desktop/power/audio preflight, hold the
+capture lock and pass the running model explicitly:
 
 ```sh
-systemctl show ollama -p Environment   # OLLAMA_DEBUG must not be set
+~/.local/bin/gx10 run -- ~/.local/bin/gx10 status \
+  --base-url http://127.0.0.1:18300/v1 \
+  --key-file ~/.config/qwen38/api-key
 ```
 
-Switching to Qwen3.8 means following `~/gx10-model-plan/RUNBOOK.md`, then setting `[model]` in `daybook.toml` as described in [ARCHITECTURE.md §5](ARCHITECTURE.md#5-model-use-and-budget). Only switch after `accept.py --vision` passes. Never run both large models at once.
+This reads screen pixels only in memory and calls the model-list endpoint;
+it does not run inference, load a model, or assert a particular model ID.
+The configured-model assertion below is required before starting Daybook. The generic examples in
+[gx10-unattended.md](gx10-unattended.md) describe the older installer defaults.
+For current vision acceptance, use the model runbook below.
+
+Serving operations and the endpoint acceptance script live in
+`~/gx10-model-plan/RUNBOOK.md`. The adoption run of `accept.py --vision` passed
+14 checks; rerun it after changing the model or serving configuration. Keep
+credentials in the existing private `~/.config/qwen38/api-key` file. Do not
+print the key, copy it into source, or enable request-content logging.
+
+Fresh Daybook configurations select this profile. **Existing `daybook.toml`
+files are preserved**, so replace just their `[model]` table when adopting
+the running service; keep unrelated application/privacy settings:
+
+```toml
+[model]
+base_url = "http://127.0.0.1:18300/v1"
+model = "qwen3.8-flash-next"
+api_key_file = "~/.config/qwen38/api-key"
+dialect = "vllm"
+max_concurrency = 2
+```
+
+Use the intended instance's `DAYBOOK_HOME` (default `~/.daybook`). From its
+checkout, verify the configured endpoint and model without loading a model
+or displaying credentials:
+
+```sh
+cd ~/auto-daybook  # or this instance's checkout
+uv run python - <<'PY'
+from pathlib import Path
+import httpx
+from daybook.app import load_config
+
+model = load_config().model
+key = Path(model.api_key_file).expanduser().read_text().strip()
+with httpx.Client(timeout=10) as client:
+    response = client.get(
+        model.base_url.rstrip("/") + "/models",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    response.raise_for_status()
+    available = {item["id"] for item in response.json()["data"]}
+    assert model.model in available, "configured model is not served"
+print(model.base_url, model.model, model.dialect, model.max_concurrency)
+PY
+```
+
+Expected output ends with `qwen3.8-flash-next vllm 2`. A missing key or failed
+endpoint check is a configuration/service problem; use the model runbook,
+not an Ollama fallback. See [ARCHITECTURE §5](ARCHITECTURE.md#5-model-use-and-budget)
+for the configurable limit and measured scheduling behavior.
 
 ## 7. Running daybook
 

@@ -8,6 +8,7 @@ import json
 import math
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import mss
@@ -18,7 +19,7 @@ from Xlib.ext import screensaver  # noqa: F401 - registers XScreenSaver methods
 
 from daybook.journal import WindowInfo
 
-from ._gate import intersection
+from ._gate import intersection, is_bubble
 from ._types import Rect, ScreenState, VisibleWindow
 
 
@@ -33,6 +34,33 @@ def _jpeg(image: Image.Image) -> bytes:
 
 def _thumbnail(image: Image.Image) -> bytes:
     return image.convert("L").resize((32, 18)).tobytes()
+
+
+def _mask_bubbles(
+    image: Image.Image, windows: tuple[VisibleWindow, ...]
+) -> Image.Image:
+    # Rectangles and image pixels share root coordinates. Mask before any
+    # resizing, so neither the thumbnail nor JPEG can contain bubble feedback.
+    image = image.convert("RGB")
+    bounds = Rect(0, 0, image.width, image.height)
+    for window in windows:
+        if not is_bubble(window.info) or window.opacity <= 0:
+            continue
+        rect = intersection(window.rect, bounds)
+        if rect.width and rect.height:
+            image.paste(
+                (0, 0, 0),
+                (rect.x, rect.y, rect.x + rect.width, rect.y + rect.height),
+            )
+    return image
+
+
+@dataclass(frozen=True)
+class _WindowFacts:
+    bounds: Rect
+    active: WindowInfo | None
+    windows: tuple[VisibleWindow, ...]
+    overlay: bool
 
 
 def _command(*args: str) -> str:
@@ -84,93 +112,116 @@ class X11Screen:
                 return locked == "yes"
         return None
 
+    def _window_facts(self) -> _WindowFacts:
+        # One uncached metadata reader serves state() and pixel capture. This
+        # excludes loginctl/pactl work from the image transaction.
+        geometry = self._root.get_geometry()
+        bounds = Rect(0, 0, geometry.width, geometry.height)
+        active_property = self._property(self._root, "_NET_ACTIVE_WINDOW")
+        active_id = (
+            int(active_property[0])
+            if active_property is not None and len(active_property)
+            else 0
+        )
+        active = None
+        windows = []
+        overlay = False
+        stack = self._property(self._root, "_NET_CLIENT_LIST_STACKING")
+        for wid in () if stack is None else stack:
+            window = self._display.create_resource_object("window", int(wid))
+            attrs = window.get_attributes()
+            if attrs.map_state != X.IsViewable:
+                continue
+            rect = window.get_geometry()
+            coords = self._root.translate_coords(window, 0, 0)
+            extents = self._property(window, "_NET_FRAME_EXTENTS")
+            left, right, top, bottom = (
+                tuple(int(v) for v in extents)
+                if extents is not None and len(extents) == 4
+                else (0, 0, 0, 0)
+            )
+            clipped = intersection(
+                Rect(
+                    coords.x - left,
+                    coords.y - top,
+                    rect.width + left + right,
+                    rect.height + top + bottom,
+                ),
+                bounds,
+            )
+            if not clipped.width or not clipped.height:
+                continue
+            info = self._facts(window)
+            opacity_prop = self._property(window, "_NET_WM_WINDOW_OPACITY")
+            opacity = (
+                1.0
+                if opacity_prop is None
+                else max(0.0, min(1.0, int(opacity_prop[0]) / 0xFFFFFFFF))
+            )
+            pid_prop = self._property(window, "_NET_WM_PID")
+            pid = int(pid_prop[0]) if pid_prop is not None and len(pid_prop) else None
+            visible = VisibleWindow(str(int(wid)), info, clipped, opacity, pid)
+            windows.append(visible)
+            if int(wid) == active_id:
+                # The bubble must never take focus. Do not invent an underlying
+                # foreground app if a presenter unexpectedly focuses it.
+                active = None if is_bubble(info) else info
+            if not is_bubble(info) and (
+                pid is not None
+                and pid == self._shell_pid
+                or info.app.lower() == "daybook-shell"
+            ):
+                overlay = True
+        return _WindowFacts(bounds, active, tuple(windows), overlay)
+
     def state(self) -> ScreenState:
         try:
-            geometry = self._root.get_geometry()
-            bounds = Rect(0, 0, geometry.width, geometry.height)
-            active_property = self._property(self._root, "_NET_ACTIVE_WINDOW")
-            active_id = (
-                int(active_property[0])
-                if active_property is not None and len(active_property)
-                else 0
-            )
-            active = None
-            windows = []
-            overlay = False
-            stack = self._property(self._root, "_NET_CLIENT_LIST_STACKING")
-            for wid in () if stack is None else stack:
-                window = self._display.create_resource_object("window", int(wid))
-                try:
-                    attrs = window.get_attributes()
-                    if attrs.map_state != X.IsViewable:
-                        continue
-                    rect = window.get_geometry()
-                    coords = self._root.translate_coords(window, 0, 0)
-                    extents = self._property(window, "_NET_FRAME_EXTENTS")
-                    left, right, top, bottom = (
-                        tuple(int(v) for v in extents)
-                        if extents is not None and len(extents) == 4
-                        else (0, 0, 0, 0)
-                    )
-                    clipped = intersection(
-                        Rect(
-                            coords.x - left,
-                            coords.y - top,
-                            rect.width + left + right,
-                            rect.height + top + bottom,
-                        ),
-                        bounds,
-                    )
-                    if not clipped.width or not clipped.height:
-                        continue
-                    info = self._facts(window)
-                    opacity_prop = self._property(window, "_NET_WM_WINDOW_OPACITY")
-                    opacity = (
-                        1.0
-                        if opacity_prop is None
-                        else max(0.0, min(1.0, int(opacity_prop[0]) / 0xFFFFFFFF))
-                    )
-                    pid_prop = self._property(window, "_NET_WM_PID")
-                    pid = (
-                        int(pid_prop[0])
-                        if pid_prop is not None and len(pid_prop)
-                        else None
-                    )
-                    windows.append(
-                        VisibleWindow(str(int(wid)), info, clipped, opacity, pid)
-                    )
-                    if int(wid) == active_id:
-                        active = info
-                    if (
-                        pid is not None
-                        and pid == self._shell_pid
-                        or info.app.lower() == "daybook-shell"
-                    ):
-                        overlay = True
-                except error.XError:
-                    continue  # a window closed while its facts were being read
+            facts = self._window_facts()
             idle = int(self._root.screensaver_query_info().idle)
             return ScreenState(
-                active,
-                tuple(windows),
+                facts.active,
+                facts.windows,
                 self._locked(),
                 idle,
                 bool(_command("pactl", "list", "short", "source-outputs")),
-                overlay,
+                facts.overlay,
             )
-        except (error.XError, OSError, AttributeError):
+        except (error.XError, OSError, AttributeError, TypeError, ValueError):
             return ScreenState(None, (), None, 300_000)
 
-    def _image(self) -> Image.Image:
+    def _image(self, bounds: Rect) -> Image.Image:
         with mss.mss(display=self._name) as capture:
-            shot = capture.grab(capture.monitors[0])
+            shot = capture.grab(
+                dict(
+                    left=bounds.x,
+                    top=bounds.y,
+                    width=bounds.width,
+                    height=bounds.height,
+                )
+            )
             return Image.frombytes("RGB", shot.size, shot.rgb)
 
-    def thumbnail(self) -> bytes:
-        return _thumbnail(self._image())
+    def _capture_image(self, expected: ScreenState) -> Image.Image:
+        before = self._window_facts()
+        if (
+            before.active is None
+            or before.overlay
+            or before.active != expected.active
+            or before.windows != expected.windows
+            or before.overlay != expected.overlay
+        ):
+            raise RuntimeError("window facts changed since privacy admission")
+        image = self._image(before.bounds)
+        after = self._window_facts()
+        if before != after or image.size != (before.bounds.width, before.bounds.height):
+            raise RuntimeError("window facts changed during capture")
+        return _mask_bubbles(image, before.windows)
 
-    def grab(self) -> bytes:
-        return _jpeg(self._image())
+    def thumbnail(self, expected: ScreenState) -> bytes:
+        return _thumbnail(self._capture_image(expected))
+
+    def grab(self, expected: ScreenState) -> bytes:
+        return _jpeg(self._capture_image(expected))
 
 
 class ReplayScreen:
@@ -200,7 +251,9 @@ class ReplayScreen:
         return self._folders[index]
 
     def state(self) -> ScreenState:
-        folder = self._step()
+        return self._state(self._step())
+
+    def _state(self, folder: Path) -> ScreenState:
         data = json.loads((folder / "window.json").read_text())
         locked = json.loads((folder / "locked").read_text())
         idle = json.loads((folder / "idle_ms").read_text())
@@ -223,8 +276,11 @@ class ReplayScreen:
             )
             for w in data["windows"]
         )
+        active = WindowInfo(**data["active"]) if data.get("active") else None
+        if active is not None and is_bubble(active):
+            active = None
         return ScreenState(
-            WindowInfo(**data["active"]) if data.get("active") else None,
+            active,
             windows,
             locked,
             idle,
@@ -232,10 +288,19 @@ class ReplayScreen:
             bool(data.get("overlay", False)),
         )
 
-    def thumbnail(self) -> bytes:
-        with Image.open(self._step() / "frame.png") as image:
-            return _thumbnail(image)
+    def _capture_image(self, expected: ScreenState) -> Image.Image:
+        folder = self._step()
+        before = self._state(folder)
+        if before != expected:
+            raise RuntimeError("replay facts changed since privacy admission")
+        with Image.open(folder / "frame.png") as image:
+            masked = _mask_bubbles(image, before.windows)
+        if folder != self._step() or before != self._state(folder):
+            raise RuntimeError("replay facts changed during capture")
+        return masked
 
-    def grab(self) -> bytes:
-        with Image.open(self._step() / "frame.png") as image:
-            return _jpeg(image)
+    def thumbnail(self, expected: ScreenState) -> bytes:
+        return _thumbnail(self._capture_image(expected))
+
+    def grab(self, expected: ScreenState) -> bytes:
+        return _jpeg(self._capture_image(expected))

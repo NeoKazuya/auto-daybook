@@ -33,6 +33,11 @@ class ModelConfig:
     model: str = "qwen3.6:35b"
     api_key_file: str = ""
     dialect: Literal["ollama", "vllm", "openai"] = "ollama"
+    max_concurrency: int = 1
+
+    def __post_init__(self) -> None:
+        if type(self.max_concurrency) is not int or self.max_concurrency < 1:
+            raise ValueError("max_concurrency must be a positive integer")
 
 
 @dataclass(frozen=True)

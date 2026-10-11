@@ -6,7 +6,7 @@ The live demo runs on the GX10. A presenter really uses the machine while the au
 
 - [ ] The GX10 is set up per [setup.md](setup.md), the screen is unlocked, and automatic screen lock is off for the session (Settings → Privacy → Screen Lock).
 - [ ] A monitor is connected, the speakers are audible, and the volume is checked.
-- [ ] The model is warm: `ollama ps` lists `qwen3.6:35b` (or Qwen3.8, if it passed its gates).
+- [ ] The existing Qwen3.8 vLLM service is healthy: `cd ~/gx10-model-plan && ./gx10.sh status`. Verify this instance's model profile using [setup §6](setup.md#6-the-model); existing config files are preserved. Keep Ollama stopped.
 - [ ] `daybook run` is running in tmux on the real screen, with a fresh `DAYBOOK_HOME` so the timeline starts empty, and `tick_interval = "30s"` in its `daybook.toml` (demo mode: still at most 2 ticks per minute).
 - [ ] Skills:
   - `music` active

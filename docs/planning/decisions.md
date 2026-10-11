@@ -56,7 +56,6 @@ Status: **decided** (the user answered), **default** (proposed by the planner an
 
 - Product name (`daybook` is the working name).
 - Whether withheld (excluded-app) time shows as a "private" gap on the timeline (current design) or not at all.
-- Whether to switch to Qwen3.8 once it downloads (gated on `accept.py --vision` and the replay fixtures).
 
 ## GX10 cua trial — 2026-10-10
 
@@ -125,3 +124,86 @@ The meeting and focus reminders each fired once; locked and excluded periods
 made zero model calls. Labels stayed fixed through every comparison. These are
 measured results on the recordings; model outputs can still vary on other
 screens or repeated calls.
+
+## Qwen3.8 adoption and configurable concurrency (2026-10-10)
+
+The user handed over the running Qwen3.8 Flash Next vLLM 0.31 endpoint and
+authorized full adoption after testing. Ollama stays stopped: the vLLM deployment
+uses about 97 GiB of the shared machine's memory. The app uses the local proxy
+at `http://127.0.0.1:18300/v1`, model `qwen3.8-flash-next`, and the existing
+private `~/.config/qwen38/api-key` file. No key belongs in source or logs.
+
+The prescribed `accept.py --vision` run passed all 14 checks. Measured decode
+rate was 38.3 tokens/s for one stream and 81.8 tokens/s in aggregate for four
+concurrent requests; a repeated 13,336-token prefix completed in 0.87 s.
+These are endpoint measurements, not end-to-end Daybook timings.
+
+Ten bounded calls through the real gateway and caller prompts (route, observe,
+tick, recall, draft; each at none and low effort) parsed without repairs,
+timeouts, or truncation. With thinking disabled, initial times were 1.0, 3.4,
+3.1, 2.8, and 6.4 seconds respectively. Low effort took 1.3, 4.2, 8.6, 4.0,
+and 11.2 seconds. The installed template honors the existing
+`enable_thinking=false` and top-level `reasoning_effort=low` controls.
+Keep existing output caps and fast defaults for these callers. These transport
+smoke measurements alone do not justify additional effort levels or
+thinking-budget controls; independent skill-planning cases are assessed below.
+
+The unchanged four recorded scenarios scored 12/13 joint signal sets and
+13/13 activity kinds in 46.3 seconds over 21 model calls, matching the previous
+Qwen3.6 score (57.2 seconds in its recorded run). The new run's disagreement
+was focus during a meeting. The user notes that a meeting can be focused work:
+this is an ambiguous fixture expectation, not evidence that all meetings
+should be classified as unfocused. Keep the old labels for comparison and
+evaluate additional contexts separately. Both reminders fired once and privacy
+intervals made no model calls. Fixed scenarios do not establish general accuracy.
+
+The user also requested modest parallelism with a configurable limit.
+Caller usage is `ModelGateway(ModelConfig(..., max_concurrency=2))`; the app's
+TOML profile initially selects two. Direct gateway construction defaults to one,
+and any positive integer can be configured without code changes. One dispatcher
+owns the queue, admission fairness, and active requests. A design with separate
+foreground/background workers was rejected because it splits admission policy
+and wastes capacity when only interactive work is waiting. Background work
+remains serialized; a second slot lets chat overlap a capture or tick.
+
+A small endpoint-capacity comparison used the same real caller prompts and
+caps, with warmups and serial/parallel/parallel/serial ordering. Two independent
+baseline gateways were used to measure the server before changing Daybook's
+scheduler. Observation plus recall averaged 4.4 seconds serially versus 2.7
+seconds together; tick plus drafting averaged 8.7 versus 7.0 seconds. The
+interactive calls were about 12% slower individually when paired. This supports
+starting at two rather than filling the server's advertised capacity. It is not
+a proof of the new single-gateway scheduler. A separate live run through one
+new gateway passed six requests, including a serial control: peak concurrency
+was two, peak background concurrency was one, chat overlapped observation for
+2.95 seconds, and the next tick builder waited for observation to finish. All
+outputs parsed without repair. Those cache-sensitive run durations are
+functional evidence, not a throughput comparison.
+
+Evidence retained on the GX10: `daybook-a-qwen38-accept-20261011T0613Z.json`,
+`daybook-a-qwen38-gateway-probe.json`, `daybook-a-qwen38-quality-none.json`,
+`daybook-a-qwen38-concurrency-benchmark.json`, and
+`daybook-a-qwen38-single-gateway-probe.json` under `/home/asus/`.
+The fixture and capacity runs used a frozen archive of main `ca21868`.
+Broader activity cases and a small held-out set are required before describing
+this as general model quality; avoid tuning to one ambiguous label.
+
+An independent Claude-authored missing-attachment reminder exposed a separate
+skill-planning weakness: the generated file passed grammar checks but used an
+unconditional updates trigger and ignored the attachment condition. In 22
+real-model ticks over explicit synthetic notes, the readings generally
+distinguished the email states, but all eight quiet cases still alerted and
+all four unchanged checks alerted again. The same planning pattern occurred
+with meeting/battery and expense/amount requests. These are generator failures,
+not evidence that the screen observer misread those screens.
+
+An unchanged-prompt effort comparison helped isolate the cause. Low effort
+produced a correct composite attachment condition, but the meeting/battery
+request timed out at 40 seconds, and an expense reminder required a repair and
+59 seconds. Both effort modes drafted an unsupported voice-stress detector
+without acknowledging that Daybook does not receive audio. Raising effort
+alone is not the selected fix. The separate Lane A skill-planning change will
+clarify general rule composition and return an honest explanation when the
+required input or action is unavailable. No email-specific classifier or
+blanket video/focus restriction is warranted. Evidence is in
+`daybook-a-judge-skill-behavior.json`, `-unsupported.json`, and `-effort.json`.

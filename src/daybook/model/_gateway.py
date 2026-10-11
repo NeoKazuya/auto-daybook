@@ -1,4 +1,4 @@
-"""Serial admission, request dialects, and bounded structured-output repair."""
+"""Bounded admission, request dialects, and structured-output repair."""
 
 from __future__ import annotations
 
@@ -110,7 +110,8 @@ class ModelGateway:
         )
         self._queue: list[_Request] = []
         self._worker: asyncio.Task[None] | None = None
-        self._active: _Request | None = None
+        self._active: dict[asyncio.Task[None], _Request] = {}
+        self._wake = asyncio.Event()
         self._interactive_streak = 0
         self._closed = False
         self._reachable = False
@@ -131,6 +132,7 @@ class ModelGateway:
         )
         request = _Request(priority, prompt, future)
         self._queue.append(request)
+        self._wake.set()
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self._serve())
         try:
@@ -138,6 +140,7 @@ class ModelGateway:
         finally:
             if request in self._queue and future.cancelled():
                 self._queue.remove(request)
+                self._wake.set()
 
     def drop_observe(self) -> None:
         for request in tuple(self._queue):
@@ -145,15 +148,26 @@ class ModelGateway:
                 self._queue.remove(request)
                 if not request.future.done():
                     request.future.set_exception(ObserveReplaced("observe_replaced"))
+                self._wake.set()
 
-    def _next(self) -> _Request:
+    def _next(self) -> _Request | None:
         waiting = [r for r in self._queue if not r.future.done()]
         self._queue = waiting
-        background = [r for r in waiting if r.priority != Priority.INTERACTIVE]
+        background_active = any(
+            r.priority != Priority.INTERACTIVE for r in self._active.values()
+        )
+        eligible = [
+            r
+            for r in waiting
+            if r.priority == Priority.INTERACTIVE or not background_active
+        ]
+        if not eligible:
+            return None
+        background = [r for r in eligible if r.priority != Priority.INTERACTIVE]
         if self._interactive_streak >= 2 and background:
             request = background[0]
         else:
-            request = min(waiting, key=lambda r: r.priority)
+            request = min(eligible, key=lambda r: r.priority)
         self._queue.remove(request)
         self._interactive_streak = (
             self._interactive_streak + 1
@@ -164,42 +178,57 @@ class ModelGateway:
 
     async def _serve(self) -> None:
         try:
-            while any(not r.future.done() for r in self._queue):
-                request = self._next()
-                self._active = request
-                try:
-                    async with asyncio.timeout(_TIMEOUT):
-                        built = (
-                            await request.prompt()
-                            if callable(request.prompt)
-                            else request.prompt
-                        )
-                        result = (
-                            None
-                            if built is None
-                            else await self._complete(request.priority, built)
-                        )
-                    if not request.future.done():
-                        request.future.set_result(result)
-                except asyncio.CancelledError:
-                    if not request.future.done():
-                        request.future.set_exception(ModelUnavailable("gateway_closed"))
-                    raise
-                except Exception as exc:
-                    self._reachable = (
-                        False
-                        if isinstance(exc, (httpx.HTTPError, TimeoutError))
-                        else self._reachable
-                    )
-                    # Never expose server error bodies, prompts, or validation values.
-                    if not request.future.done():
-                        request.future.set_exception(
-                            ModelUnavailable(type(exc).__name__)
-                        )
-                finally:
-                    self._active = None
+            while not self._closed:
+                self._wake.clear()
+                while len(self._active) < self.config.max_concurrency:
+                    request = self._next()
+                    if request is None:
+                        break
+                    task = asyncio.create_task(self._execute(request))
+                    self._active[task] = request
+                if not self._queue and not self._active:
+                    return
+                await self._wake.wait()
         finally:
             self._worker = None
+
+    async def _execute(self, request: _Request) -> None:
+        try:
+            # A caller can cancel just after admission, before a builder starts.
+            if request.future.done():
+                return
+            async with asyncio.timeout(_TIMEOUT):
+                built = (
+                    await request.prompt()
+                    if callable(request.prompt)
+                    else request.prompt
+                )
+                result = (
+                    None
+                    if built is None
+                    else await self._complete(request.priority, built)
+                )
+            if not request.future.done():
+                request.future.set_result(result)
+        except asyncio.CancelledError:
+            if not request.future.done():
+                request.future.set_exception(ModelUnavailable("gateway_closed"))
+            raise
+        except Exception as exc:
+            self._reachable = (
+                False
+                if isinstance(exc, (httpx.HTTPError, TimeoutError))
+                else self._reachable
+            )
+            # Never expose server error bodies, prompts, or validation values.
+            if not request.future.done():
+                request.future.set_exception(ModelUnavailable(type(exc).__name__))
+        finally:
+            # Caller cancellation never releases an HTTP request's slot early.
+            task = asyncio.current_task()
+            if task is not None:
+                self._active.pop(task, None)
+            self._wake.set()
 
     async def _complete(self, priority: Priority, prompt: Prompt) -> BaseModel | str:
         repair = ""
@@ -238,7 +267,9 @@ class ModelGateway:
         return GatewayStatus(
             self.config.model,
             self._reachable,
-            self._active.priority.name.lower() if self._active else None,
+            min(r.priority for r in self._active.values()).name.lower()
+            if self._active
+            else None,
             sum(not r.future.done() for r in self._queue),
             self._latency,
             len(self._calls),
@@ -258,4 +289,14 @@ class ModelGateway:
                 await worker
             except asyncio.CancelledError:
                 pass
+        active = tuple(self._active)
+        for task in active:
+            request = self._active[task]
+            # An admitted task may be cancelled before its coroutine starts.
+            if not request.future.done():
+                request.future.set_exception(ModelUnavailable("gateway_closed"))
+            task.cancel()
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
+        self._active.clear()
         await self._client.aclose()

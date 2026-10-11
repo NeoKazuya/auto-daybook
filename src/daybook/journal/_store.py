@@ -331,7 +331,7 @@ class Journal:
             # Only AWAY rewinds state history, because its boundary is the last
             # input time. Failed-observe trim must preserve newer pause/lock states.
             if current is not None and state == "away" and time < current["start"]:
-                self._db.execute("DELETE FROM capture_spans WHERE start>?", (time,))
+                self._db.execute("DELETE FROM capture_spans WHERE start>=?", (time,))
                 self._db.execute(
                     "UPDATE capture_spans SET end=? WHERE start<=? AND (end IS NULL OR end>?)",
                     (time, time, time),

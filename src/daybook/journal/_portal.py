@@ -98,7 +98,7 @@ class Portal:
         with j._lock:
             j._check_open()
             rows = j._db.execute(
-                "SELECT * FROM capture_spans WHERE start<? AND (end IS NULL OR end>?) ORDER BY start, id",
+                "SELECT * FROM capture_spans WHERE start<? AND (end IS NULL OR (end>start AND end>?)) ORDER BY start, id",
                 (end, start),
             ).fetchall()
             return [

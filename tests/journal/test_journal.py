@@ -558,3 +558,25 @@ def test_failed_observe_trim_preserves_newer_capture_state(journal: Journal, sta
     assert spans[1].state == state and spans[1].start == time(50)
     assert spans[1].end is None
     assert journal.portal.observations(RANGE)[0].last_seen_at == time(20)
+
+
+def test_away_rewind_removes_span_starting_at_boundary(journal: Journal):
+    journal.set_capture_state("running", time(0))
+    journal.set_capture_state("withheld", time(120))
+    journal.set_capture_state("running", time(180))
+    journal.trim_after(time(120))
+    journal.set_capture_state("away", time(120))
+    spans = journal.portal.capture_spans(RANGE)
+    assert [span.state for span in spans] == ["running", "away"]
+    assert spans[0].end == spans[1].start == time(120)
+    assert "withheld" not in journal.portal.context(RANGE, 1000)
+
+
+def test_capture_reads_omit_empty_intervals(journal: Journal):
+    journal.set_capture_state("running", time(0))
+    journal.set_capture_state("withheld", time(20))
+    journal.set_capture_state("locked", time(20))
+    journal.set_capture_state("running", time(60))
+    spans = journal.portal.capture_spans(RANGE)
+    assert [span.state for span in spans] == ["running", "locked", "running"]
+    assert all(span.end is None or span.end > span.start for span in spans)

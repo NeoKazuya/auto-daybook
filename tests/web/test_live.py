@@ -444,3 +444,75 @@ def test_parse_of_builtin_override_does_not_inherit_trust(live):
     assert preview.valid and preview.entry.status == "needs_review"
     assert not preview.entry.approved
     assert live.book.rows[entry.id].approved
+
+
+def test_persisted_skill_approval_and_external_edit_through_http(live, tmp_path):
+    from dataclasses import replace
+
+    def make_book():
+        return SkillBook(
+            tmp_path,
+            Path("skills/builtin"),
+            tmp_path / "skills.db",
+            live.services.journal.portal,
+            live.services.catalog,
+            live.services.bus,
+            clear_readings=live.services.journal.clear_skill_readings,
+        )
+
+    book = make_book()
+    app = create_app(
+        token="test-token",
+        origin="http://testserver",
+        services=replace(live.services, skills=book),
+    )
+    with TestClient(app) as client:
+        initial = w.SkillsResponse.model_validate(client.get("/api/skills").json())
+        assert {"music", "break", "break-demo"} <= {e.id for e in initial.entries}
+        saved = client.put(
+            "/api/skills/stand-after-meeting",
+            headers=HEADERS,
+            json={"text": w.DRAFT_TEXT},
+        )
+        entry = w.SkillResponse.model_validate(saved.json())
+        assert entry.status == "needs_review" and entry.origin == "user"
+        approved = client.post(
+            "/api/skills/stand-after-meeting/approve",
+            headers=HEADERS,
+            json={"hash": entry.hash},
+        )
+        assert w.SkillResponse.model_validate(approved.json()).status == "active"
+        reloaded = next(e for e in make_book().entries() if e.id == entry.id)
+        assert reloaded.approved and reloaded.enabled
+        path = tmp_path / "skills" / f"{entry.id}.skill.md"
+        path.write_text(path.read_text() + "\nExternal edit.\n")
+        current = next(
+            e
+            for e in w.SkillsResponse.model_validate(
+                client.get("/api/skills").json()
+            ).entries
+            if e.id == entry.id
+        )
+        assert current.status == "needs_review" and not current.approved
+        assert all(signal.id.skill != entry.id for signal in book.active_signals())
+        assert (
+            client.post(
+                "/api/skills/stand-after-meeting/enable", headers=HEADERS
+            ).status_code
+            == 409
+        )
+        assert (
+            client.post(
+                "/api/skills/stand-after-meeting/approve",
+                headers=HEADERS,
+                json={"hash": entry.hash},
+            ).status_code
+            == 409
+        )
+        assert (
+            client.delete(
+                "/api/skills/stand-after-meeting", headers=HEADERS
+            ).status_code
+            == 200
+        )
+        assert not path.exists()

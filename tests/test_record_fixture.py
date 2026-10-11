@@ -139,3 +139,31 @@ def test_gx10_recordings_round_trip_privacy_and_labels(monkeypatch, name, polici
     if name == "focus-streak":
         assert steps[-1]["at"] >= 180
         assert (stamps[-1] - stamps[0]).total_seconds() >= 180
+
+
+def test_parent_unrelated_lock_does_not_allow_capture(monkeypatch):
+    import os
+
+    capture_path = Path("/tmp/daybook-capture.lock")
+    capture_path.touch(exist_ok=True)
+    stat = capture_path.stat()
+    unrelated = (
+        f"1: FLOCK ADVISORY WRITE {os.getppid()} "
+        f"{os.major(stat.st_dev):02x}:{os.minor(stat.st_dev):02x}:{stat.st_ino + 1} 0 EOF\n"
+    )
+    original_read = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda path, *a, **kw: (
+            unrelated if str(path) == "/proc/locks" else original_read(path, *a, **kw)
+        ),
+    )
+
+    def busy(*_):
+        raise BlockingIOError
+
+    monkeypatch.setattr(recorder.fcntl, "flock", busy)
+    with pytest.raises(RuntimeError, match="owned by another"):
+        with recorder.capture_lock():
+            pytest.fail("unrelated parent lock bypassed capture ownership")

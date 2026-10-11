@@ -285,10 +285,29 @@ def capture_lock():
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            stat = os.fstat(lock.fileno())
+            identity = (os.major(stat.st_dev), os.minor(stat.st_dev), stat.st_ino)
+
+            def parent_owns_capture(line):
+                fields = line.split()
+                if (
+                    len(fields) < 6
+                    or fields[1] != "FLOCK"
+                    or fields[4] != str(os.getppid())
+                ):
+                    return False
+                device = fields[5].split(":")
+                try:
+                    return (
+                        len(device) == 3
+                        and (int(device[0], 16), int(device[1], 16), int(device[2]))
+                        == identity
+                    )
+                except ValueError:
+                    return False
+
             held_by_parent = any(
-                len(fields := line.split()) >= 5
-                and fields[1] == "FLOCK"
-                and fields[4] == str(os.getppid())
+                parent_owns_capture(line)
                 for line in Path("/proc/locks").read_text().splitlines()
             )
             if not held_by_parent:

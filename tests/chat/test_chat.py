@@ -218,3 +218,41 @@ async def test_empty_prefix_and_model_failure_are_readable():
     reply = await notes.chat(gateway).respond("hello")
     assert isinstance(reply, Plain)
     assert "unavailable" in reply.text
+
+
+@pytest.mark.asyncio
+async def test_mixed_gap_question_keeps_recorded_activity():
+    gateway = ScriptedGateway(
+        [
+            '{"text":"Before the pause you fixed imports for 10 min; there are no notes during the pause.","cites":["s1"]}'
+        ]
+    )
+    reply = (
+        await Notes()
+        .chat(gateway)
+        .respond("/ask what did I do before and after the paused period?")
+    )
+    assert isinstance(reply, Answer)
+    assert reply.cites == ("s1",)
+    assert "10 min" in reply.text
+
+
+@pytest.mark.asyncio
+async def test_chat_production_clock_retains_dst_rules(monkeypatch):
+    import daybook.chat as module
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 11, 2, 20, tzinfo=UTC)
+            return (
+                value.astimezone(tz) if tz is not None else value.replace(tzinfo=None)
+            )
+
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    monkeypatch.setattr(module, "datetime", Clock)
+    notes = Notes()
+    notes.rows.clear()
+    reply = await notes.chat(ScriptedGateway([])).respond("/ask yesterday")
+    assert isinstance(reply, Answer)
+    assert (reply.window.end - reply.window.start).total_seconds() == 25 * 3600

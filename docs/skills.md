@@ -70,6 +70,8 @@ rules:
 
 The action catalog in [ARCHITECTURE.md §6.7](ARCHITECTURE.md#67-act-actions-music-overlay-and-desktop) is the only list of actions and their parameters; it isn't repeated here. In a running system, `daybook skill check` and the skill editor show the live catalog.
 
+For short, casual reminders, use `overlay.show` with `layout: bubble` and conversational `body` text; use `layout: fullscreen` for a reminder that covers the screen. Omitting layout retains fullscreen behavior. Bubble rectangles are masked from capture in RAM; fullscreen pauses capture. The catalog supplies the valid layout values and defaults.
+
 Every action used in `do` must appear in `allow`. Parameter values are checked against the catalog when the file is parsed; for example, `mood` must be a mood in the library.
 
 ## Validation
@@ -155,7 +157,7 @@ allow: [overlay.show, music.play_mood]
 After a long stretch of focused work, cover the screen with a break reminder and switch to break music.
 ```
 
-While the overlay is up, capture is paused for it (`OVERLAY`). With no new observations there's no tick, so the music skill can't replace the break music. After the overlay is dismissed, the next tick sets the mood again.
+While this fullscreen break overlay is up, capture is paused for it (`OVERLAY`). With no new observations there's no tick, so the music skill can't replace the break music. After the overlay is dismissed, the next tick sets the mood again.
 
 ### `break-demo`
 

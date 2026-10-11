@@ -113,7 +113,8 @@ def test_gx10_recordings_round_trip_privacy_and_labels(monkeypatch, name, polici
         source = json.loads((directory / "source.json").read_text())
         assert source["machine"] == "GX10" and source["frame_policy"] == policy
         stamps.append(datetime.fromisoformat(source["recorded_at"]))
-        capture = gate(screen.state(), PrivacySettings())
+        facts = screen.state()
+        capture = gate(facts, PrivacySettings())
         assert (
             capture
             == {
@@ -128,9 +129,9 @@ def test_gx10_recordings_round_trip_privacy_and_labels(monkeypatch, name, polici
                 assert frame.getextrema() == ((0, 0),) * 3
         # Runtime replay can decode the permitted frame in memory.
         if capture == "running":
-            thumbnail = screen.thumbnail()
+            thumbnail = screen.thumbnail(facts)
             assert len(thumbnail) == 32 * 18 and max(thumbnail) > 5
-            assert screen.grab().startswith(b"\xff\xd8")
+            assert screen.grab(facts).startswith(b"\xff\xd8")
     labels = json.loads((folder / "labels.json").read_text())
     assert labels
     for row in labels:

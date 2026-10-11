@@ -33,8 +33,8 @@ Companion docs:
 These are fixed. The rest of the document is built on them.
 
 - **One machine.** The GX10 (Ubuntu 24.04, aarch64, 121 GiB unified memory) is both the computer being watched and the computer doing the watching. It has one 1920×1080 screen, running GNOME on **X11** on display `:1` (`XAUTHORITY=/run/user/1000/gdm/Xauthority`). Developers work on it over SSH via Tailscale.
-- **One model.** Only one large model fits in memory, so every model call in the system shares it, one call at a time. Today that's `qwen3.6:35b` in Ollama: about 2.9 s per screenshot call and about 950 prompt tokens per 1280-px image. Later it may be Qwen3.8-Flash-Next on vLLM (32K context, key-authenticated, vision not yet verified). The backend is chosen by config and spoken to through an OpenAI-compatible API.
-- **Python core, a local web UI, a tray icon, and a reusable full-screen overlay.**
+- **One model.** Every model call shares `qwen3.8-flash-next` on vLLM through an OpenAI-compatible API. Its authenticated endpoint has a 32,768-token context including output; vision and the recorded-scenario quality gate passed on the GX10. The gateway's concurrency limit is configurable, initially two for this deployment. Ollama stays stopped while vLLM occupies the shared GPU memory.
+- **Python core, a local web UI, a tray icon, and reusable fullscreen and speech-bubble overlays.**
 - **Skills are text files** with goals, triggers, and allowed actions, plus optional developer-written Python hooks. Users create skills by asking in chat. Chat-made skills are declarative only.
 - **Two-layer notes.** Observations record what was on screen; segments record the model's interpretation, including inferred intent. The two stay separable.
 - **Privacy:** pause and resume, app and window exclusions, screenshots kept only in memory, and notes the user can edit and delete.
@@ -79,7 +79,7 @@ GNOME Xorg :1 ──────────────────────
 │                            │                   │   (overlay), xdotool/cua
 └────────────────────────────┼───────────────────┘
                              ▼
-                Ollama :11434 / vLLM :18300   (one model, external)
+                vLLM :18300                 (one model, external)
 ```
 
 | Process | What runs | Cadence |
@@ -87,9 +87,9 @@ GNOME Xorg :1 ──────────────────────
 | `daybookd` | **sense:** the privacy gate, change detection, observe calls | polls every 5 s; at most one model observe per 10 s; immediately on app switch |
 | | **mind:** the tick (rollup + signals), then `skills.react` | every 90 s; 20 s after an app switch; at least 30 s apart; only when there are new observations |
 | | **web:** FastAPI with Server-Sent Events (SSE) and the static UI | on request |
-| `daybook.shell` | Qt: tray icon and the full-screen overlay. It's a stateless view of `daybookd` events | event-driven |
+| `daybook.shell` | Qt: tray icon and fullscreen or speech-bubble overlays. It's a stateless view of `daybookd` events | event-driven |
 | `mpv --idle` | music playback over a JSON IPC socket | event-driven |
-| Ollama or vLLM | the one model (external to the app) | serial |
+| vLLM | the one model (external to the app) | bounded concurrent requests; configured by the gateway |
 
 `daybookd` spawns `mpv` and the shell, and restarts either if it exits. It runs inside `tmux` on the GX10, with the display environment from [gx10.md](gx10.md). Only one `daybookd` may watch the real screen, enforced with an flock on `/tmp/daybook-capture.lock`. Development instances run with `--replay` or `--no-capture` and their own `DAYBOOK_HOME`. In those modes `daybookd` doesn't spawn the shell or mpv, and the catalog uses fake music, overlay, and desktop backends that only record what they were asked to do, so a development instance never plays sound or draws on the presenter's screen. `--real-effects` turns the real backends back on, for someone working at the machine.
 
@@ -118,13 +118,15 @@ Main access patterns, each served by an index and needing no cache:
 
 ## 5. Model use and budget
 
-Every model call goes through `ModelGateway.call(priority, prompt)`. The gateway allows one call in flight, ordered INTERACTIVE > TICK > OBSERVE. Its rules:
+Every model call goes through `ModelGateway.call(priority, prompt)`. `ModelConfig.max_concurrency` is a positive integer, defaulting to one for direct gateway construction. The GX10 app profile sets it to two; operators can change the limit in TOML without changing code. One gateway owns the priority queue and all in-flight requests, ordered INTERACTIVE > TICK > OBSERVE. Its rules:
 
-- **Starvation guard:** at most 2 INTERACTIVE calls in a row before the oldest waiting background call runs.
+- **Background ordering:** at most one TICK or OBSERVE runs at a time, including its prompt builder and any repair. Interactive requests may use the remaining capacity. A second slot therefore lets chat overlap a capture or tick without reordering background work.
+- **Starvation guard:** at most 2 INTERACTIVE admissions in a row before the oldest eligible waiting background call is admitted. An already active background request must finish before another can start; completion order does not reset the admission counter.
 - **No queued screenshots.** At most one OBSERVE can be pending; a newer request replaces it. Capture passes a *builder*, so the screenshot is taken only once the slot is granted, and frames are never queued.
 - **Structured output.** Callers get a parsed pydantic value, never raw JSON. If the output fails schema validation, the gateway retries once with the validation error included.
 - **Failures don't snowball.** Each request times out after 40 s. A failure becomes a gap and a visible status, never a retry storm.
-- **Live status.** `GatewayStatus` reports reachability, what's in flight, queue depth, latency, and calls per minute. The UI shows it in a footer.
+- **Owned requests.** Cancelling a queued caller removes its request. An admitted request retains its slot until it actually finishes; caller cancellation cannot make room for an uncounted HTTP call. Closing the gateway cancels and awaits every active request before closing its HTTP client.
+- **Live status.** `GatewayStatus` reports reachability, queue depth, latency, and calls per minute. `in_flight` is the highest priority among active requests (or none), not their count, so its existing values remain unchanged. The UI shows this status in a footer.
 
 | Call | Made by | Input | Effort | Latency | Rate cap |
 |---|---|---|---|---|---|
@@ -132,11 +134,13 @@ Every model call goes through `ModelGateway.call(priority, prompt)`. The gateway
 | tick | mind | text, 1.5–3K tokens; output schema built from the active signals | none, or low if quality needs it | 2–4 s | 2/min |
 | route | chat | ~300 tokens | none | ~1 s | on demand |
 | recall | chat | up to 8K tokens of notes and totals | none | 4–10 s | on demand |
-| draft skill | chat | ~3K tokens (format guide, catalog, plan examples) | none | 10–20 s measured on GX10 | on demand |
+| draft skill | chat | ~3K tokens (format guide, catalog, plan examples) | none | ~6 s in the Qwen3.8 caller smoke test | on demand |
 
-**Background load:** typically 5–12 model-seconds per minute; at most about 24 when the screen changes constantly. A chat request waits behind at most one call already running (about 3 s).
+**Background budget:** the normal cadence targets up to six observations and two ticks per minute. App switches and capture resumption can bypass sense's ten-second spacing; this is not a hard gateway rate limit. Raising concurrency changes admission capacity, not those scheduling rules. With the GX10 limit of two, one background request leaves capacity for chat; if interactive work fills every slot, new work waits for a slot and follows the fairness rule. The eight-background-calls-per-minute acceptance is measured during normal use, not inferred from the concurrency limit.
 
-**Backend swap:** change `[model]` in `daybook.toml` (`base_url`, `model`, `api_key_file`, `dialect`). The `dialect` (`ollama`, `vllm`, or `openai`) only controls how reasoning effort and JSON-schema output are spelled in the request. Switching to Qwen3.8 is allowed once `~/gx10-model-plan/accept.py --vision` passes and the replay fixtures produce equal or better notes.
+**Backend configuration:** change `[model]` in `daybook.toml` (`base_url`, `model`, `api_key_file`, `dialect`, `max_concurrency`). The dialect (`ollama`, `vllm`, or `openai`) controls reasoning effort and JSON-schema request spelling. For vLLM, effort `none` sends `chat_template_kwargs.enable_thinking = false`; `low` enables thinking and sends top-level `reasoning_effort = low`. Completion caps include reasoning and output. Existing caps and effort `none` passed the Qwen3.8 transport and fixed activity checks. Those checks do not establish skill-planning correctness; the separate generator assessment is recorded in the adoption decision.
+
+The Qwen3.8 switch passed `~/gx10-model-plan/accept.py --vision` (14 checks) and matched the previous fixed-recording result: 12/13 joint signal sets and 13/13 activity kinds. See [the adoption decision](planning/decisions.md#qwen38-adoption-and-configurable-concurrency-2026-10-10) for the measured scope. Keep Ollama stopped; do not start a second large model beside vLLM.
 
 ## 6. Modules
 
@@ -146,7 +150,7 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 |---|---|---|
 | `daybook.journal` | `journal.db` notes tables, FTS5 | `Journal` (writes by named caller), `Portal` (reads), the data types |
 | `daybook.events` | the list of domain events, the in-process bus | `Bus`, event dataclasses |
-| `daybook.model` | endpoint config, the single slot, request formats per dialect, structured output | `ModelGateway`, `Prompt`, `Priority`, `ScriptedGateway` |
+| `daybook.model` | endpoint config, bounded priority admission, request formats per dialect, structured output | `ModelGateway`, `Prompt`, `Priority`, `ScriptedGateway` |
 | `daybook.sense` | the screen, `privacy.json`, the gate, change detection, the observe prompt | `Sense`, `Screen` (`X11Screen`, `ReplayScreen`), `gate()`, `PrivacySettings` |
 | `daybook.mind` | tick scheduling, the tick prompt, closing a segment after a gap | `Mind.run/nudge/tick_now`, `parse_tick` |
 | `daybook.skills` | skill files, the `skill_state` and `firings` tables, the trigger evaluator, the generator | `SkillBook`, `parse_skill`, `evaluate`, `draft_skill`, `HookContext` |
@@ -211,7 +215,7 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
 
 ### 6.3 `model`: the one door to the model
 
-**Owns** endpoint configuration, the priority slot, the request format for each dialect, output validation, and the repair retry. Behavior is as described in §5.
+**Owns** endpoint configuration, the priority queue and in-flight requests, the request format for each dialect, output validation, and the repair retry. Behavior is as described in §5.
 
 `Prompt[T]` holds the system and user text, the output type (`str` or a pydantic model), images as in-memory JPEG bytes, effort, and `max_tokens`. Output models are private to each caller.
 
@@ -219,8 +223,8 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
 
 **Done when:**
 
-- A fixture PNG sent to the real Ollama endpoint returns a parsed observation in under 5 s.
-- Priority order and the starvation guard are proven with a fake transport.
+- A fixture PNG sent to the configured real model endpoint returns a parsed observation in under 5 s.
+- Priority order and the admission-based starvation guard are proven with a fake transport at concurrency one and above. Configured capacity is respected while background requests remain serialized.
 - A pending OBSERVE is replaced by a newer one, and a builder that returns `None` releases the slot.
 - Invalid JSON triggers exactly one repair retry.
 - A timeout raises `ModelUnavailable` within 40 s.
@@ -237,13 +241,13 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
    - locked, or the lock state can't be read → `LOCKED`
    - paused → `PAUSED`
    - no active window → `LOCKED`
-   - our own overlay is up → `OVERLAY`
+   - our own fullscreen overlay is up → `OVERLAY`
    - no keyboard or mouse input for 5 minutes (X11 idle time from the XScreenSaver extension) → `AWAY`. Idle time is ignored while any app is recording from the microphone (`pactl list short source-outputs` isn't empty), so listening in a call doesn't count as away
-   - any excluded window has a visible part on screen → `WITHHELD`. "Visible" is computed from the stacking order (`_NET_CLIENT_LIST_STACKING`) and window geometry: an excluded window counts only if its rectangle isn't fully covered by the windows above it. A covering window that sets `_NET_WM_WINDOW_OPACITY` below fully opaque doesn't count as covering. A password manager or the Daybook UI hidden behind VS Code doesn't block capture
-2. **Thumbnail.** Grab a 32×18 grayscale thumbnail. If it's black → `LOCKED`.
+   - any excluded window has a visible part on screen → `WITHHELD`. "Visible" is computed from the stacking order (`_NET_CLIENT_LIST_STACKING`) and window geometry: an excluded window counts only if its rectangle isn't fully covered by the windows above it. A covering window that sets `_NET_WM_WINDOW_OPACITY` below fully opaque doesn't count as covering. A Daybook bubble never counts as an opaque cover for exclusions, so it cannot hide a private window and unblock capture. A password manager or the Daybook UI hidden behind VS Code doesn't block capture
+2. **Thumbnail.** Pass the admitted immutable `ScreenState` to `screen.thumbnail(expected)` for a 32×18 grayscale thumbnail. If it's black → `LOCKED`.
 3. **Keep time continuous, but never across a gap.** If the previous poll was also `RUNNING`, extend the latest observation (`extend_observation`) whether or not the screen changed, so totals don't lose the seconds between a change and the next model call. If the previous poll was in any other state, or the journal's forget epoch changed since the previous poll (a forget may have removed the latest observations), don't extend: the next observation starts fresh, and step 4 skips the cooldown. When `AWAY` begins, everything after the last input time is removed with `trim_after(last_input)`: later observations (for example, from a video that kept changing) and readings, so the idle minutes count as neither activity nor focus.
    **A failed observe also breaks continuity.** If an observe triggered by a change times out, fails validation, or is discarded, sense calls `trim_after(t)` with `t` = the poll where the change was first seen, then stops extending until a new observation is written. The time in between is a gap, not credit to the previous activity.
-4. **New observation** if the window changed, the thumbnail differs by 3% or more, or capture just resumed after a gap. At least 10 s must have passed since the last observe; an app switch or a resume skips that wait. Call the gateway with an OBSERVE builder. The builder rechecks the gate, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it reruns the full gate** (lock, pause, overlay, away, and the stacking, geometry, and visibility check for exclusions) against the post-grab state. If any check fails, or the window set or stacking changed, it discards the frame.
+4. **New observation** if the window changed, the thumbnail differs by 3% or more, or capture just resumed after a gap. At least 10 s must have passed since the last observe; an app switch or a resume skips that wait. Call the gateway with an OBSERVE builder. The builder rechecks the gate, passes that admitted state to `screen.grab(expected)`, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it reruns the full gate** (lock, pause, overlay, away, and the stacking, geometry, and visibility check for exclusions) against the post-grab state. If any check fails, or the window set or stacking changed, it discards the frame.
 5. **Write the result.** `add_observation(draft, epoch)`, then `mind.nudge(app_switched)`. In the same transaction, the previous observation's `last_seen_at` is cut back to the new observation's `started_at`, so polls that extended it while the observe was pending don't overlap the new one. A result is discarded if the consent generation changed while it was in flight (see [§7](#7-privacy)), and the journal rejects it if a forget happened since the call started.
 
 **Observe prompt:** describe only what's visible, in 1–2 sentences, plus up to 300 characters of salient on-screen text. No guesses about goals or feelings; that's the tick's job. The window app and title are given to the model as facts.
@@ -254,9 +258,11 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
 - windows whose title contains `Private Browsing` or `Incognito`
 - the app's own web UI (title contains `Daybook ·`)
 
-Our overlay is recognized by `_NET_WM_PID` matching the shell process that `daybookd` spawned, with WM_CLASS `daybook-shell` as a backup check.
+Our fullscreen overlay is recognized by `_NET_WM_PID` matching the shell process that `daybookd` spawned, with WM_CLASS `daybook-shell` as a backup check. Only the dedicated WM_CLASS `daybook-bubble` is exempt from this fullscreen identity. Its visible rectangle is blacked out in RAM before thumbnail or JPEG resizing, while capture of the underlying app continues. Bubbles must not take keyboard focus; an unexpectedly focused bubble yields no admitted active window.
 
 **Screens:**
+
+`Screen.thumbnail(expected: ScreenState)` and `Screen.grab(expected: ScreenState)` require the exact snapshot admitted by the caller's privacy gate. Adapters compare fresh visible-window metadata with that snapshot before reading pixels and discard a frame if metadata changes during capture. Geometry and RAM masking belong to the adapter; pause, lock, away, and exclusion policy stay in Sense. Pixel capture does not repeat lock or microphone subprocess queries.
 
 - `X11Screen` uses `mss` for pixels and `python-xlib` for `_NET_ACTIVE_WINDOW`, `_NET_CLIENT_LIST_STACKING`, `WM_CLASS`, `_NET_WM_NAME`, `_NET_WM_PID`, window geometry, the map state, and input idle time (`Xlib.ext.screensaver.query_info`). The lock state comes from `loginctl show-session <seat0 session> -p LockedHint`.
 - `ReplayScreen` plays a folder of steps (a PNG, `window.json`, a lock flag, and visible windows) at real or accelerated speed.
@@ -267,7 +273,7 @@ Our overlay is recognized by `_NET_WM_PID` matching the shell process that `dayb
 - After a pause, lock, or away span, the first running poll starts a new observation; the gap's time is attributed to nothing. Going away removes every observation and reading after the last input time, including several observations created by a changing screen. A failed observe after a change leaves a gap rather than extending the previous observation.
 - The black-frame check passes against the real locked-screen capture from grounding.
 - A replay run writes observations, and unchanged frames extend instead of calling the model. A changed frame inside the 10 s cooldown still extends the current observation, so `totals()` has no gap.
-- A frame whose window set changed after the grab is discarded.
+- A frame whose metadata differs from the admitted state before the grab, or whose window set changes during the grab, is discarded; this applies to thumbnails too.
 - On the GX10, an unlocked screen yields a correct observation, and a locked screen yields `LOCKED` with no model call.
 - `privacy.json` round-trips, and changes apply within one poll.
 - No screenshot bytes reach disk or logs (checked by a test that asserts no files are written during a replay run with `keep_frames=false`).
@@ -280,7 +286,7 @@ Our overlay is recognized by `_NET_WM_PID` matching the shell process that `dayb
 
 - A tick runs every 90 s (30 s in demo mode, `tick_interval` in `daybook.toml`), or 20 s after an app switch (or after an overlay is dismissed).
 - Ticks are never less than 30 s apart.
-- A tick runs only when there is new evidence since the last tick: either new unassigned observations, or the latest observation was extended (the user is still there on an unchanged screen). No new evidence (locked, paused, withheld, overlay up, or away) means no tick, no readings, and no firings.
+- A tick runs only when there is new evidence since the last tick: either new unassigned observations, or the latest observation was extended (the user is still there on an unchanged screen). No new evidence (locked, paused, withheld, fullscreen overlay up, or away) means no tick, no readings, and no firings.
 - When there are no new observations, the tick still answers every signal and writes readings, but makes no segment decision. That keeps `is … for` streaks and `every` triggers working while someone reads or types on a still screen.
 - After a gap longer than 5 minutes, the open segment is closed.
 
@@ -358,7 +364,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 |---|---|---|
 | `music.play_mood` | `mood: music.mood`, `min_dwell = "60s"` | No-op if that mood is already playing. Refused (ok, with a "dwell" detail) if *the same skill* last changed the mood less than `min_dwell` ago; another skill's change (such as the break) doesn't reset this skill's clock, so music returns right after a break. **While an overlay is up, only the skill that showed it can change the music**, so the break's music isn't replaced by another skill firing on the same tick. Otherwise it fades the volume out over 1.5 s, loads a shuffled, looping playlist from the mood's folder, and fades back in |
 | `music.stop` | — | Stops playback |
-| `overlay.show` | `title`, `body`, `dismiss = "OK"`, `minutes = 1`, `style = calm\|alert` | Replaces any current overlay. Auto-hides after `minutes` |
+| `overlay.show` | `title`, `body`, `dismiss = "OK"`, `minutes = 1`, `style = calm\|alert`, `layout = fullscreen\|bubble` (default `fullscreen`) | Replaces any current overlay. A bubble is a short casual reminder; its `body` uses conversational text. Fullscreen pauses capture; a bubble is masked while capture continues. Auto-hides after `minutes` |
 | `overlay.hide` | — | |
 | `notify.send` | `title`, `body` | `notify-send`, for low-key nudges |
 | `desktop.open_url` | `url` | Through the `DesktopControl` backend |
@@ -461,11 +467,11 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
 **Owns** nothing persistent. It's a separate process because Qt needs the main thread and its own event loop. It subscribes to `/api/events?client=shell`.
 
-- **Overlay.** One pre-created **Qt Quick (QML)** window. It's frameless, always on top, and full-screen on `:1`, and it's reused so it appears in under 300 ms.
-  - It renders the `OverlayRequest`: title, body, a countdown for `minutes`, and a dismiss button.
-  - It has two styles (`calm`, `alert`), with a translucent dark backdrop and a fade-in.
+- **Overlay.** Pre-created **Qt Quick (QML)** presentation on `:1`, frameless and always on top, reused so it appears in under 300 ms. `OverlayRequest.layout` selects `fullscreen` (the default) or `bubble`.
+  - It renders the `OverlayRequest`: layout, title, body, a countdown for `minutes`, and a dismiss button.
+  - It has two styles (`calm`, `alert`); fullscreen uses a translucent dark backdrop and a fade-in. A bubble shows the same `body` as casual speech, stays small, and does not take keyboard focus.
   - Dismiss posts `/api/overlay/{id}/dismiss`, and so does pressing `Esc`.
-  - The window class is `daybook-shell`.
+  - Fullscreen uses WM_CLASS `daybook-shell`; bubble uses the dedicated WM_CLASS `daybook-bubble` so Sense can mask its visible rectangle in RAM.
 - **Tray.** A StatusNotifierItem icon. It needs GNOME's AppIndicator extension; see [setup.md](setup.md).
   - The icon shows the capture state: recording, paused, private, or locked.
   - The menu has Pause/Resume (`PUT /api/privacy`), Open Daybook (`xdg-open http://127.0.0.1:<port>`, using the port the shell was started with), and Quit.
@@ -479,7 +485,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 **Done when:**
 
 - `daybook overlay test` shows the overlay full-screen on the GX10 above a maximized window. It dismisses by button and by `Esc`, and auto-hides on its countdown.
-- While the overlay is up, sense reports `OVERLAY`.
+- While a fullscreen overlay is up, Sense reports `OVERLAY`. While a bubble is up, permitted underlying activity continues to produce observations without bubble pixels; exclusions remain enforced even beneath the bubble.
 - The tray icon is visible, reflects pause within 5 s, and pauses capture from its menu.
 - If `daybookd` or the shell restarts while an overlay is up, the reconnected shell shows that overlay again (from the status snapshot) and it can be dismissed.
 
@@ -505,7 +511,7 @@ Each control is enforced at one boundary:
 | Exclusions | `sense.gate` | Checked against the visible part of every window before any pixels are read, and the full gate runs again after the grab. Withheld time is a `WITHHELD` capture span. Excluded window titles are never stored or logged. Changing exclusions increments the consent generation |
 | Locked screen | `sense.gate` | `LockedHint`, an empty active window, an unreadable state, or a black thumbnail all count as locked. Fails closed |
 | Away | `sense.gate` | 5 minutes without input is `AWAY`: no capture, no ticks, and the idle stretch is trimmed from the last observation |
-| Screenshots | `sense` + `model` | Frames exist only as bytes inside the observe builder and the HTTP request. Nothing is queued or written to disk. `debug.keep_frames` is off by default and shown in the UI if turned on |
+| Screenshots | `sense` + `model` | Frames exist only as bytes inside the observe builder and the HTTP request. Nothing is queued or written to disk. `keep_frames` defaults to false; screenshot retention is not implemented and true is rejected explicitly |
 | Edit / delete notes | `journal` | Edits mark segments as user-authored. Deletion of an observation, a segment, a time range, or everything removes the rows and their FTS entries in one transaction. Then the journal runs `PRAGMA wal_checkpoint(TRUNCATE)`, so the old pages don't stay in the write-ahead log. `secure_delete=ON` and FTS5 `secure-delete` overwrite freed content. If the checkpoint can't truncate because a reader is active, it retries after the reader finishes, and the privacy page shows "deletion pending" until it succeeds. This removes note text from the database files; it doesn't claim to defeat forensic recovery from the SSD itself. A deleted observation can't come back through a later tick, and the forget epoch makes the journal reject any observe or tick result that started before the forget |
 | Logs | every module | Logs hold timings, states, IDs, and error kinds. Never prompts, frames, titles, or note text |
 | Local API | `web` | Loopback only, plus the per-launch token and `Origin` check |
@@ -560,10 +566,11 @@ keep_frames = false
 tick_interval = "90s"         # "30s" for the live demo, so short streaks confirm on time
 
 [model]
-base_url = "http://127.0.0.1:11434/v1"
-model = "qwen3.6:35b"
-api_key_file = ""              # "~/.config/qwen38/api-key" for vLLM
-dialect = "ollama"             # "vllm" | "openai"
+base_url = "http://127.0.0.1:18300/v1"
+model = "qwen3.8-flash-next"
+api_key_file = "~/.config/qwen38/api-key"  # private file; never commit its contents
+dialect = "vllm"                       # "ollama" | "openai" also supported
+max_concurrency = 2                    # positive integer; tune from measured latency
 ```
 
 **CLI:**
@@ -572,7 +579,7 @@ dialect = "ollama"             # "vllm" | "openai"
 daybook run [--replay DIR] [--no-capture] [--real-effects] [--port N]   # daybookd: capture, tick, skills, web; spawns mpv and the shell (not in replay/no-capture unless --real-effects)
 daybook run --mock-api [--port N]                      # web routes from wire.py examples + scripted events; nothing else runs (UI development)
 daybook observe-once                                   # one real capture -> printed observation (not saved)
-daybook tick-once                                      # one tick on current unassigned observations, prints readings
+daybook tick-once                                      # request one tick from the running daemon on current unassigned observations; print readings
 daybook skill check FILE                               # parse_skill + errors
 daybook music check | play MOOD                        # library consistency; play a mood
 daybook overlay test                                   # show a test overlay through a running daybookd
@@ -653,11 +660,11 @@ The system is finished when all of these pass live on the GX10, with the real mo
 
 | Risk | Mitigation |
 |---|---|
-| Batched signal answers are poor with `qwen3.6:35b` at effort `none` | The quality gate on replay fixtures in §6.5. The fallback is effort `low` on ticks only (+1–3 s, within budget). Keep each skill's questions concrete |
+| Batched signal answers are poor with the configured model at effort `none` | The quality gate on replay fixtures in §6.5. The fallback is effort `low` on ticks only; measure latency and output completion before enabling it. Keep each skill's questions concrete |
 | The QML overlay isn't kept above full-screen apps under GNOME's X11 window manager | Tested by the `shell` done-when check. The fallback is to raise it with `wmctrl -r <title> -b add,above` after showing |
 | The tray doesn't show | The AppIndicator extension setup step, then a GNOME Shell restart (X11: `Alt+F2`, `r`). The web UI's pause toggle covers the demo regardless |
-| Qwen3.8 isn't ready, or can't read images | Stay on `qwen3.6:35b`. Switching is a config change gated on `accept.py --vision` plus the fixtures |
-| Venue Wi‑Fi is shared with the 124 GiB Qwen3.8 download | The music download and package installs are small. Avoid large downloads (for example, PySide6-Addons isn't used) |
+| A model or serving configuration changes | Re-run `accept.py --vision` and the fixed-recording quality comparison. Qwen3.8 passed both; keep the previous evidence and never run Ollama beside vLLM |
+| Venue Wi‑Fi is unreliable | Model weights and music are local. Avoid new large downloads (for example, PySide6-Addons isn't used) |
 | One screen and one capture loop for everyone | `--replay` development instances and the capture flock. Real-screen checks happen at the machine |
 | A translucent window that doesn't set `_NET_WM_WINDOW_OPACITY` (some apps draw transparency through a 32-bit visual instead) could cover an excluded window and still show it | Known limitation. Treating every 32-bit-visual window as see-through would withhold capture behind Chrome and Electron apps. Keep translucent terminals and widgets off in the demo; revisit with a per-app opacity list if needed |
 | Passive time (a long video, reading without scrolling) counts as away after 5 minutes without input | Microphone use counts as presence, so calls are covered. Five minutes keeps normal reading inside the threshold. Tune it from the replay fixtures if needed |

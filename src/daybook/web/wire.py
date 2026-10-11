@@ -258,6 +258,7 @@ class OverlayRequest(WireModel):
     dismiss: str = "OK"
     minutes: float = 1
     style: Literal["calm", "alert"] = "calm"
+    layout: Literal["fullscreen", "bubble"] = "fullscreen"
 
 
 class OverlayState(WireModel):
@@ -487,6 +488,7 @@ _step = _example(
         "title": "Meeting’s over",
         "body": "Stand up and stretch.",
         "minutes": 1,
+        "layout": "fullscreen",
     },
 )
 _rule = _example(Rule, when="in_meeting becomes false", cooldown=600, steps=[_step])
@@ -494,8 +496,17 @@ _parameter = _example(Parameter, type="str", required=True, default=None, values
 _action = _example(
     ActionSpec,
     name="overlay.show",
-    description="Show a fullscreen reminder",
-    parameters={"title": _parameter, "body": _parameter},
+    description="Show a fullscreen reminder or speech bubble; use casual body text for bubbles",
+    parameters={
+        "title": _parameter,
+        "body": _parameter,
+        "layout": dict(
+            type="enum",
+            required=False,
+            default="fullscreen",
+            values=["fullscreen", "bubble"],
+        ),
+    },
 )
 DRAFT_TEXT = """---
 id: stand-after-meeting
@@ -590,6 +601,7 @@ _overlay_request = _example(
     body="Stand up, look away, and get some water.",
     dismiss="I'm back",
     minutes=2,
+    layout="fullscreen",
 )
 _overlay = _example(
     OverlayState,

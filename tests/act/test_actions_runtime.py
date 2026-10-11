@@ -443,3 +443,87 @@ async def test_fake_overlay_records_without_shell_or_processes(monkeypatch):
         await overlay.hide()
         assert isinstance(queue.get_nowait(), OverlayHidden)
     await overlay.close()
+
+
+@pytest.mark.parametrize("layout", [None, "fullscreen", "bubble"])
+async def test_overlay_layout_catalog_event_and_restart(library, tmp_path, layout):
+    import json
+
+    bus = Bus()
+    overlay = Overlay(bus, home=tmp_path)
+    overlay.shell_connected(True)
+    player = MusicPlayer(library, tmp_path / "music-home", bus, overlay)
+    catalog = build_catalog(
+        library.moods, bind_handlers(player, overlay, FakeDesktop())
+    )
+    actions = catalog.allowed(("overlay.show",), "reminder")
+    expected = layout or "fullscreen"
+    arguments = {} if layout is None else {"layout": layout}
+    restored = None
+    try:
+        with bus.subscribe() as queue:
+            result = await actions.run(
+                "overlay.show", title="Break", body="Grab some water.", **arguments
+            )
+            assert result.ok
+            event = queue.get_nowait()
+            assert isinstance(event, OverlayShown)
+            assert event.request.layout == expected
+            assert overlay.state is not None and overlay.state.request == event.request
+            saved = json.loads((tmp_path / "overlay.json").read_text())
+            assert saved["request"]["layout"] == expected
+            await overlay.close()
+            restored = Overlay(bus, home=tmp_path)
+            assert restored.state is not None
+            assert restored.state.request.layout == expected
+            assert restored.state.id == event.id
+    finally:
+        await overlay.close()
+        if restored is not None:
+            await restored.hide()
+            await restored.close()
+        await player.close()
+
+
+async def test_legacy_overlay_snapshot_defaults_to_fullscreen(tmp_path):
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    (tmp_path / "overlay.json").write_text(
+        json.dumps(
+            {
+                "id": "legacy",
+                "owner": "reminder",
+                "request": {"title": "Break", "body": "Stand up."},
+                "expires_at": (
+                    datetime.now(timezone.utc) + timedelta(minutes=1)
+                ).isoformat(),
+            }
+        )
+    )
+    overlay = Overlay(Bus(), home=tmp_path)
+    try:
+        assert overlay.state is not None
+        assert overlay.state.request.layout == "fullscreen"
+    finally:
+        await overlay.hide()
+        await overlay.close()
+
+
+async def test_overlay_layout_rejects_invalid_catalog_value(library, tmp_path):
+    bus = Bus()
+    overlay = Overlay(bus)
+    overlay.shell_connected(True)
+    player = MusicPlayer(library, tmp_path / "home", bus, overlay)
+    catalog = build_catalog(
+        library.moods, bind_handlers(player, overlay, FakeDesktop())
+    )
+    try:
+        result = await catalog.allowed(("overlay.show",)).run(
+            "overlay.show", title="Break", body="Rest.", layout="popup"
+        )
+        assert not result.ok and result.detail == "invalid_parameters"
+        assert overlay.state is None
+    finally:
+        await overlay.close()
+        await player.close()

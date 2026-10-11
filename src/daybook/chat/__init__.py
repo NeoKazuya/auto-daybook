@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -54,6 +57,22 @@ def resolve_window(message: str, now: datetime) -> TimeRange:
     if "this morning" in text:
         end = min(now, midnight.replace(hour=12)).astimezone(UTC)
     return TimeRange(midnight.astimezone(UTC), end)
+
+
+def _local_now() -> datetime:
+    # astimezone() without a ZoneInfo freezes today's offset across DST boundaries.
+    name = os.environ.get("TZ", "").lstrip(":")
+    if name:
+        try:
+            return datetime.now(ZoneInfo(name))
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    try:
+        with Path("/etc/localtime").open("rb") as source:
+            zone = ZoneInfo.from_file(source)
+        return datetime.now(zone)
+    except (OSError, ValueError):
+        return datetime.now(UTC)
 
 
 class _Route(BaseModel):
@@ -150,7 +169,7 @@ class Chat:
             )
 
     async def _recall(self, message: str) -> Answer | Plain:
-        window = resolve_window(message, datetime.now().astimezone())
+        window = resolve_window(message, _local_now())
         for _ in range(3):
             epoch = self._journal.epoch
             portal = self._journal.portal
@@ -162,10 +181,16 @@ class Chat:
                 message,
                 re.IGNORECASE,
             )
-            if withheld or (not segments and not observations):
+            mixed = re.search(
+                r"\b(before|after|around|outside|except|besides|also|and|but|then)\b",
+                message,
+                re.IGNORECASE,
+            )
+            exclusively_withheld = bool(withheld and not mixed)
+            if exclusively_withheld or (not segments and not observations):
                 return Answer(
                     "I don't have notes for that. Paused, locked and private periods aren't recorded."
-                    if withheld
+                    if exclusively_withheld
                     else "I don't have notes for that.",
                     (),
                     window,

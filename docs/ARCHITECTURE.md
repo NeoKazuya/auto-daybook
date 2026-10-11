@@ -293,7 +293,7 @@ Our fullscreen overlay is recognized by `_NET_WM_PID` matching the shell process
 - Ticks are never less than 30 s apart.
 - A tick runs only when there is new evidence since the last tick: either new unassigned observations, or the latest observation was extended (the user is still there on an unchanged screen). No new evidence (locked, paused, withheld, fullscreen overlay up, or away) means no tick, no readings, and no firings.
 - When there are no new observations, the tick still answers every signal and writes readings, but makes no segment decision. That keeps `is … for` streaks and `every` triggers working while someone reads or types on a still screen.
-- After a gap longer than 5 minutes, the open segment is closed.
+- After a gap longer than 5 minutes, the open segment is closed once pending observations before that gap have been assigned. Bounded batches preserve continuity on each side without joining activity across the gap.
 
 **Tick prompt** (text only, ~1.5–3K tokens):
 

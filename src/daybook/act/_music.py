@@ -166,6 +166,14 @@ class Player:
         self.playlist: tuple[MusicTrack, ...] = ()
         self.monitor: asyncio.Task[None] | None = None
 
+    async def start(self) -> None:
+        if not self.real_effects:
+            return
+        async with self.lock:
+            await self.mpv.start()
+            if self.monitor is None:
+                self.monitor = asyncio.create_task(self.watch())
+
     async def command(self, *args: object) -> None:
         self.transcript.append(args)
         if self.real_effects:
@@ -262,14 +270,16 @@ class Player:
         while True:
             await asyncio.sleep(1)
             async with self.lock:
-                if not self.playlist:
-                    continue
                 try:
                     dead = (
                         self.mpv.process is None
                         or self.mpv.process.returncode is not None
                         or not self.mpv.socket.exists()
                     )
+                    if not self.playlist:
+                        if dead:
+                            await self.mpv.start()
+                        continue
                     if dead:
                         await self.mpv.close()
                         await self.command("set_property", "loop-playlist", "inf")

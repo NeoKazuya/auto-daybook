@@ -366,3 +366,49 @@ async def test_overlay_dismiss_is_not_restored_and_expired_snapshot_is_dropped(
     await overlay.close()
     await asyncio.sleep(0.02)
     assert Overlay(Bus(), home=tmp_path).state is None
+
+
+async def test_mpv_start_fake_is_safe_and_idle_child_is_supervised(
+    library, tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from daybook.act import _music
+
+    starts = []
+
+    class Peer:
+        def __init__(self, home):
+            self.socket = home / "mpv.sock"
+            self.process = None
+
+        async def start(self):
+            self.socket.parent.mkdir(parents=True, exist_ok=True)
+            self.socket.touch()
+            if self.process is None or self.process.returncode is not None:
+                self.process = SimpleNamespace(returncode=None)
+                starts.append(self.process)
+
+        async def close(self):
+            self.process = None
+            self.socket.unlink(missing_ok=True)
+
+    monkeypatch.setattr(_music, "Mpv", Peer)
+    original_sleep = asyncio.sleep
+
+    async def fast_sleep(seconds):
+        await original_sleep(0.001)
+
+    monkeypatch.setattr(_music.asyncio, "sleep", fast_sleep)
+    bus = Bus()
+    fake = MusicPlayer(library, tmp_path / "fake", bus, Overlay(bus))
+    await fake.start()
+    assert not starts and not (tmp_path / "fake/mpv.sock").exists()
+    await fake.close()
+    real = MusicPlayer(library, tmp_path / "real", bus, Overlay(bus), real_effects=True)
+    await real.start()
+    assert len(starts) == 1 and not real.status().playing
+    starts[0].returncode = 1
+    await original_sleep(0.015)
+    assert len(starts) == 2 and not real.status().playing
+    await real.close()

@@ -349,6 +349,9 @@ class MusicPlayer:
     def transcript(self) -> list[tuple[object, ...]]:
         return list(self._player.transcript)
 
+    async def start(self) -> None:
+        await self._player.start()
+
     async def play_mood(
         self, mood: str, *, skill: str, min_dwell: float = 60
     ) -> Outcome:

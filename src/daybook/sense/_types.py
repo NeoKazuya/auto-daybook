@@ -48,5 +48,7 @@ class PrivacySettings:
 
 class Screen(Protocol):
     def state(self) -> ScreenState: ...
-    def thumbnail(self) -> bytes: ...  # 32 x 18 grayscale
-    def grab(self) -> bytes: ...  # 1280px JPEG in RAM
+    # The caller has admitted expected through its privacy policy. Adapters
+    # reject pixels whose visible-window facts differ from that snapshot.
+    def thumbnail(self, expected: ScreenState) -> bytes: ...  # 32 x 18 grayscale
+    def grab(self, expected: ScreenState) -> bytes: ...  # 1280px JPEG in RAM

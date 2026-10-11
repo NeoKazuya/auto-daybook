@@ -289,10 +289,10 @@ class NoCaptureScreen:
     def state(self) -> ScreenState:
         return ScreenState(None, (), True, 0)
 
-    def thumbnail(self) -> bytes:
+    def thumbnail(self, expected: ScreenState) -> bytes:
         raise RuntimeError("screen capture is disabled")
 
-    def grab(self) -> bytes:
+    def grab(self, expected: ScreenState) -> bytes:
         raise RuntimeError("screen capture is disabled")
 
 
@@ -302,13 +302,15 @@ class OverlayScreen:
 
     def state(self) -> ScreenState:
         facts = self.screen.state()
-        return replace(facts, overlay=facts.overlay or self.overlay.state is not None)
+        overlay = self.overlay.state
+        fullscreen = overlay is not None and overlay.request.layout == "fullscreen"
+        return replace(facts, overlay=facts.overlay or fullscreen)
 
-    def thumbnail(self) -> bytes:
-        return self.screen.thumbnail()
+    def thumbnail(self, expected: ScreenState) -> bytes:
+        return self.screen.thumbnail(expected)
 
-    def grab(self) -> bytes:
-        return self.screen.grab()
+    def grab(self, expected: ScreenState) -> bytes:
+        return self.screen.grab(expected)
 
 
 @dataclass(frozen=True)

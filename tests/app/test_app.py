@@ -170,9 +170,9 @@ def test_no_capture_screen_cannot_request_pixels():
     screen = app.NoCaptureScreen()
     assert screen.state().locked
     with pytest.raises(RuntimeError, match="disabled"):
-        screen.grab()
+        screen.grab(screen.state())
     with pytest.raises(RuntimeError, match="disabled"):
-        screen.thumbnail()
+        screen.thumbnail(screen.state())
 
 
 @pytest.mark.parametrize("mode", ["mock_api", "no_capture", "replay"])
@@ -1024,3 +1024,47 @@ def test_debug_frame_retention_is_rejected_explicitly(tmp_path: Path):
     (tmp_path / "daybook.toml").write_text("keep_frames=true\n")
     with pytest.raises(ValueError, match="not supported"):
         app.load_config(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("layout", "physical_fullscreen"),
+    [(None, False), ("fullscreen", False), ("bubble", False), ("bubble", True)],
+)
+async def test_catalog_overlay_layout_controls_composed_capture(
+    tmp_path: Path, monkeypatch, layout: str | None, physical_fullscreen: bool
+):
+    import daybook.model
+    from daybook.model import ScriptedGateway
+    from daybook.sense import ReplayScreen
+
+    gateway = ScriptedGateway(['{"seen":"Editing code.","visible_text":"example.py"}'])
+    monkeypatch.setattr(daybook.model, "ModelGateway", lambda _: gateway)
+    config = library_config(tmp_path)
+    fixture = Path(__file__).resolve().parents[2] / "fixtures/replay/example"
+    async with app.open_runtime(config, replay=fixture) as runtime:
+        services = runtime.services
+        if physical_fullscreen:
+            assert isinstance(services.sense.screen, app.OverlayScreen)
+            raw = services.sense.screen.screen
+            assert isinstance(raw, ReplayScreen)
+            state = raw.state
+            monkeypatch.setattr(raw, "state", lambda: replace(state(), overlay=True))
+        arguments = {} if layout is None else {"layout": layout}
+        result = await services.catalog.allowed(("overlay.show",), "reminder").run(
+            "overlay.show", title="Reminder", body="Grab some water.", **arguments
+        )
+        assert result.ok
+        assert services.overlay.state is not None
+        assert services.overlay.state.request.layout == (layout or "fullscreen")
+        await services.sense.poll()
+        await services.sense.wait_idle()
+        permits_capture = layout == "bubble" and not physical_fullscreen
+        assert services.journal.portal.now().capture == (
+            "running" if permits_capture else "overlay"
+        )
+        observation = services.journal.portal.now().observation
+        assert (observation is not None) is permits_capture
+        if observation is not None:
+            assert observation.window.app == "Code"
+        assert len(gateway.prompts) == int(permits_capture)
+        assert not list(tmp_path.glob("*.png")) and not list(tmp_path.glob("*.jpg"))

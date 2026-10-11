@@ -60,13 +60,21 @@ class Runner:
         spans = self.journal.portal.capture_spans(
             TimeRange(now - timedelta(minutes=30), now + timedelta(microseconds=1))
         )
-        if any(
-            span.state != "running"
-            and ((span.end or now) - span.start).total_seconds() > 300
-            and segment.ended_at <= span.start
-            for span in spans
-        ):
-            self.journal.close_open_segment()
+        gap_start: datetime | None = None
+        gap_end: datetime | None = None
+        for span in spans:
+            if span.state == "running":
+                gap_start = gap_end = None
+                continue
+            if gap_start is None or (gap_end is not None and span.start > gap_end):
+                gap_start = span.start
+            gap_end = span.end or now
+            if (
+                segment.ended_at <= gap_start
+                and (gap_end - gap_start).total_seconds() > 300
+            ):
+                self.journal.close_open_segment()
+                return
 
     async def run(self) -> None:
         while True:
@@ -126,21 +134,28 @@ class Runner:
                     f"Prior: {o.started_at.isoformat()} {o.window.app}: {o.seen}"
                     for o in situation.segment.observations[-3:]
                 )
+            included = []
             if new:
-                lines.append("New observations:")
-                recent = []
+                lines.append(
+                    "New observations, oldest first; segment decisions apply only to these IDs:"
+                )
                 spent = 0
-                for observation in reversed(new):
+                for observation in new:
                     line = f"{observation.id} {observation.started_at.isoformat()}–{observation.last_seen_at.isoformat()} {observation.window.app} / {observation.window.title}: {observation.seen}; {observation.visible_text}"
+                    line = line[:5000]
                     if spent + len(line) > 5000:
                         break
-                    recent.append(line)
+                    included.append(observation)
+                    lines.append(line)
                     spent += len(line)
-                lines.extend(reversed(recent))
-                if len(recent) < len(new):
+                evidence_until = included[-1].last_seen_at
+                if len(included) < len(new):
                     lines.append(
-                        f"{len(new) - len(recent)} older observations omitted from this bounded prompt."
+                        f"{len(new) - len(included)} later observations await another bounded batch; do not assign them yet."
                     )
+                lines.append(
+                    f"Latest screen, for present signal answers only: {latest.last_seen_at.isoformat()} {latest.window.app} / {latest.window.title}: {latest.seen[:1200]}"
+                )
             else:
                 lines.append(
                     f"The screen has stayed the same since {latest.started_at.isoformat()}; user is still present. Set segment to null and answer every signal."
@@ -179,7 +194,7 @@ class Runner:
                 at=at,
                 epoch=epoch,
                 evidence_until=evidence_until,
-                observations=tuple(o.id for o in new),
+                observations=tuple(o.id for o in included),
                 has_open_segment=situation.segment is not None,
             )
             if not self.journal.record_tick(tick):

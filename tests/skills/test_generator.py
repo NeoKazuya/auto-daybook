@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import yaml
+
 from daybook.act import build_catalog
 from daybook.events import Bus
 from daybook.journal import Portal, Situation
@@ -23,6 +25,22 @@ allow: [overlay.show]
 ---
 Remind me to stand after a meeting.
 """
+
+
+def payload(text, summary):
+    front, goal = text[4:].split("\n---", 1)
+    data = yaml.safe_load(front)
+    for rule in data["rules"]:
+        rule["steps"] = []
+        for step in rule.pop("do"):
+            action, params = next(iter(step.items()))
+            rule["steps"].append(
+                {
+                    "action": action,
+                    "params": params if isinstance(params, dict) else {"value": params},
+                }
+            )
+    return json.dumps({**data, "goal": goal.strip(), "summary": summary})
 
 
 class MemoryPortal(Portal):
@@ -48,9 +66,7 @@ def book(tmp_path):
 async def test_valid_draft_has_provenance_and_needs_review(tmp_path):
     skills = book(tmp_path)
     request = "remind me to stand up every time I finish a meeting"
-    gateway = ScriptedGateway(
-        [json.dumps({"text": TEXT, "summary": "Stand after meetings"})]
-    )
+    gateway = ScriptedGateway([payload(TEXT, "Stand after meetings")])
     entry, summary = await draft_skill(request, book=skills, gateway=gateway)
     assert entry.status == "needs_review" and not entry.enabled
     assert (
@@ -70,8 +86,8 @@ async def test_parse_retry_then_invalid_is_saved(tmp_path):
     bad = TEXT.replace("in_meeting becomes false", "unsupported trigger")
     gateway = ScriptedGateway(
         [
-            json.dumps({"text": bad, "summary": "Draft"}),
-            json.dumps({"text": bad, "summary": "Still draft"}),
+            payload(bad, "Draft"),
+            payload(bad, "Still draft"),
         ]
     )
     entry, _ = await draft_skill("remind", book=skills, gateway=gateway)
@@ -90,8 +106,8 @@ async def test_generated_hook_rejected_and_existing_skill_not_overwritten(tmp_pa
     )
     gateway = ScriptedGateway(
         [
-            json.dumps({"text": unsafe, "summary": "Draft"}),
-            json.dumps({"text": TEXT, "summary": "Fixed"}),
+            payload(unsafe, "Draft"),
+            payload(TEXT, "Fixed"),
         ]
     )
     entry, _ = await draft_skill("remind", book=skills, gateway=gateway)
@@ -104,9 +120,7 @@ async def test_quoted_yaml_id_collision_never_overwrites(tmp_path):
     skills = book(tmp_path)
     existing_text = TEXT.replace("id: stand-after-meeting", "id: 'yes'")
     skills.save("yes", existing_text)
-    gateway = ScriptedGateway(
-        [json.dumps({"text": existing_text, "summary": "New draft"})]
-    )
+    gateway = ScriptedGateway([payload(existing_text, "New draft")])
     entry, _ = await draft_skill("remind", book=skills, gateway=gateway)
     assert entry.id != "yes"
     assert next(e for e in skills.entries() if e.id == "yes").text == existing_text

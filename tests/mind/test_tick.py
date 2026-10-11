@@ -286,3 +286,55 @@ async def test_gap_over_five_minutes_closes_segment_without_model(runtime):
     assert await mind.tick_now() is None
     assert journal.portal.now().segment is None
     assert len(gateway.prompts) == 1
+
+
+async def test_bounded_prompt_assigns_only_oldest_included_batch(runtime):
+    journal, clock, first, skills = runtime
+    all_ids = [first.id]
+    for index in range(12):
+        clock.advance(10)
+        observation = journal.add_observation(
+            ObservationDraft(
+                clock(),
+                WindowInfo("Code", f"task-{index}"),
+                f"Task {index}: " + "x" * 1000,
+            ),
+            journal.epoch,
+        )
+        assert observation
+        all_ids.append(observation.id)
+    gateway = ScriptedGateway([reply(), reply(), reply(), reply()])
+    mind = Mind(journal, gateway, skills, clock=clock)
+    first_tick = await mind.tick_now()
+    assert first_tick and 0 < len(first_tick.observations) < len(all_ids)
+    assert list(first_tick.observations) == all_ids[: len(first_tick.observations)]
+    assert all(id in gateway.prompts[0].user for id in first_tick.observations)
+    assigned = list(first_tick.observations)
+    while len(assigned) < len(all_ids):
+        clock.advance(30)
+        tick = await mind.tick_now()
+        assert tick and tick.observations
+        assigned.extend(tick.observations)
+    assert assigned == all_ids
+
+
+async def test_contiguous_mixed_capture_states_close_five_minute_gap(runtime):
+    journal, clock, observation, skills = runtime
+    journal.record_tick(
+        Tick(
+            clock(),
+            journal.epoch,
+            clock(),
+            (observation.id,),
+            Start("Work", "coding", "Implement"),
+            (),
+        )
+    )
+    clock.advance(30)
+    journal.set_capture_state("paused", clock())
+    clock.advance(240)
+    journal.set_capture_state("locked", clock())
+    clock.advance(241)
+    mind = Mind(journal, ScriptedGateway([]), skills, clock=clock)
+    assert await mind.tick_now() is None
+    assert journal.portal.now().segment is None

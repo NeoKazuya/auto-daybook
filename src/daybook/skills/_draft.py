@@ -6,7 +6,7 @@ import re
 import uuid
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from daybook.model import ModelGateway, Priority, Prompt
 
@@ -22,32 +22,70 @@ Ask about the user's situation now. Let triggers handle time. Do not use Python,
 """
 
 
+Scalar = str | float | bool
+
+
+class DraftSignal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ask: str
+    type: str | dict[str, list[str | float]]
+    describe: dict[str, str] | None = None
+
+
+class DraftStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str
+    params: dict[str, Scalar]
+
+
+class DraftRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    when: str
+    cooldown: str | None = None
+    steps: list[DraftStep]
+
+
 class Draft(BaseModel):
-    text: str
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    name: str
+    goal: str
+    signals: dict[str, DraftSignal]
+    rules: list[DraftRule]
+    allow: list[str]
     summary: str = Field(max_length=300)
 
 
-def stamp(
-    text: str, request: str, *, id_override: str | None = None
+def render(
+    draft: Draft, request: str, *, id_override: str | None = None
 ) -> tuple[str, str]:
-    data = None
-    body = text
-    if text.startswith("---\n") and "\n---" in text[4:]:
-        front, body = text[4:].split("\n---", 1)
-        try:
-            data = yaml.safe_load(front)
-        except yaml.YAMLError:
-            pass
-    if not isinstance(data, dict):
-        data = {"name": "Draft skill"}
-        body = text
-    id = id_override or data.get("id")
-    if not isinstance(id, str) or not re.fullmatch(r"[a-z0-9-]{1,40}", id):
+    id = id_override or draft.id
+    if not re.fullmatch(r"[a-z0-9-]{1,40}", id):
         id = "draft-" + uuid.uuid4().hex[:8]
-    data.update(id=id, created_by="chat", request=request)
+    rules = []
+    for rule in draft.rules:
+        value = {
+            "when": rule.when,
+            "do": [{step.action: step.params} for step in rule.steps],
+        }
+        if rule.cooldown is not None:
+            value["cooldown"] = rule.cooldown
+        rules.append(value)
+    data = {
+        "id": id,
+        "name": draft.name,
+        "signals": {
+            name: signal.model_dump(exclude_none=True)
+            for name, signal in draft.signals.items()
+        },
+        "rules": rules,
+        "allow": draft.allow,
+        "created_by": "chat",
+        "request": request,
+    }
     return id, "---\n" + yaml.safe_dump(
         data, sort_keys=False
-    ) + "---\n" + body.strip() + "\n"
+    ) + "---\n" + draft.goal.strip() + "\n"
 
 
 async def generate(
@@ -65,7 +103,7 @@ async def generate(
         result = await gateway.call(
             Priority.INTERACTIVE,
             Prompt(
-                system="Write a small declarative skill for the request using only the supplied grammar and action catalog. Return text containing the complete skill file and a one-line summary. No hook or executable code.",
+                system="Choose a small declarative skill plan using the supplied grammar/catalog. Return the structured plan only; code will render YAML. In each rule, steps are action+params objects. Use the fewest questions and rules needed. Reason briefly, then answer. No hook or executable code.",
                 user=user + feedback,
                 output=Draft,
                 effort="low",
@@ -74,11 +112,11 @@ async def generate(
         )
         if result is None:
             raise RuntimeError("draft unavailable")
-        id, text = stamp(result.text, request)
+        id, text = render(result, request)
         # Never overwrite a built-in or an existing user skill from a generated ID.
         if any(entry.id == id for entry in book.entries()):
-            id, text = stamp(
-                text,
+            id, text = render(
+                result,
                 request,
                 id_override=f"{id[:29]}-{uuid.uuid4().hex[:8]}",
             )

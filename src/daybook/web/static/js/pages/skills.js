@@ -21,7 +21,7 @@ async function render(root, params) {
   let catalog = [];
   let selected = params.get('id');
   let notice = null;
-  let hasUnsavedEdits = () => false;
+  let getDraft = () => null;
   const count = h('span.counter', '…');
   const newSkill = h('a.btn', { href: '#/board?q=' + encodeURIComponent('/skill ') }, icon('plus'), 'New skill');
   const list = h('div.rows.skill-scroll', skeletons(3));
@@ -34,15 +34,19 @@ async function render(root, params) {
 
   async function refresh() {
     try {
-      ({ entries: skills, catalog } = await api.skills());
+      const result = await api.skills();
+      // Read the current draft after the request: typing may have started during
+      // the GET, or continued while a Save PUT was in flight.
+      const draft = getDraft();
+      ({ entries: skills, catalog } = result);
       if (!skills.some((s) => s.id === selected)) selected = skills.find((s) => s.status === 'needs_review')?.id ?? skills[0]?.id;
-      draw();
+      draw(draft);
     } catch (err) {
       list.replaceChildren(errorState(err, refresh));
     }
   }
 
-  function draw() {
+  function draw(draft = null) {
     const active = skills.filter((s) => s.status === 'active').length;
     count.textContent = `${active} / ${skills.length} enabled`;
     if (!skills.length) {
@@ -52,7 +56,13 @@ async function render(root, params) {
       list.replaceChildren(...skills.map(row));
       list.querySelector('.selected')?.scrollIntoView({ block: 'nearest' });
       const s = skills.find((x) => x.id === selected);
-      detail.replaceChildren(review(s));
+      const currentDraft = draft?.id === s.id ? draft : null;
+      detail.replaceChildren(review(s, currentDraft));
+      const editor = detail.querySelector('textarea');
+      if (editor && currentDraft) {
+        if (currentDraft.focused) editor.focus({ preventScroll: true });
+        if (currentDraft.start != null) editor.setSelectionRange(currentDraft.start, currentDraft.end);
+      }
     }
   }
 
@@ -71,19 +81,21 @@ async function render(root, params) {
         h(`span.tag${st.tag}`, st.label)));
   }
 
-  function review(s) {
+  function review(s, draft) {
     const st = STATUS[s.status] ?? STATUS.invalid;
     const dev = getPref('developer');
     let editor = null;
     let parse = null;
     const dirty = () => Boolean(editor && editor.value !== s.text);
-    hasUnsavedEdits = dirty;
+    getDraft = () => dirty() ? { id: s.id, text: editor.value,
+      focused: document.activeElement === editor, start: editor.selectionStart, end: editor.selectionEnd } : null;
+    let onEdit;
     const editNotice = h('p.muted', { hidden: true }, 'Save edits before approving or enabling this version.');
     if (dev) {
-      editor = h('textarea.textarea', { spellcheck: false, 'aria-label': 'Skill file' }, s.text);
+      editor = h('textarea.textarea', { spellcheck: false, 'aria-label': 'Skill file' }, draft?.text ?? s.text);
       parse = h('div.errors', parseView(s.errors));
       let timer;
-      editor.addEventListener('input', () => {
+      onEdit = () => {
         const unsaved = dirty();
         if (enableButton) enableButton.disabled = unsaved;
         editNotice.hidden = !unsaved;
@@ -96,7 +108,8 @@ async function render(root, params) {
             parse.replaceChildren(h('div', `Couldn't check the file: ${err.message}`));
           }
         }, 350);
-      });
+      };
+      editor.addEventListener('input', onEdit);
     }
 
     const run = async (button, fn, done) => {
@@ -126,6 +139,7 @@ async function render(root, params) {
         ? btn('Enable', { icon: 'check', kind: 'primary',
           onclick: approveOrEnable(() => api.enableSkill(s.id), s.name + ' enabled.') })
         : null;
+    if (dirty()) onEdit();
     const buttons = [
       enableButton,
       s.status === 'active' && btn('Disable', { icon: 'pause', onclick: act(() => api.disableSkill(s.id), `${s.name} disabled. Its approval is kept.`) }),
@@ -153,7 +167,7 @@ async function render(root, params) {
 
   await refresh();
   return { onEvent: (types) => {
-    if ((types.has('SkillsChanged') || types.has('Reconnected')) && !hasUnsavedEdits() && !document.activeElement?.matches('textarea')) refresh();
+    if ((types.has('SkillsChanged') || types.has('Reconnected')) && !getDraft() && !document.activeElement?.matches('textarea')) refresh();
   } };
 }
 

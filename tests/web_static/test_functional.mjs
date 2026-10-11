@@ -365,3 +365,44 @@ test('clean stale approval still reloads the current skill and retries its revie
   await approve.onclick({currentTarget:approve}); await settle();
   assert.deepEqual(hashes,['old','new']); assert.equal(skill.status,'active');
 });
+
+test('Skills refresh that started clean preserves text typed while GET is pending',async()=>{
+  const x=await setup({developer:true}), pending=defer();
+  const skill={id:'stand',name:'Stand',goal:'Stand.',status:'needs_review',origin:'user',hash:'old',text:'server version',signals:[],allow:[],rules:[],errors:[]};
+  x.setRequest(path=>path==='/api/skills'?{entries:[skill],catalog:[]}:{errors:[]});
+  const p=await x.page('skills','id=stand');
+  x.setRequest(path=>path==='/api/skills'?pending.promise:{errors:[]});
+  p.hooks.onEvent(new Set(['Reconnected'])); await settle();
+  const editor=walk(p.root).find(n=>n.spec.startsWith('textarea'));
+  editor.value='typed while refreshing'; editor.oninput(); editor.focus(); editor.setSelectionRange(2,7);
+  pending.resolve({entries:[{...skill,hash:'remote-new',text:'changed remotely'}],catalog:[]}); await settle();
+  const current=walk(p.root).find(n=>n.spec.startsWith('textarea'));
+  assert.equal(current.value,'typed while refreshing');
+  assert.equal(walk(p.root).find(n=>n.textContent==='Approve & enable').disabled,true);
+  assert.equal(p.root.document.activeElement,current); assert.equal(current.selectionStart,2); assert.equal(current.selectionEnd,7);
+});
+test('successful Save preserves newer text entered while PUT is pending',async()=>{
+  const x=await setup({developer:true}), pending=defer(); let first=true;
+  let skill={id:'stand',name:'Stand',goal:'Stand.',status:'needs_review',origin:'user',hash:'old',text:'server version',signals:[],allow:[],rules:[],errors:[]};
+  x.setRequest((path,options)=>{
+    if(path==='/api/skills/stand'&&options.method==='PUT') {
+      skill={...skill,text:JSON.parse(options.body).text,hash:first?'saved-first':'saved-second'};
+      if(first) {first=false;return pending.promise;}
+    }
+    return path==='/api/skills'?{entries:[skill],catalog:[]}:{errors:[]};
+  });
+  const p=await x.page('skills','id=stand');
+  const editor=walk(p.root).find(n=>n.spec.startsWith('textarea'));
+  editor.value='submitted edit'; editor.oninput();
+  let save=walk(p.root).find(n=>n.textContent==='Save edits');
+  const saving=save.onclick({currentTarget:save}); await settle();
+  editor.value='newer unsaved edit'; editor.oninput();
+  pending.resolve({}); await saving; await settle();
+  assert.equal(skill.text,'submitted edit');
+  assert.equal(walk(p.root).find(n=>n.spec.startsWith('textarea')).value,'newer unsaved edit');
+  assert.equal(walk(p.root).find(n=>n.textContent==='Approve & enable').disabled,true);
+  save=walk(p.root).find(n=>n.textContent==='Save edits');
+  await save.onclick({currentTarget:save}); await settle();
+  assert.equal(skill.text,'newer unsaved edit'); assert.equal(skill.hash,'saved-second');
+  assert.ok(!walk(p.root).find(n=>n.textContent==='Approve & enable').disabled);
+});

@@ -431,6 +431,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .review-sec ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
 .review-sec li { padding: 0.65rem 0.85rem; background: var(--card); border: 1px solid var(--panel-line); border-radius: var(--r-sm); font-size: 1.02rem; }
 .review-sec li em { color: var(--ember-soft); font-style: normal; font-weight: 600; }
+.perm { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
+.errors { display: flex; flex-direction: column; gap: 0.35rem; }
+.errors div { font-family: var(--mono); font-size: 0.88rem; color: var(--danger); background: var(--danger-fill); border: 1px solid var(--danger-line); border-radius: var(--r-sm); padding: 0.45rem 0.65rem; }
+.parse-ok { font-family: var(--mono); font-size: 0.88rem; color: var(--ink-2); }
 .actions-bar { display: flex; gap: 0.5rem; flex-wrap: wrap; padding-top: 0.75rem; border-top: 1px solid var(--panel-line); }
 .notice { padding: 0.75rem 1rem; border-radius: var(--r-sm); border: 1px solid var(--ember); background: color-mix(in srgb, var(--ember) 8%, transparent); color: var(--ember-soft); font-size: 1rem; }
 

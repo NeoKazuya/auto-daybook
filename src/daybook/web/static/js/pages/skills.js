@@ -1,6 +1,9 @@
 // Skills: the reference page. A list of skills with their status, and a review card
 // for the selected one: its name, its prompt, its rules in words, and the approval controls.
+// Developer mode (Settings) adds the questions it asks the model, the permissions, and the raw
+// skill file with live parse errors.
 import { api } from '../api.js';
+import { getPref } from '../prefs.js';
 import { h, icon, btn, busy, ribbon, panel, split, emptyState, errorState, skeletons, confirmDialog, toast, folio } from '../ui.js';
 
 const page = { route: 'skills', label: 'Skills', icon: 'quill', render };
@@ -68,6 +71,25 @@ async function render(root, params) {
 
   function review(s) {
     const st = STATUS[s.status] ?? STATUS.invalid;
+    const dev = getPref('developer');
+    let editor = null;
+    let parse = null;
+    if (dev) {
+      editor = h('textarea.textarea', { spellcheck: false, 'aria-label': 'Skill file' }, s.text);
+      parse = h('div.errors', parseView(s.errors));
+      let timer;
+      editor.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          try {
+            const r = await api.parseSkill(s.id, editor.value);
+            parse.replaceChildren(...parseView(r.errors));
+          } catch (err) {
+            parse.replaceChildren(h('div', `Couldn't check the file: ${err.message}`));
+          }
+        }, 350);
+      });
+    }
 
     const run = async (button, fn, done) => {
       try {
@@ -86,6 +108,8 @@ async function render(root, params) {
         onclick: act(() => api.approveSkill(s.id, s.hash), `${s.name} is now active.`) }),
       s.status === 'disabled' && btn('Enable', { icon: 'check', kind: 'primary', onclick: act(() => api.enableSkill(s.id), `${s.name} enabled.`) }),
       s.status === 'active' && btn('Disable', { icon: 'pause', onclick: act(() => api.disableSkill(s.id), `${s.name} disabled. Its approval is kept.`) }),
+      dev && btn('Save edits', { icon: 'edit', title: 'Saving any edit returns the skill to needs review',
+        onclick: act(() => api.saveSkill(s.id, editor.value), 'Saved. Review the new version before it can run.') }),
       s.origin !== 'builtin' && btn('Delete', { icon: 'trash', kind: 'danger', onclick: async (e) => {
         const button = e.currentTarget;
         const ok = await confirmDialog({ title: `Delete “${s.name}”?`, body: 'The skill file is removed. Notes it already caused stay in the timeline.', confirm: 'Delete skill', danger: true });
@@ -98,12 +122,21 @@ async function render(root, params) {
         notice && h('div.notice', notice),
         h('h2', s.name),
         h('p.goal', s.goal),
+        dev && h('div.review-sec', h('div.label', 'It asks the model'), h('ul', s.signals.map((g) => h('li', g.ask)))),
         h('div.review-sec', h('div.label', 'Rules'), h('ul', s.rules.map((r) => h('li', ruleInWords(r))))),
+        dev && h('div.review-sec', h('div.label', 'Permissions'), h('ul', s.permissions.map((p) =>
+          h('li.perm', h('span', p.describe ?? p.action), h('span.tag.quiet', p.action))))),
+        dev && h('div.review-sec', h('div.label', 'Skill file'), editor, parse),
         h('div.actions-bar', buttons)));
   }
 
   await refresh();
-  return { onEvent: (e) => { if (e.type === 'SkillChanged') refresh(); } };
+  return { onEvent: (e) => { if (e.type === 'SkillChanged' && !document.activeElement?.matches('textarea')) refresh(); } };
+}
+
+function parseView(errors) {
+  if (!errors?.length) return [h('span.parse-ok', '✓ The file parses.')];
+  return errors.map((e) => h('div', `${e.at}: ${e.message}`));
 }
 
 /* ---------- rules in words ---------- */

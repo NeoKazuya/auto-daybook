@@ -50,7 +50,7 @@ async function render(root) {
 
   function draw() {
     left.replaceChildren(monitoringPanel(), hoursPanel(), appsPanel());
-    right.replaceChildren(displayPanel(), notesPanel(), screenshotsPanel(), modelPanel());
+    right.replaceChildren(displayPanel(), notesPanel(), screenshotsPanel(), modelPanel(), developerPanel());
   }
 
   /* ---------- monitoring ---------- */
@@ -198,6 +198,16 @@ async function render(root) {
         ? 'Deletion is waiting for a reader to finish, then the old pages are wiped from the database files.'
         : 'Removes the text from the timeline, from search, and from the database files.',
         h('div', { style: 'display:flex;gap:0.5rem;flex-wrap:wrap' }, forget15, forgetAll)));
+  }
+
+  function developerPanel() {
+    return panel('Developer', 'edit', h('span.tag.quiet', 'This browser'),
+      setting('Developer mode', 'Shows each skill’s questions to the model, its permissions, and its raw file (with live error checking and Save edits) on the review card.',
+        toggle(getPref('developer'), 'Developer mode', (v) => {
+          setPref('developer', v);
+          toast(v ? 'Developer mode on.' : 'Developer mode off.');
+          draw();
+        })));
   }
 
   /* ---------- privacy proof and model ---------- */

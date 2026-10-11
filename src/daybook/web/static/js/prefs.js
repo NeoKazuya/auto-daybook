@@ -1,7 +1,7 @@
 // Display preferences. These belong to this browser, not to Daybook's data, so they
 // live in localStorage and never go through the API.
 const KEY = 'daybook.prefs';
-const DEFAULTS = { textSize: 'medium', hour12: false, startPage: 'contents' };
+const DEFAULTS = { textSize: 'medium', hour12: false, startPage: 'contents', developer: false };
 
 // Root font sizes: everything set in rem scales from these; the columns stay fixed.
 export const TEXT_SIZES = { small: '75%', medium: '81.25%', large: '93.75%' };

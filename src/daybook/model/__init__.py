@@ -63,6 +63,9 @@ class ScriptedGateway(ModelGateway):
     def drop_observe(self) -> None:
         pass
 
+    def check_health(self) -> None:
+        pass
+
     def status(self) -> GatewayStatus:
         return GatewayStatus(
             "scripted",

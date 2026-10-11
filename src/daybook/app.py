@@ -368,6 +368,9 @@ async def open_runtime(
         stack.callback(stop_capture_history, journal)
         gateway = ModelGateway(config.model)
         stack.push_async_callback(gateway.close)
+        # Capture is withheld while Daybook is visible, so the first completion
+        # can be minutes away; don't show the model offline until then.
+        gateway.check_health()
         library = MusicLibrary.load(config.music_dir)
         overlay = (Overlay if real_effects else FakeOverlay)(bus, home=config.home)
         stack.push_async_callback(overlay.close)

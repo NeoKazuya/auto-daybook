@@ -689,3 +689,99 @@ async def test_close_before_admission_does_not_run_lazy_builders():
     assert built == []
     assert gw._client.is_closed
     assert gw.status().in_flight is None
+
+
+async def test_timeout_checks_health_without_another_generation(monkeypatch):
+    checked = asyncio.Event()
+    calls = []
+
+    async def transport(request):
+        calls.append(request.url.path)
+        if request.url.path.endswith("/models"):
+            checked.set()
+            return httpx.Response(200, json={"data": [{"id": "qwen3.6:35b"}]})
+        raise httpx.ReadTimeout("slow generation")
+
+    gw = gateway(transport)
+    try:
+        with pytest.raises(ModelUnavailable, match="ReadTimeout"):
+            await gw.call(Priority.INTERACTIVE, prompt())
+        await asyncio.wait_for(checked.wait(), 0.3)
+        await asyncio.sleep(0)
+        assert gw.status().reachable
+        assert calls == ["/v1/chat/completions", "/v1/models"]
+        assert gw.status().calls_per_minute == 1
+    finally:
+        await gw.close()
+
+
+async def test_health_recovers_idle_gateway_after_outage(monkeypatch):
+    monkeypatch.setattr("daybook.model._gateway._HEALTH_INTERVAL", 0.01, raising=False)
+    healthy = asyncio.Event()
+    checks = 0
+
+    async def transport(request):
+        nonlocal checks
+        if request.url.path.endswith("/models"):
+            checks += 1
+            if checks > 1:
+                healthy.set()
+                return httpx.Response(200, json={"data": [{"id": "qwen3.6:35b"}]})
+        raise httpx.ConnectError("offline")
+
+    gw = gateway(transport)
+    try:
+        with pytest.raises(ModelUnavailable, match="ConnectError"):
+            await gw.call(Priority.TICK, prompt())
+        assert not gw.status().reachable
+        await asyncio.wait_for(healthy.wait(), 0.3)
+        await asyncio.sleep(0)
+        assert gw.status().reachable
+        assert gw.status().queue_depth == 0
+        assert gw.status().calls_per_minute == 1
+    finally:
+        await gw.close()
+
+
+@pytest.mark.parametrize(
+    "body", [{"data": [{"id": "different-model"}]}, {"data": None}]
+)
+async def test_health_does_not_claim_a_missing_model_is_available(body):
+    checked = asyncio.Event()
+
+    async def transport(request):
+        if request.method == "GET":
+            checked.set()
+            return httpx.Response(200, json=body)
+        raise httpx.ConnectError("offline")
+
+    gw = gateway(transport)
+    try:
+        with pytest.raises(ModelUnavailable):
+            await gw.call(Priority.TICK, prompt())
+        await asyncio.wait_for(checked.wait(), 0.3)
+        await asyncio.sleep(0)
+        assert not gw.status().reachable
+    finally:
+        await gw.close()
+
+
+async def test_close_cancels_pending_health_probe():
+    probing = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def transport(request):
+        if request.method == "GET":
+            probing.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        raise httpx.ConnectError("offline")
+
+    gw = gateway(transport)
+    with pytest.raises(ModelUnavailable):
+        await gw.call(Priority.TICK, prompt())
+    await asyncio.wait_for(probing.wait(), 0.3)
+    await asyncio.wait_for(gw.close(), 0.3)
+    assert cancelled.is_set()

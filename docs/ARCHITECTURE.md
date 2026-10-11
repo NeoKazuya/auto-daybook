@@ -126,7 +126,7 @@ Every model call goes through `ModelGateway.call(priority, prompt)`. `ModelConfi
 - **Starvation guard:** at most 2 INTERACTIVE admissions in a row before the oldest eligible waiting background call is admitted. An already active background request must finish before another can start; completion order does not reset the admission counter.
 - **No queued screenshots.** At most one OBSERVE can be pending; a newer request replaces it. Capture passes a *builder*, so the screenshot is taken only once the slot is granted, and frames are never queued.
 - **Structured output.** Callers get a parsed pydantic value, never raw JSON. If the output fails schema validation, the gateway retries once with the validation error included.
-- **Failures don't snowball.** Each request times out after 40 s. A failure becomes a gap and a visible status, never a retry storm.
+- **Failures don't snowball.** Each admitted request times out after 180 s, including structured-output repair, to allow bounded local generation of 2–4k tokens. A failure becomes a gap and a visible status, never a retry storm. After a transport error or timeout, the gateway checks the configured model through authenticated `GET /models` (3 s probe timeout, 15 s between failed probes) until it recovers or closes; these checks generate no tokens and never retry the failed user request.
 - **Owned requests.** Cancelling a queued caller removes its request. An admitted request retains its slot until it actually finishes; caller cancellation cannot make room for an uncounted HTTP call. Closing the gateway cancels and awaits every active request before closing its HTTP client.
 - **Live status.** `GatewayStatus` reports reachability, queue depth, latency, and calls per minute. `in_flight` is the highest priority among active requests (or none), not their count, so its existing values remain unchanged. The UI shows this status in a footer.
 
@@ -233,7 +233,7 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
 - Priority order and the admission-based starvation guard are proven with a fake transport at concurrency one and above. Configured capacity is respected while background requests remain serialized.
 - A pending OBSERVE is replaced by a newer one, and a builder that returns `None` releases the slot.
 - Invalid JSON triggers exactly one repair retry.
-- A timeout raises `ModelUnavailable` within 40 s.
+- A timeout raises `ModelUnavailable` within 180 s after admission. A healthy model can recover its reachability status without another generation, including while capture is withheld.
 - Each dialect produces the correct request body (snapshot tests).
 - `GatewayStatus` reports calls per minute accurately.
 

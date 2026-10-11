@@ -189,6 +189,18 @@ class Chat:
             400,
             detail="segments",
         )
+        # The screen the user just left may not be rolled up into a segment yet.
+        latest = portal.observations(
+            TimeRange(now - timedelta(minutes=30), now + timedelta(microseconds=1)),
+            unassigned_only=True,
+        )[-3:]
+        notes = "\n".join(
+            [notes] * bool(notes)
+            + [
+                f"Not yet summarized: {o.window.app} · {o.window.title}: {o.seen[:400]} {o.visible_text}".strip()
+                for o in latest
+            ]
+        )
         items = portal.upcoming(now, limit=10)
         upcoming = "\n".join(f"- {item.describe(now)}" for item in items)
         return (

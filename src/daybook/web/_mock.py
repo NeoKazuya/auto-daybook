@@ -207,6 +207,7 @@ class MockAPI:
     def forget_segment(self, id: str) -> w.MutationResponse:
         self.segment(id)
         self.timeline.segments = [s for s in self.timeline.segments if s.id != id]
+        self._drop_orphaned_upcoming()
         self.bus.publish(events.SegmentChanged(id))
         self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return w.MutationResponse()
@@ -217,8 +218,20 @@ class MockAPI:
             segment = self.segment(observation.segment)
             segment.observations = [o for o in segment.observations if o.id != id]
             self._shrink(segment)
+        self._drop_orphaned_upcoming()
         self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return w.MutationResponse()
+
+    def _drop_orphaned_upcoming(self) -> bool:
+        notes = {o.id for s in self.timeline.segments for o in s.observations}
+        orphans = [
+            i.id
+            for i in self.upcoming_items.values()
+            if i.source is not None and i.source not in notes
+        ]
+        for id in orphans:
+            del self.upcoming_items[id]
+        return bool(orphans)
 
     def _shrink(self, segment: w.Segment) -> None:
         if not segment.observations:
@@ -249,6 +262,13 @@ class MockAPI:
         if window is None and self.upcoming_items:
             self.upcoming_items.clear()
             changed = True
+        elif window is not None:
+            # Like the journal: user items by added time, screen items with their note.
+            for item in list(self.upcoming_items.values()):
+                if item.source is None and window.start <= item.added_at < window.end:
+                    del self.upcoming_items[item.id]
+                    changed = True
+            changed = self._drop_orphaned_upcoming() or changed
         if changed:
             self.bus.publish(events.StatusChanged("journal", "notes_invalidated"))
         return w.MutationResponse()

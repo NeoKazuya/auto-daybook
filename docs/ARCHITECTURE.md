@@ -425,7 +425,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
 **Remember:** "remember CSE 130 Assignment 3 is due Friday at 11:59 PM" runs the same extraction as the Upcoming scan, at INTERACTIVE priority, and adds user items (no source note). The reply is `Plain`, naming each added item with its relative due time.
 
-**Skill drafts** get context: `portal.context(last 30 min, 700, detail="observations")` and the Upcoming list, marked as evidence and never instructions. "Pull me back to this assignment" can then name the assignment in the drafted question and reminder.
+**Skill drafts** get context: `portal.context(last 30 min, 400, detail="segments")`, the last three notes not yet rolled into a segment, and the Upcoming list, marked as evidence and never instructions. "Pull me back to this assignment" can then name the assignment in the drafted question and reminder.
 
 **Recall:**
 

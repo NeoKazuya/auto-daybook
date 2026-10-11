@@ -564,6 +564,7 @@ async def test_drafter_sees_recent_notes_and_the_upcoming_list(journal, tmp_path
         },
         "explanation": None,
     }
+    note(journal, "Quiz 2 opens Monday", at=now - timedelta(seconds=30), title="Canvas")
     gateway = ScriptedGateway([json.dumps(plan)])
     book = ChatBook(tmp_path)
     reply = await Chat(journal, gateway, cast(SkillBook, book)).respond(
@@ -573,6 +574,7 @@ async def test_drafter_sees_recent_notes_and_the_upcoming_list(journal, tmp_path
     user = gateway.prompts[0].user
     assert "Recent notes (last 30 minutes)" in user
     assert "Checking the CSE 130 deadline (browsing" in user
+    assert "Not yet summarized: firefox · Canvas: Quiz 2 opens Monday" in user
     assert "- CSE 130 Assignment 3 (due in 5 h 59 min)" in user or (
         "- CSE 130 Assignment 3 (due in 6 h)" in user
     )
@@ -619,3 +621,25 @@ def test_live_and_mock_upcoming_routes(journal):
                 == 404
             )
             assert client.delete("/api/upcoming/x").status_code == 403
+
+
+def test_mock_range_forget_removes_items_like_the_journal():
+    headers = {"Origin": "http://testserver", "X-Daybook-Token": "t"}
+    with TestClient(
+        create_app(mock=True, token="t", origin="http://testserver")
+    ) as client:
+        [seeded] = client.get("/api/upcoming").json()["items"]
+        assert seeded["source"]
+        due = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
+        client.post(
+            "/api/upcoming", json={"title": "Quiz 2", "due_at": due}, headers=headers
+        )
+        now = datetime.now(UTC)
+        window = {
+            "from": (now - timedelta(hours=1)).isoformat(),
+            "to": (now + timedelta(minutes=1)).isoformat(),
+        }
+        assert (
+            client.post("/api/forget", json=window, headers=headers).status_code == 200
+        )
+        assert client.get("/api/upcoming").json()["items"] == []

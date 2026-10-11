@@ -50,6 +50,7 @@ async function render(root, params) {
   function prefix(p) {
     input.value = p + input.value.replace(/^\/(ask|skill)\s*/, '');
     input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
   }
 
   function draw() {
@@ -136,5 +137,6 @@ async function render(root, params) {
   redraw = draw;
   draw();
   input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
   return { cleanup: () => { if (redraw === draw) redraw = () => {}; } };
 }

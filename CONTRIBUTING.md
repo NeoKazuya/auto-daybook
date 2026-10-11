@@ -129,7 +129,7 @@ Triage each review using [docs/agents/review-triage.md](docs/agents/review-triag
 - **Act on:** a real problem for this project. It breaks the demo or a main flow, loses or corrupts data, leaks a secret, or breaks another person's code. Fix it in a small follow-up PR, which merges once the checks pass.
 - **Consider / Noted / Dismissed:** reply with the bucket and a one-line reason, then resolve the thread.
 
-Trace hypotheticals to a real call site before accepting them. Dismiss preferences and premature abstractions. If more than five findings land in "Act on", or you agree with every point, go through them again. Follow-up fix PRs don't need another review unless they change a shared contract.
+Trace hypotheticals to a real call site before accepting them. Dismiss preferences and premature abstractions. Apply the **hackathon cost test** to security and hardening findings: fix them only if the fix doesn't make the team's job harder (no new machinery, process, or merge friction), since this is a small team on one trusted machine. The privacy features the demo promises still count as real problems. If more than five findings land in "Act on", or you agree with every point, go through them again. Follow-up fix PRs don't need another review unless they change a shared contract.
 
 ### 7. If main breaks after your merge
 

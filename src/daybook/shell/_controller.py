@@ -22,6 +22,7 @@ class Overlay:
     body: str
     dismiss: str
     style: Literal["calm", "alert"]
+    layout: Literal["fullscreen", "bubble"]
     expires_at: datetime
 
 
@@ -43,12 +44,15 @@ def _request(id: object, request: object, expires_at: datetime) -> Overlay | Non
     if not isinstance(id, str) or not isinstance(request, Mapping):
         return None
     style = request.get("style", "calm")
+    layout = request.get("layout", "fullscreen")
     return Overlay(
         id=id,
         title=str(request.get("title", "")),
         body=str(request.get("body", "")),
         dismiss=str(request.get("dismiss") or "OK"),
         style="alert" if style == "alert" else "calm",
+        # Anything unknown gets the full-screen layout, which pauses capture.
+        layout="bubble" if layout == "bubble" else "fullscreen",
         expires_at=expires_at,
     )
 

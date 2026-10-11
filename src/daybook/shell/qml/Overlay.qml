@@ -1,5 +1,6 @@
 // Full-screen overlay, full-bleed layout (README.md). Created once and kept hidden;
-// Python shows it. All text is plain text: chat-made skills write it.
+// Python shows it. All text is plain text: chat-made skills write it. The speech
+// bubble layout is a separate window (Bubble.qml).
 import QtQuick
 import QtQuick.Window
 
@@ -174,7 +175,7 @@ Window {
     Connections {
         target: overlay
         function onShownChanged() {
-            if (overlay.shown) {
+            if (overlay.fullscreen) {
                 fadeIn.restart()
                 button.forceActiveFocus()
             }

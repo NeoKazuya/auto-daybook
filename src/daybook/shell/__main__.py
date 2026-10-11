@@ -34,7 +34,7 @@ def main() -> int:
     backend = Backend(args.port, read_token())
     serif, mono = load_fonts()
     bridge = OverlayBridge(OverlayController(), backend, serif, mono)
-    engine, _window = build(bridge)
+    engine, _window, _bubble = build(bridge)
 
     stop = threading.Event()
     thread = threading.Thread(

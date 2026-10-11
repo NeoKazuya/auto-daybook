@@ -107,3 +107,13 @@ def test_countdown_format():
     assert countdown(0) == "0:00"
     assert countdown(7) == "0:07"
     assert countdown(3660) == "61:00"
+
+
+def test_layout_comes_from_the_request_and_defaults_to_fullscreen():
+    c = OverlayController(Clock())
+    view = c.handle("OverlayShown", shown("o1", layout="bubble"))
+    assert view.overlay and view.overlay.layout == "bubble"
+    view = c.handle("OverlayShown", shown("o2"))
+    assert view.overlay and view.overlay.layout == "fullscreen"
+    view = c.handle("OverlayShown", shown("o3", layout="sideways"))
+    assert view.overlay and view.overlay.layout == "fullscreen"

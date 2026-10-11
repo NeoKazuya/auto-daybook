@@ -109,8 +109,8 @@ def setup_book(tmp_path):
     called = []
     from daybook.journal import Outcome
 
-    async def notify(skill, args):
-        called.append((skill, args))
+    async def notify(context, args):
+        called.append((context.skill, args))
         return Outcome("notify.send", True)
 
     resets = []
@@ -219,7 +219,7 @@ async def test_failing_hook_cannot_escape_permission_and_next_step_runs(tmp_path
 
     called = []
 
-    async def notify(skill, args):
+    async def notify(context, args):
         called.append(args)
         return Outcome("notify.send", True)
 

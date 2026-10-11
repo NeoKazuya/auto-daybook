@@ -83,6 +83,7 @@ def applications() -> tuple[Application, ...]:
                 if (
                     section.get("Type") != "Application"
                     or section.get("Hidden") == "true"
+                    or section.get("NoDisplay") == "true"
                 ):
                     continue
                 found.append(
@@ -99,7 +100,7 @@ def normalized(value: str) -> str:
     return "".join(c for c in value.casefold() if c.isalnum())
 
 
-def resolve(app: str) -> tuple[Application | None, str]:
+def resolve(app: str, *, pattern: bool = False) -> tuple[Application | None, str]:
     installed = applications()
     exact = [
         a
@@ -110,7 +111,17 @@ def resolve(app: str) -> tuple[Application | None, str]:
     matches = exact or [
         a
         for a in installed
-        if normalized(app) in (normalized(a.name), normalized(a.wm_class))
+        if any(
+            normalized(app) == normalized(alias)
+            or (pattern and fnmatch.fnmatchcase(alias.casefold(), app.casefold()))
+            for alias in (
+                a.name,
+                a.wm_class,
+                a.name.split()[-1] if a.name.split() else "",
+                a.wm_class.rsplit(".", 1)[-1],
+            )
+            if alias
+        )
     ]
     if len(matches) > 1:
         return None, "ambiguous_app"
@@ -133,12 +144,20 @@ async def launch(app: str, *, can_act: CanAct | None = None) -> Outcome:
 async def find_window(app: str, title: str = "*") -> tuple[str | None, str]:
     if not app.strip():
         return None, "invalid_app"
-    installed, error = resolve(app) if not any(c in app for c in "*?[") else (None, "")
+    installed, error = resolve(app, pattern=True)
     if error:
         return None, error
     aliases = {normalized(app)}
     if installed is not None:
-        aliases.update(normalized(v) for v in (installed.name, installed.wm_class) if v)
+        aliases.update(
+            normalized(v)
+            for v in (
+                installed.name,
+                installed.wm_class,
+                installed.wm_class.rsplit(".", 1)[-1],
+            )
+            if v
+        )
     listing = await output("wmctrl", "-lx")
     if listing is None:
         return None, "window_unreadable"
@@ -152,7 +171,11 @@ async def find_window(app: str, title: str = "*") -> tuple[str | None, str]:
             normalized(part) in aliases for part in (wm_class, *wm_class.split("."))
         )
         if (
-            fnmatch.fnmatchcase(wm_class.lower(), app.lower()) or named
+            any(
+                fnmatch.fnmatchcase(part.lower(), app.lower())
+                for part in (wm_class, *wm_class.split("."))
+            )
+            or named
         ) and fnmatch.fnmatchcase(columns[4].lower(), title.lower()):
             matches.append(str(int(columns[0], 16)))
     if not matches:

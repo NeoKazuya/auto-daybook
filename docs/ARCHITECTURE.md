@@ -356,9 +356,9 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
   3. claim the firing key (`INSERT OR IGNORE`; at most once)
   4. run the steps through `catalog.allowed(skill.allow)`
 
-  A failing step is recorded and the rule continues with its next step. Hook steps time out after 10 s. Nothing reacts while paused.
+  An ordinary failing step is recorded and the rule continues. An eligibility denial stops subsequent steps and hooks. Hook steps time out after 10 s. Nothing reacts while paused.
 - **`draft_skill(request)`.**
-  - The prompt has the format guide, `catalog.describe_for_prompt()`, and validated declarative built-ins converted to structured plan examples. Invalid files and built-ins containing hooks are excluded from examples. The model returns either a supported declarative plan or a concrete explanation that an essential input or action is unavailable. Code renders supported plans as `.skill.md` files, with no hook. An unsupported outcome raises `UnsupportedSkill`; Chat shows its explanation without saving an artifact. Missing or ambiguous current screen evidence is a runtime unknown, not an unsupported capability.
+  - The prompt has the format guide, `catalog.describe_for_prompt()`, and validated declarative built-ins converted to structured plan examples. Invalid files and built-ins containing hooks are excluded from examples. The model returns either a supported declarative plan or a concrete explanation that an essential input or action is unavailable. Code renders supported plans as `.skill.md` files, with no hook. An unsupported outcome raises `UnsupportedSkill`; Chat shows its explanation without saving an artifact. Missing or ambiguous current screen evidence is a runtime unknown, not an unsupported capability. The drafting guide preserves requested conditions and named application/window targets.
   - If parsing fails, the generator retries once with the errors included. If it still fails, the draft is saved as invalid so the user can fix it.
   - A supported result is written with `created_by: chat` and the original `request`, in "needs review" status, along with a one-line summary.
 
@@ -382,9 +382,11 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 | `overlay.show` | `title`, `body`, `dismiss = "OK"`, `minutes = 1`, `style = calm\|alert`, `layout = fullscreen\|bubble` (default `fullscreen`) | Replaces any current overlay. A bubble is a short casual reminder; its `body` uses conversational text. Fullscreen pauses capture; a bubble is masked while capture continues. Auto-hides after `minutes` |
 | `overlay.hide` | — | |
 | `notify.send` | `title`, `body` | `notify-send`, for low-key nudges |
-| `desktop.open_url` | `url` | Through the `DesktopControl` backend |
-| `desktop.launch` | `app` (desktop file ID) | `gtk-launch` |
-| `desktop.focus` | `app` (WM_CLASS glob) | `wmctrl`/`xdotool`, or the cua backend |
+| `desktop.open_url` | `url` | Opens HTTP, HTTPS, file, or mailto URLs through `xdg-open` |
+| `desktop.launch` | `app` (installed application name or desktop file ID) | Resolves installed desktop metadata, then calls `gtk-launch`. Duplicate names report `ambiguous_app` |
+| `desktop.focus` | `app` (installed application name, desktop file ID, or WM_CLASS glob), `title = "*"` | Focuses a matching window. Names/classes and title globs match case-insensitively. Prefers the current matching window; otherwise multiple matches report `ambiguous_window` and need a title selector |
+| `desktop.open_tab` | `url` (HTTP/HTTPS), `app = "active"` | Creates a new tab in a supported running browser, types the URL, then navigates. An explicit app selects a matching browser window; ambiguous windows require focusing a specific title first and using `active` |
+| `desktop.switch_tab` | `tab` (`next`, `previous`, quoted `"1"`–`"8"`, or `last`), `app = "active"` | Uses the checked browser's Linux shortcuts: next/previous in tab-strip order, a numbered tab, or the final tab. No hidden-tab title lookup |
 | `desktop.close_tab` | `title` (case-insensitive glob, such as `*Instagram*`) | Presses Ctrl+W in the active window only if all of these hold, otherwise does nothing and reports why: the same skill successfully showed an overlay or bubble in the last 30 s, and each warning authorizes one close (`no_warning_shown`); the window is a known browser by WM_CLASS (`not_a_browser`); its title matches (`tab_not_active`); and focus hasn't moved since the check. `title` needs 3 or more literal characters, with `[...]` classes counting as wildcards (`pattern_too_broad`) |
 | `wait` | `for` (`1s` to `10s`) | Sleeps before the next step. Because steps re-check that the skill may still act, pausing Daybook or disabling the skill during the wait stops the steps after it. For warn-then-act sequences such as `overlay.show`, `wait`, `desktop.close_tab` |
 
@@ -401,7 +403,9 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
   - `CuaDesktop` wraps trycua/cua's driver, and is built only if a time-boxed trial on the real Xorg session passes. Config chooses between them.
   - Skills reach it only through the `desktop.*` actions.
 
-`Actions` is a capability object. It holds one skill's allow list, raises `NotAllowed` for anything else, and never raises for an action that fails (it returns `ok=False`).
+`Actions` holds one skill's allow list and an optional caller-owned eligibility callback. `Book.react` binds `partial(self.eligible, entry, tick)`; direct/manual callers omit the callback. Handlers receive `ActionContext(skill, can_act)` and must check `context.can_act()` immediately before effects after awaits. Desktop actions and notifications pass it through to each mutating subprocess; `open_tab` checks before activation, new-tab creation, URL typing, and navigation. An observed denial latches for that capability, returns `skill_inactive`, and stops subsequent steps/hooks/rules. A claimed occurrence remains consumed. Already-started helpers may finish; revocation suppresses subsequent effects without rollback. Ordinary failed actions return `ok=False`; disallowed actions raise `NotAllowed`, and task cancellation propagates.
+
+Tab navigation supports Firefox/LibreWolf and Chrome/Chromium/Brave/Edge with their standard Linux shortcuts. Other apps, unsupported browsers, unreadable windows, or focus changes before input return failures. These actions neither inspect hidden tab titles nor verify tab positions; customized shortcuts can change the result. X11 focus binding still has a small focus/input race. There is no whole-app close, quit, or process-kill action.
 
 **Done when:**
 

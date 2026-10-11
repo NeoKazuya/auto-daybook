@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import re
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
 from typing import Callable, cast
 
@@ -306,7 +307,9 @@ class Book:
                 if interrupted_until is not None
                 else history
             )
-            actions = self.catalog.allowed(skill.allow, skill.id)
+            actions = self.catalog.allowed(
+                skill.allow, skill.id, can_act=partial(self.eligible, entry, tick)
+            )
             upcoming = None
             if "upcoming" in skill.reads:
                 soonest = self.portal.upcoming(tick.at, limit=1)
@@ -320,7 +323,7 @@ class Book:
                 )
                 if (
                     occurrence is None
-                    or not self.eligible(entry, tick)
+                    or not actions.can_act()
                     or not self.ledger.claim(
                         skill.id, index, occurrence.key, tick.at, rule.cooldown
                     )
@@ -329,7 +332,7 @@ class Book:
                 self.bus.publish(SkillFired(skill.id, index, occurrence.key))
                 outcomes = []
                 for step in rule.steps:
-                    if not self.eligible(entry, tick):
+                    if not actions.can_act():
                         outcomes.append(Outcome(step.action, False, "skill_inactive"))
                         break
                     try:
@@ -351,7 +354,12 @@ class Book:
                                 function(HookContext(self.portal, actions, occurrence)),
                                 timeout=10,
                             )
-                            outcomes.append(Outcome("hook", True))
+                            active = actions.can_act()
+                            outcomes.append(
+                                Outcome(
+                                    "hook", active, "" if active else "skill_inactive"
+                                )
+                            )
                         else:
                             args = {
                                 key: render(
@@ -371,6 +379,8 @@ class Book:
                         outcomes.append(Outcome(step.action, False, "hook_timeout"))
                     except Exception:
                         outcomes.append(Outcome(step.action, False, "step_failed"))
+                    if not actions.can_act():
+                        break
                 self.ledger.finish(skill.id, index, occurrence.key, outcomes)
 
 

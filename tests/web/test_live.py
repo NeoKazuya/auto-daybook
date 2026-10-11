@@ -306,7 +306,7 @@ def test_real_forget_removes_database_notes_and_search(live, operation):
 def test_skills_parse_save_review_and_delete_through_owner(live):
     client = live.client
     skills = w.SkillsResponse.model_validate(client.get("/api/skills").json())
-    assert len(skills.catalog) == 10
+    assert len(skills.catalog) == 12
     parse = client.post(
         "/api/skills/parse",
         headers=HEADERS,

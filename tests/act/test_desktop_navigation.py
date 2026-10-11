@@ -27,12 +27,13 @@ def desktop_files(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user"))
     monkeypatch.setenv("XDG_DATA_DIRS", str(tmp_path / "system"))
 
-    def write(id, name, wm_class="", *, user=False, hidden=False):
+    def write(id, name, wm_class="", *, user=False, hidden=False, no_display=False):
         root = tmp_path / ("user" if user else "system") / "applications"
         root.mkdir(parents=True, exist_ok=True)
         (root / id).write_text(
             "[Desktop Entry]\nType=Application\n"
             f"Name={name}\nStartupWMClass={wm_class}\nHidden={'true' if hidden else 'false'}\n"
+            f"NoDisplay={'true' if no_display else 'false'}\n"
             "Exec=never-execute-this %U\n"
             "[Desktop Action Other]\nName=Ignored action name\n"
         )
@@ -140,8 +141,33 @@ async def test_focus_names_and_window_titles_select_the_right_window(
     assert not screen["commands"]
     assert (await desktop.focus("Visual Studio Code", "*project*")).ok
     assert screen["commands"][-1] == ("xdotool", "windowactivate", "--sync", "44")
-    assert (await desktop.focus("*Code*")).ok  # Prefer the active matching window.
+    for alias in ("code", "Code", "[Cc]ode", "*Code*"):
+        assert (await desktop.focus(alias)).ok  # Prefer the active matching window.
     assert (await desktop.focus("*Code*", "*missing*")).detail == "window_not_found"
+
+
+async def test_installed_name_shorthand_matches_qualified_classes(
+    desktop_files, screen
+):
+    desktop_files(
+        "navigation-test-vscode.desktop", "Visual Studio Code", "com.microsoft.VSCode"
+    )
+    desktop_files(
+        "navigation-test-url.desktop",
+        "Visual Studio Code - URL Handler",
+        no_display=True,
+    )
+    screen["listing"] = (
+        "0x0000002a 0 com.microsoft.vscode.com.microsoft.VSCode host Project — Visual Studio Code"
+    )
+    for alias in ("Visual Studio Code", "VS Code", "code", "Code", "[Cc]ode", "*Code*"):
+        assert (await XdoDesktop().focus(alias)).ok, alias
+    assert (await XdoDesktop().launch("code")).ok
+    assert screen["commands"][-1] == ("gtk-launch", "navigation-test-vscode.desktop")
+    desktop_files("navigation-test-chrome.desktop", "Google Chrome", "Google-chrome")
+    chrome, error = _desktop.resolve("Chrome")
+    assert chrome is not None and not error
+    assert chrome.id == "navigation-test-chrome.desktop"
 
 
 async def test_duplicate_app_names_are_refused(desktop_files, screen):

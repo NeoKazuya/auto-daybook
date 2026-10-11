@@ -146,7 +146,7 @@ def reply(segment=SEGMENT):
 
 async def test_scripted_full_tick_then_still_screen_readings(runtime):
     journal, clock, observation, skills = runtime
-    gateway = ScriptedGateway([reply(), reply()])
+    gateway = ScriptedGateway([reply(), reply(None)])
     mind = Mind(journal, gateway, skills, clock=clock)
     first = await mind.tick_now()
     assert first and isinstance(first.segment, Start)
@@ -172,7 +172,7 @@ async def test_scripted_full_tick_then_still_screen_readings(runtime):
 
 async def test_schedule_debounce_spacing_and_evidence(runtime):
     journal, clock, observation, skills = runtime
-    gateway = ScriptedGateway([reply(), reply(), reply()])
+    gateway = ScriptedGateway([reply(), reply(None), reply(None)])
 
     async def sleep(seconds):
         clock.advance(seconds)
@@ -235,11 +235,14 @@ def test_dynamic_schema_rejects_wrong_enum_and_constrains_each_signal():
     from daybook.mind._tick import output_model
 
     model = output_model(SIGNALS)
-    assert model.model_validate({"signals": {"test.mood": "focus"}})
+    values = {"test.focused": None, "test.mood": "focus", "test.level": None}
+    assert model.model_validate({"segment": None, "signals": values})
     with pytest.raises(ValidationError):
-        model.model_validate({"signals": {"test.mood": "unlisted"}})
+        model.model_validate(
+            {"segment": None, "signals": {**values, "test.mood": "unlisted"}}
+        )
     with pytest.raises(ValidationError):
-        model.model_validate({"signals": {"test.level": 11}})
+        model.model_validate({"segment": None, "signals": {**values, "test.level": 11}})
     assert (
         "test.focused"
         in model.model_json_schema()["$defs"]["TickSignals"]["properties"]
@@ -258,7 +261,7 @@ async def test_app_switch_nudge_during_model_call_is_preserved(runtime):
             mind.nudge(app_switched=True)
             return await super().call(priority, prompt)
 
-    gateway = SwitchGateway([reply(), reply()])
+    gateway = SwitchGateway([reply(), reply(None)])
 
     async def sleep(seconds):
         clock.advance(seconds)
@@ -355,7 +358,7 @@ async def test_restart_does_not_call_model_for_persisted_evidence_without_signal
         )
     )
     clock.advance(30)
-    gateway = ScriptedGateway([reply(), reply()])
+    gateway = ScriptedGateway([reply(None)])
     mind = Mind(journal, gateway, skills, clock=clock)
     assert await mind.tick_now() is None
     clock.advance(30)
@@ -374,10 +377,16 @@ async def test_null_segment_batch_does_not_block_later_backlog(runtime):
             ObservationDraft(clock(), WindowInfo("Code", f"task-{index}"), "x" * 1000),
             journal.epoch,
         )
-    gateway = ScriptedGateway([reply(None), reply()])
+    old = journal.portal.observations(TimeRange(NOW, clock() + timedelta(seconds=1)))[
+        :4
+    ]
+    earlier = Tick(
+        clock(), journal.epoch, old[-1].last_seen_at, tuple(o.id for o in old), None, ()
+    )
+    # Historical committed ticks may have no segment even though their batch is consumed.
+    assert journal.record_tick(earlier)
+    gateway = ScriptedGateway([reply()])
     mind = Mind(journal, gateway, skills, clock=clock)
-    earlier = await mind.tick_now()
-    assert earlier and earlier.segment is None
     clock.advance(30)
     later = await mind.tick_now()
     assert later and later.evidence_until > earlier.evidence_until
@@ -386,12 +395,64 @@ async def test_null_segment_batch_does_not_block_later_backlog(runtime):
 
 async def test_null_segment_observation_can_be_retried_after_extension(runtime):
     journal, clock, observation, skills = runtime
-    gateway = ScriptedGateway([reply(None), reply()])
+    assert journal.record_tick(
+        Tick(clock(), journal.epoch, clock(), (observation.id,), None, ())
+    )
+    gateway = ScriptedGateway([reply()])
     mind = Mind(journal, gateway, skills, clock=clock)
-    earlier = await mind.tick_now()
-    assert earlier and earlier.segment is None
     clock.advance(30)
     journal.extend_observation(observation.id, clock())
     later = await mind.tick_now()
     assert later and later.observations == (observation.id,)
     assert journal.portal.now().segment
+
+
+def test_output_requires_every_signal_but_allows_explicit_unknown():
+    from daybook.mind._tick import output_model
+
+    model = output_model(SIGNALS)
+    with pytest.raises(ValidationError):
+        model.model_validate({"segment": None, "signals": {"test.focused": None}})
+    assert model.model_validate(
+        {"segment": None, "signals": {str(s.id): None for s in SIGNALS}}
+    )
+
+
+async def test_periodic_cadence_counts_from_call_start_not_finish(runtime):
+    journal, clock, observation, skills = runtime
+
+    class DelayedGateway(ScriptedGateway):
+        async def call(self, priority, prompt):
+            clock.advance(20)
+            journal.extend_observation(observation.id, clock())
+            return await super().call(priority, prompt)
+
+    gateway = DelayedGateway([reply(), reply(None)])
+
+    async def sleep(seconds):
+        clock.advance(seconds)
+        journal.extend_observation(observation.id, clock())
+        if len(skills.fired) == 2:
+            raise asyncio.CancelledError
+
+    mind = Mind(journal, gateway, skills, 30, clock=clock, sleep=sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await mind.run()
+    assert [tick.at for tick in skills.fired] == [
+        NOW + timedelta(seconds=30),
+        NOW + timedelta(seconds=60),
+    ]
+
+
+def test_segment_output_depends_on_new_evidence():
+    from daybook.mind._tick import output_model
+
+    values = {str(signal.id): None for signal in SIGNALS}
+    new = output_model(SIGNALS, has_observations=True)
+    assert new.model_validate({"segment": SEGMENT, "signals": values})
+    with pytest.raises(ValidationError):
+        new.model_validate({"segment": None, "signals": values})
+    still = output_model(SIGNALS, has_observations=False)
+    assert still.model_validate({"segment": None, "signals": values})
+    with pytest.raises(ValidationError):
+        still.model_validate({"segment": SEGMENT, "signals": values})

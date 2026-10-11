@@ -28,7 +28,9 @@ class SegmentAnswer(BaseModel):
     intent: str = Field(max_length=600)
 
 
-def output_model(signals: tuple[Signal, ...]) -> type[BaseModel]:
+def output_model(
+    signals: tuple[Signal, ...], *, has_observations: bool = False
+) -> type[BaseModel]:
     fields = {}
     for signal in signals:
         type_: Any
@@ -40,14 +42,14 @@ def output_model(signals: tuple[Signal, ...]) -> type[BaseModel]:
             ]
         else:
             type_ = Literal[signal.values]  # pyright: ignore[reportInvalidTypeForm]
-        fields[str(signal.id)] = (type_ | None, None)
+        fields[str(signal.id)] = (type_ | None, ...)
     readings = create_model(
         "TickSignals", __config__=ConfigDict(extra="forbid"), **fields
     )
     return create_model(
         "TickAnswer",
         __config__=ConfigDict(extra="forbid"),
-        segment=(SegmentAnswer | None, None),
+        segment=(SegmentAnswer if has_observations else type(None), ...),
         signals=(readings, ...),
     )
 

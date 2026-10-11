@@ -32,16 +32,22 @@ async function render(root) {
 
   let privacy, status;
   let knownApps = [];
+  let latestRefresh = null;
 
   async function refresh() {
+    const request = {};
+    latestRefresh = request;
     try {
-      [privacy, status, knownApps] = await Promise.all([
+      const result = await Promise.all([
         api.privacy(),
         api.status(),
         supports.totals ? api.totals('app').then((rows) => rows.map((r) => r.label)).catch(() => []) : [],
       ]);
+      if (latestRefresh !== request) return;
+      [privacy, status, knownApps] = result;
       draw(true);
     } catch (err) {
+      if (latestRefresh !== request) return;
       if (privacy) toast("Couldn't refresh settings: " + err.message, 'error');
       else {
         left.replaceChildren(errorState(err, refresh));
@@ -60,10 +66,13 @@ async function render(root) {
       let saved = false;
       try {
         for (let attempt = 0; attempt < 3; attempt++) {
-          privacy = await api.privacy();
-          const next = typeof patch === 'function' ? patch(privacy) : patch;
+          const current = await api.privacy();
+          const next = typeof patch === 'function' ? patch(current) : patch;
           try {
-            privacy = await api.setPrivacy({ ...privacy, ...next }, privacy);
+            const updated = await api.setPrivacy({ ...current, ...next }, current);
+            // A read started before this confirmed PUT cannot undo its result.
+            latestRefresh = {};
+            privacy = updated;
             saved = true;
             break;
           } catch (err) {
@@ -75,6 +84,7 @@ async function render(root) {
         toast(`Couldn't save: ${err.message}`, 'error');
       }
       draw(true);
+      if (saved) await refresh();
       return saved;
     });
     return queue;

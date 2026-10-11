@@ -32,9 +32,13 @@ async function render(root, params) {
     split(panel('Skills & toggles', 'check', [count, newSkill], list), detail,
       { key: 'skills', initial: 60, label: 'Resize skills and review card' }));
 
+  let latestRefresh = null;
   async function refresh() {
+    const request = {};
+    latestRefresh = request;
     try {
       const result = await api.skills();
+      if (latestRefresh !== request) return;
       // Read the current draft after the request: typing may have started during
       // the GET, or continued while a Save PUT was in flight.
       const draft = getDraft();
@@ -42,6 +46,7 @@ async function render(root, params) {
       if (!skills.some((s) => s.id === selected)) selected = skills.find((s) => s.status === 'needs_review')?.id ?? skills[0]?.id;
       draw(draft);
     } catch (err) {
+      if (latestRefresh !== request) return;
       list.replaceChildren(errorState(err, refresh));
     }
   }

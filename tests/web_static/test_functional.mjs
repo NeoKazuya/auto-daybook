@@ -57,9 +57,9 @@ const answer = { type: 'answer', text: 'You spent 4 minutes on journal tests', c
 const draft = { type: 'draft', summary: 'Stand after meetings', entry: { id: 'stand-after-meeting' } };
 async function setup({ developer = false } = {}) {
   let request = async path => path.startsWith('/api/timeline') ? { segments: [{id:'s1', title:'Old title'}] } : {};
-  const streams = [], channels = [], calls = [], toasts = [];
+  const streams = [], channels = [], calls = [], toasts = [], intervals = [];
   const context = vm.createContext({
-    URLSearchParams, Date, console, setTimeout, clearTimeout,
+    URLSearchParams, Date, console, setTimeout, clearTimeout, setInterval:fn=>intervals.push(fn),
     document: { querySelector: () => ({content:'test-token'}), activeElement:null },
     location: {search:''}, history: {replaceState(){}},
     fetch: async (path, options) => { calls.push([path, options]); const result = await request(path, options); return result instanceof Response ? result : {ok:true,json:async()=>result}; },
@@ -76,7 +76,7 @@ async function setup({ developer = false } = {}) {
     if(cache.has(path)) return cache.get(path);
     let mod;
     if(path.endsWith('/ui.js') || path.endsWith('/prefs.js')) {
-      const exports = path.endsWith('/prefs.js') ? {getPref:key=>key === 'developer' ? developer : false,setPref:()=>{}} : helpers;
+      const exports = path.endsWith('/prefs.js') ? {getPref:key=>key === 'developer' ? developer : false,setPref:()=>{},applyPrefs:()=>{}} : helpers;
       mod = new vm.SyntheticModule(Object.keys(exports), function(){for(const [k,v] of Object.entries(exports)) this.setExport(k,v);},{context});
     } else mod = new vm.SourceTextModule(await readFile(path,'utf8'), {context,identifier:path});
     cache.set(path,mod);
@@ -90,7 +90,18 @@ async function setup({ developer = false } = {}) {
     const root=h('main'); root.document=context.document; const hooks=await m.namespace.default.render(root,new URLSearchParams(params));
     return {root,hooks,ask:async message=>{const input=walk(root).find(x=>x.spec.startsWith('input')); input.value=message; walk(root).find(x=>x.spec.startsWith('form')).onsubmit({preventDefault(){}}); await settle();}};
   }
-  return {api:apiModule.namespace.api,subscribe:apiModule.namespace.subscribe,page,streams,channels,calls,toasts,setRequest:fn=>{request=fn;}};
+  async function app() {
+    const surfaces=Object.fromEntries(['page','nav','footer','sidebar-foot'].map(id=>[id,h('div')]));
+    const pip={dataset:{}};
+    for(const element of Object.values(surfaces))element.document=context.document;
+    context.document.getElementById=id=>surfaces[id];
+    context.document.querySelectorAll=selector=>selector==='.state-pip'?[pip]:[];
+    context.window={scrollTo(){},addEventListener(){}};
+    context.location.hash='#/daily';
+    const module=await load(base+'/app.js');await module.evaluate();
+    return {footer:surfaces.footer,pip,refresh:()=>intervals.at(-1)()};
+  }
+  return {api:apiModule.namespace.api,subscribe:apiModule.namespace.subscribe,page,app,streams,channels,calls,toasts,setRequest:fn=>{request=fn;}};
 }
 test('forget clears cached recall while keeping draft across navigation', async()=>{
   const x=await setup();
@@ -798,4 +809,140 @@ for(const fail of [false,true]) test('Index totals ignore older '+(fail?'errors'
   await older;await settle();
   assert.doesNotMatch(p.root.textContent,/coding|Private Code|isn.t responding/);
   assert.match(p.root.textContent,/Nothing indexed yet/);p.hooks.cleanup();
+});
+
+
+for(const mutation of ['local','external']) {
+  for(const fail of [false,true]) test('Settings ignores an old '+(fail?'error':'response')+' after '+mutation+' privacy removal',async()=>{
+    const x=await setup(),pending=defer();let hold=false,held=false;
+    let privacy={paused:false,exclude_apps:['KeePassXC'],exclude_titles:[],screenshots_stored:'none'};
+    const old=structuredClone(privacy);
+    x.setRequest((path,options)=>{
+      if(path==='/api/privacy') {
+        if(options.method==='GET') {if(hold&&!held){held=true;return pending.promise;}return structuredClone(privacy);}
+        const body=JSON.parse(options.body);
+        privacy={...privacy,paused:body.paused,exclude_apps:body.exclude_apps,exclude_titles:body.exclude_titles};
+        return structuredClone(privacy);
+      }
+      if(path==='/api/status')return {gateway:{},music:{},capture:privacy.paused?'paused':'running'};
+      return {totals:[]};
+    });
+    const p=await x.page('settings');hold=true;
+    const older=p.hooks.onEvent(new Set(['Reconnected']));await settle();
+    if(mutation==='local') {
+      const remove=walk(p.root).find(n=>n.title==='Stop blocking KeePassXC');
+      await remove.onclick({currentTarget:remove});
+    } else {
+      await x.api.setPrivacy({paused:false,exclude_apps:[],exclude_titles:[]});
+      await p.hooks.onEvent(new Set(['StatusChanged']),[{type:'StatusChanged',component:'sense',status:'privacy_changed'}]);
+    }
+    assert.doesNotMatch(p.root.textContent,/KeePassXC/);
+    const form=walk(p.root).find(n=>n.spec==='form.excl-form'),input=form.querySelector('input');
+    input.value='Pending title';form.querySelector('select').value='title';input.focus();input.setSelectionRange(2,5);
+    const notices=x.toasts.length;
+    if(fail)pending.reject(Error('Older privacy failed'));else pending.resolve(old);
+    await older;await settle();
+    assert.doesNotMatch(p.root.textContent,/KeePassXC/);
+    assert.equal(x.toasts.length,notices);
+    assert.equal(walk(p.root).find(n=>n.spec==='form.excl-form').querySelector('input'),input);
+    assert.equal(input.value,'Pending title');assert.equal(input.selectionStart,2);
+  });
+}
+for(const mutation of ['delete','save','approve']) {
+  for(const fail of [false,true]) test('Skills ignores an old '+(fail?'error':'response')+' after '+mutation,async()=>{
+    const x=await setup({developer:mutation==='save'}),pending=defer();let hold=false,held=false;
+    let entries=[{id:'stand',name:'Stand',goal:'Stand.',status:'needs_review',origin:'user',hash:'old',text:'original',signals:[],allow:[],rules:[],errors:[]}];
+    const old={entries:structuredClone(entries),catalog:[]};
+    x.setRequest((path,options)=>{
+      if(path==='/api/skills') {if(hold&&!held){held=true;return pending.promise;}return {entries:structuredClone(entries),catalog:[]};}
+      if(path==='/api/skills/stand'&&options.method==='DELETE') {entries=[];return {ok:true};}
+      if(path==='/api/skills/stand'&&options.method==='PUT') {entries[0]={...entries[0],text:JSON.parse(options.body).text,hash:'saved'};return structuredClone(entries[0]);}
+      if(path.endsWith('/approve')) {entries[0]={...entries[0],status:'active'};return structuredClone(entries[0]);}
+      return {errors:[]};
+    });
+    const p=await x.page('skills','id=stand');hold=true;p.hooks.onEvent(new Set(['SkillsChanged']));await settle();
+    if(mutation==='save') {const editor=walk(p.root).find(n=>n.spec.startsWith('textarea'));editor.value='Saved current';editor.oninput();}
+    const action=walk(p.root).find(n=>n.textContent===(mutation==='delete'?'Delete':mutation==='save'?'Save edits':'Approve & enable'));
+    await action.onclick({currentTarget:action});await settle();
+    const check=()=>{
+      assert.doesNotMatch(p.root.textContent,/isn.t responding/);
+      if(mutation==='delete') {assert.match(p.root.textContent,/No skills yet/);assert.doesNotMatch(p.root.textContent,/Stand\./);}
+      else if(mutation==='save')assert.equal(walk(p.root).find(n=>n.spec.startsWith('textarea')).value,'Saved current');
+      else assert.ok(walk(p.root).some(n=>n.textContent==='Active'));
+    };
+    check();if(fail)pending.reject(Error('Older skill GET failed'));else pending.resolve(old);
+    await settle();check();
+  });
+}
+for(const fail of [false,true]) test('global footer ignores older '+(fail?'errors':'responses')+' after public pause',async()=>{
+  const x=await setup(),pending=defer();let paused=false,hold=false,held=false;
+  const status=()=>({capture:paused?'paused':'running',gateway:{model:'test-model',reachable:true,calls_per_minute:0},music:{}});
+  const old=status();
+  x.setRequest((path,options)=>{
+    if(path==='/api/status') {if(hold&&!held){held=true;return pending.promise;}return status();}
+    if(path==='/api/skills')return {entries:[],catalog:[]};
+    if(path==='/api/privacy') {if(options.method==='PUT')paused=JSON.parse(options.body).paused;return {paused,exclude_apps:[],exclude_titles:[]};}
+    return {segments:[],capture_spans:[]};
+  });
+  const app=await x.app();hold=true;const older=app.refresh();await settle();
+  await x.api.setPrivacy({paused:true,exclude_apps:[],exclude_titles:[]});
+  x.streams[0].listeners.CaptureStateChanged({data:JSON.stringify({state:'paused'})});await settle();
+  assert.match(app.footer.textContent,/Paused/);assert.equal(app.pip.dataset.state,'paused');
+  if(fail)pending.reject(Error('Older status failed'));else pending.resolve(old);
+  await older;await settle();
+  assert.match(app.footer.textContent,/Paused/);assert.doesNotMatch(app.footer.textContent,/Recording|Status unavailable/);
+  assert.equal(app.pip.dataset.state,'paused');
+});
+
+
+test('Skills late Save refresh cannot restore the card after public Delete',async()=>{
+  const x=await setup({developer:true}),pending=defer();let hold=false,held=false;
+  let entries=[{id:'stand',name:'Stand',goal:'Stand.',status:'needs_review',origin:'user',hash:'old',text:'original',signals:[],allow:[],rules:[],errors:[]}];
+  let saved;
+  x.setRequest((path,options)=>{
+    if(path==='/api/skills') {
+      if(hold&&!held){held=true;saved={entries:structuredClone(entries),catalog:[]};return pending.promise;}
+      return {entries:structuredClone(entries),catalog:[]};
+    }
+    if(path==='/api/skills/stand'&&options.method==='PUT') {entries[0]={...entries[0],text:JSON.parse(options.body).text,hash:'saved'};return structuredClone(entries[0]);}
+    if(path==='/api/skills/stand'&&options.method==='DELETE') {entries=[];return {ok:true};}
+    return {errors:[]};
+  });
+  const p=await x.page('skills','id=stand'),editor=walk(p.root).find(n=>n.spec.startsWith('textarea'));
+  editor.value='Saved current';editor.oninput();hold=true;
+  const save=walk(p.root).find(n=>n.textContent==='Save edits'),saving=save.onclick({currentTarget:save});await settle();
+  const remove=walk(p.root).find(n=>n.textContent==='Delete');await remove.onclick({currentTarget:remove});await settle();
+  assert.match(p.root.textContent,/No skills yet/);
+  pending.resolve(saved);await saving;await settle();
+  assert.match(p.root.textContent,/No skills yet/);assert.doesNotMatch(p.root.textContent,/Stand\.|Review card/);
+});
+
+
+test('Settings delayed own PUT acknowledgement cannot replace a newer external privacy update',async()=>{
+  const x=await setup(),pending=defer();let first=true,ack;
+  let privacy={paused:false,exclude_apps:['Code'],exclude_titles:[],screenshots_stored:'none'};
+  x.setRequest((path,options)=>{
+    if(path==='/api/privacy') {
+      if(options.method==='GET')return structuredClone(privacy);
+      const body=JSON.parse(options.body);
+      privacy={...privacy,paused:body.paused,exclude_apps:body.exclude_apps,exclude_titles:body.exclude_titles};
+      if(first) {first=false;ack=structuredClone(privacy);return pending.promise;}
+      return structuredClone(privacy);
+    }
+    if(path==='/api/status')return {gateway:{},music:{},capture:privacy.paused?'paused':'running'};
+    return {totals:[]};
+  });
+  const p=await x.page('settings'),monitoring=walk(p.root).find(n=>n['aria-label']==='Monitoring');
+  monitoring.checked=false;const saving=monitoring.onchange();await settle();
+  assert.equal(privacy.paused,true);
+  await x.api.setPrivacy({...privacy,exclude_apps:['Code','Firefox']},privacy);
+  await p.hooks.onEvent(new Set(['StatusChanged']),[{type:'StatusChanged',component:'sense',status:'privacy_changed'}]);
+  assert.match(p.root.textContent,/Firefox/);
+  const form=walk(p.root).find(n=>n.spec==='form.excl-form'),input=form.querySelector('input');
+  input.value='Next private title';form.querySelector('select').value='title';input.focus();input.setSelectionRange(2,8);
+  pending.resolve(ack);await saving;await settle();
+  assert.match(p.root.textContent,/Firefox/);assert.equal(privacy.exclude_apps.length,2);
+  const current=walk(p.root).find(n=>n.spec==='form.excl-form');
+  assert.equal(current.querySelector('input').value,'Next private title');assert.equal(current.querySelector('select').value,'title');
+  assert.equal(p.root.document.activeElement,current.querySelector('input'));assert.equal(current.querySelector('input').selectionStart,2);
 });

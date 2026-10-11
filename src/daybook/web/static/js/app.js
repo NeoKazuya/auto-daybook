@@ -55,10 +55,14 @@ const CAPTURE_LABEL = {
   withheld: 'Private window', overlay: 'Overlay up',
 };
 
+let latestStatusRefresh = null;
 async function refreshStatus() {
+  const request = {};
+  latestStatusRefresh = request;
   const footer = document.getElementById('footer');
   try {
     const [s, sk, privacy] = await Promise.all([api.status(), api.skills(), api.privacy()]);
+    if (latestStatusRefresh !== request) return;
     status = { ...s, needs_review: sk.entries.filter((x) => x.status === 'needs_review').length };
     ribbon.captureState = s.capture;
     document.querySelectorAll('.state-pip').forEach((el) => { el.dataset.state = s.capture; });
@@ -75,6 +79,7 @@ async function refreshStatus() {
     sourceFlag.textContent = DEMO ? 'DEMO DATA' : 'MOCK API';
     if (current) renderNav(current.page);
   } catch (err) {
+    if (latestStatusRefresh !== request) return;
     footer.replaceChildren(h('span.item', h('span.dot.bad'), `Status unavailable — ${err.message}`));
   }
 }

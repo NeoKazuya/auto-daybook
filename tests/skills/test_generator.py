@@ -112,6 +112,8 @@ async def test_valid_draft_has_provenance_and_needs_review(tmp_path):
         and entry.skill.created_by == "chat"
         and entry.skill.request == request
     )
+    assert entry.skill.rules[0].trigger.form == "becomes"
+    assert entry.skill.rules[0].trigger.value is False
     assert summary == "Stand after meetings"
     assert gateway.priorities == [Priority.INTERACTIVE]
     assert gateway.prompts[0].effort == "low"
@@ -364,3 +366,48 @@ async def test_inconsistent_outcomes_exhaust_existing_repair_without_saving(tmp_
         assert not list((tmp_path / "skills").glob("*.skill.md"))
     finally:
         await gateway.close()
+
+
+async def test_activity_example_fires_on_first_detection_without_changing_builtin(
+    tmp_path,
+):
+    from datetime import datetime, timedelta, timezone
+
+    from daybook.journal import SignalId, SignalReading
+    from daybook.skills import evaluate
+
+    skills = book(tmp_path)
+    before = next(e for e in skills.entries() if e.id == "instagram-nudge")
+    gateway = ScriptedGateway([payload(TEXT, "Meeting reminder")])
+    await draft_skill(
+        "kick me off of TikTok when I open it", book=skills, gateway=gateway
+    )
+    examples = gateway.prompts[0].user.split("Built-in supported reply instances:\n")[1]
+    example = next(
+        json.loads(line)
+        for line in examples.splitlines()
+        if line.startswith('{"draft":') and '"id": "instagram-nudge"' in line
+    )
+    # Exercise a model copying the provided example, the failure seen on the GX10.
+    copied = ScriptedGateway([json.dumps(example)])
+    entry, _ = await draft_skill(
+        "kick me off of Instagram", book=skills, gateway=copied
+    )
+    assert entry.status == "needs_review" and entry.skill
+    rule = entry.skill.rules[0]
+    at = datetime(2026, 10, 11, tzinfo=timezone.utc)
+    signal = SignalId(entry.id, "on_instagram")
+    first = SignalReading(signal, True, at, "first")
+    occurrence = evaluate(rule, [first], now=at)
+    assert occurrence is not None, "copying the example must fire on first detection"
+    later = SignalReading(signal, True, at + timedelta(seconds=30), "later")
+    repeated = evaluate(rule, [first, later], now=later.at)
+    assert repeated and repeated.key == occurrence.key  # One claim per true streak.
+    assert next(e for e in skills.entries() if e.id == "instagram-nudge") == before
+    assert [step.action for step in rule.steps] == [
+        "overlay.show",
+        "wait",
+        "desktop.close_tab",
+    ]
+    assert rule.steps[1].arguments == {"for": "5s"}
+    assert rule.steps[2].arguments == {"title": "*Instagram*"}

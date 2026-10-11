@@ -433,7 +433,7 @@ async def test_tick_once_records_current_unassigned_notes_without_a_daemon(
                         "kind": "coding",
                         "intent": "Likely writing code.",
                     },
-                    "signals": {},
+                    "signals": {"music.mood": None},
                 }
             )
         ]

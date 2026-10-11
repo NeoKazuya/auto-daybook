@@ -222,6 +222,22 @@ async def test_short_capture_interruption_restarts_reminder_timer(
         assert "50 min" in calls[0]["body"]
 
 
+async def test_capture_interruption_preserves_known_edge_for_becomes(runtime):
+    journal, book, calls = runtime
+    text = make_skill("Study physics").replace(
+        "activity is off_task for 5m", "activity becomes off_task"
+    )
+    entry = book.save("focus-session", text)
+    book.approve(entry.id, entry.hash)
+    base = datetime.now(timezone.utc) + timedelta(seconds=1)
+    await record_state(journal, book, base, 0, "working")
+    journal.set_capture_state("paused", base + timedelta(seconds=10))
+    journal.set_capture_state("running", base + timedelta(seconds=50))
+    await record_state(journal, book, base, 1, "off_task")
+    assert len(calls) == 1
+    assert calls[0]["title"] == "Back to your task?"
+
+
 async def test_starting_new_task_drops_old_distraction_history(runtime):
     journal, book, calls = runtime
     base = datetime.now(timezone.utc) + timedelta(seconds=1)

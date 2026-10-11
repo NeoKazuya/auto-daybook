@@ -280,9 +280,33 @@ class Book:
                     ),
                 )
             ]
+            # Explicit capture interruptions break continuity even when readings
+            # are less than the evaluator's five-minute missing-reading limit apart.
+            capture_range = TimeRange(
+                datetime.min.replace(tzinfo=timezone.utc),
+                tick.at + timedelta(microseconds=1),
+            )
+            interrupted_until = max(
+                (
+                    span.end or capture_range.end
+                    for span in self.portal.capture_spans(capture_range)
+                    if span.state != "running"
+                ),
+                default=None,
+            )
+            streak_history = (
+                [r for r in history if r.at >= interrupted_until]
+                if interrupted_until is not None
+                else history
+            )
             actions = self.catalog.allowed(skill.allow, skill.id)
             for index, rule in enumerate(skill.rules):
-                occurrence = match(rule, history, max_gap=300, now=tick.at)
+                occurrence = match(
+                    rule,
+                    streak_history if rule.trigger.form == "is" else history,
+                    max_gap=300,
+                    now=tick.at,
+                )
                 if (
                     occurrence is None
                     or not self.eligible(entry, tick)
@@ -322,7 +346,7 @@ class Book:
                                 key: render(
                                     value,
                                     occurrence,
-                                    history,
+                                    streak_history,
                                     textual=self.catalog.specs[step.action]
                                     .parameters[key]
                                     .type

@@ -72,6 +72,9 @@ class MemoryPortal(Portal):
     def now(self):
         return Situation(self.capture, None, None, ())
 
+    def capture_spans(self, range):
+        return []
+
     def readings(self, signal, range):
         return [
             r

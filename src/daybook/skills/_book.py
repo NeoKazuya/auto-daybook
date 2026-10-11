@@ -59,6 +59,8 @@ class Book:
                 id = path.name.removesuffix(".skill.md")
                 if re.fullmatch(r"[a-z0-9-]{1,40}", id):
                     sources[id] = SkillSource(path, origin)  # type: ignore[arg-type]
+        for id in self.ledger.invalidate_missing(set(sources)):
+            self.bus.publish(SkillsChanged(id))
         return sources
 
     def hook_text(self, source: SkillSource) -> str | None:
@@ -160,6 +162,7 @@ class Book:
 
     def save(self, id: str, text: str) -> SkillEntry:
         valid_id(id)
+        self.sources()  # Observe disappearance before recreating a user file.
         path = self.home / f"{id}.skill.md"
         temporary = path.with_suffix(".tmp")
         temporary.write_text(text)

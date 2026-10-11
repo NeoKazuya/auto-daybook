@@ -47,6 +47,21 @@ class Ledger:
         finally:
             db.close()
 
+    def invalidate_missing(self, present: set[str]) -> tuple[str, ...]:
+        with self.connect() as db:
+            missing = tuple(
+                row[0]
+                for row in db.execute(
+                    "SELECT skill FROM skill_state WHERE approved_hash IS NOT NULL OR observed_hash IS NOT NULL"
+                )
+                if row[0] not in present
+            )
+            db.executemany(
+                "UPDATE skill_state SET enabled=0, approved_hash=NULL, approved_at=NULL, observed_hash=NULL WHERE skill=?",
+                ((skill,) for skill in missing),
+            )
+            return missing
+
     def state(self, skill: str) -> dict[str, object] | None:
         with self.connect() as db:
             row = db.execute(

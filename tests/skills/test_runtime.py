@@ -316,3 +316,22 @@ def test_builtin_upgrade_respects_existing_active_capacity(tmp_path):
     assert len(book.active_signals()) <= 12
     upgraded = next(e for e in book.entries() if e.id == "music")
     assert upgraded.approved and upgraded.status == "disabled"
+
+
+def test_disappeared_user_file_cannot_restore_approval_or_bypass_limit(
+    setup_book, tmp_path
+):
+    book, *_ = setup_book
+    original = text(count=4)
+    saved = book.save("demo", original)
+    book.approve("demo", saved.hash)
+    (tmp_path / "skills/demo.skill.md").unlink()
+    assert not book.entries()
+    for id in ("a", "b", "c"):
+        entry = book.save(id, text(id=id, count=4))
+        book.approve(id, entry.hash)
+    restored = book.save("demo", original)
+    assert restored.status == "needs_review"
+    assert len(book.active_signals()) == 12
+    with pytest.raises(SignalLimit):
+        book.approve("demo", restored.hash)

@@ -89,6 +89,27 @@ async def output(*args: str) -> str | None:
         return None
 
 
+# WM_CLASS globs (lowercased) of the browsers close_tab may act on.
+BROWSERS = (
+    "*firefox*",
+    "*chrome*",
+    "*chromium*",
+    "*brave*",
+    "*microsoft-edge*",
+    "*vivaldi*",
+    "*opera*",
+    "*librewolf*",
+)
+
+
+def browser(wm_class: str) -> bool:
+    """True for xprop WM_CLASS output naming a known browser."""
+    classes = re.findall(r'"([^"]*)"', wm_class)
+    return any(
+        fnmatch.fnmatchcase(name.lower(), glob) for name in classes for glob in BROWSERS
+    )
+
+
 def specific(pattern: str) -> bool:
     """A title pattern must name something: at least 3 non-wildcard characters,
     so a skill can never close whatever tab happens to be active."""
@@ -97,10 +118,10 @@ def specific(pattern: str) -> bool:
 
 
 async def close_tab(title: str) -> Outcome:
-    """Press Ctrl+W in the active window, only if its title matches `title`
-    (case-insensitive glob). The keystroke is bound to the window that passed the
-    check: one xdotool call re-activates that window ID and sends the key, so a
-    focus change after the check can't redirect it to another window."""
+    """Press Ctrl+W in the active window, only if it's a known browser and its
+    title matches `title` (case-insensitive glob). The keystroke is bound to the
+    window that passed the check: one xdotool call re-activates that window ID
+    and sends the key, so a focus change can't redirect it to another window."""
     if not specific(title):
         return Outcome("desktop.close_tab", False, "pattern_too_broad")
     window = await output("xdotool", "getactivewindow")
@@ -111,6 +132,11 @@ async def close_tab(title: str) -> Outcome:
         return Outcome("desktop.close_tab", False, "window_unreadable")
     if not fnmatch.fnmatchcase(name.lower(), title.lower()):
         return Outcome("desktop.close_tab", False, "tab_not_active")
+    wm_class = await output("xprop", "-id", window, "WM_CLASS")
+    if wm_class is None:
+        return Outcome("desktop.close_tab", False, "window_unreadable")
+    if not browser(wm_class):
+        return Outcome("desktop.close_tab", False, "not_a_browser")
     return await command(
         "desktop.close_tab",
         "xdotool",

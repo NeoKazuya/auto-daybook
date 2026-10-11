@@ -544,11 +544,27 @@ async def test_wait_step_sleeps_and_close_tab_goes_through_the_desktop(
     overlay = Overlay(Bus())
     player = MusicPlayer(library, tmp_path / "home", Bus(), overlay)
     catalog = build_catalog(library.moods, bind_handlers(player, overlay, desktop))
-    actions = catalog.allowed(("wait", "desktop.close_tab"), "instagram-nudge")
+    actions = catalog.allowed(
+        ("overlay.show", "wait", "desktop.close_tab"), "instagram-nudge"
+    )
 
+    # Never closes unannounced: no warning from this skill yet.
+    unwarned = await actions.run("desktop.close_tab", title="*Instagram*")
+    assert not unwarned.ok and unwarned.detail == "no_warning_shown"
+    overlay.shell_connected(True)
+    shown = await actions.run(
+        "overlay.show", title="Instagram?", body="Bro.", minutes=0.0834, layout="bubble"
+    )
+    assert shown.ok
     assert (await actions.run("wait", **{"for": "5s"})).ok and waits == [5]
     assert (await actions.run("desktop.close_tab", title="*Instagram*")).ok
     assert desktop.calls == [("close_tab", "*Instagram*")]
+    # Another skill's warning doesn't count.
+    other = catalog.allowed(("desktop.close_tab",), "other-skill")
+    assert (await other.run("desktop.close_tab", title="*Instagram*")).detail == (
+        "no_warning_shown"
+    )
+    await overlay.close()
     # Waits are 1s to 10s; anything else is refused before it can run.
     assert not (await actions.run("wait", **{"for": "11s"})).ok
     assert not (await actions.run("wait", **{"for": "0s"})).ok
@@ -636,13 +652,19 @@ async def test_xdo_close_tab_targets_only_the_checked_window(monkeypatch):
     from daybook.act import _desktop
 
     ran = []
-    screen = {"window": "4242", "title": "(3) Instagram • Reels — Mozilla Firefox"}
+    screen = {
+        "window": "4242",
+        "title": "(3) Instagram • Reels — Mozilla Firefox",
+        "class": 'WM_CLASS(STRING) = "Navigator", "firefox"',
+    }
 
     async def output(*args):
         if args == ("xdotool", "getactivewindow"):
             return screen["window"]
         if args == ("xdotool", "getwindowname", screen["window"]):
             return screen["title"]
+        if args == ("xprop", "-id", screen["window"], "WM_CLASS"):
+            return screen["class"]
         return None
 
     async def command(action, *args):
@@ -669,6 +691,16 @@ async def test_xdo_close_tab_targets_only_the_checked_window(monkeypatch):
     screen["title"] = "auto-daybook — Visual Studio Code"
     moved_on = await desktop.close_tab("*Instagram*")
     assert not moved_on.ok and moved_on.detail == "tab_not_active"
+
+    # A matching title in a non-browser (an editor document) is never closed.
+    screen["title"] = "Instagram campaign.md — Visual Studio Code"
+    screen["class"] = 'WM_CLASS(STRING) = "code", "Code"'
+    assert (await desktop.close_tab("*Instagram*")).detail == "not_a_browser"
+    screen["class"] = 'WM_CLASS(STRING) = "google-chrome", "Google-chrome"'
+    screen["title"] = "Instagram - Google Chrome"
+    assert (await desktop.close_tab("*Instagram*")).ok
+    assert len(ran) == 2
+    ran.pop()
 
     screen["window"] = ""
     assert (await desktop.close_tab("*Instagram*")).detail == "window_unreadable"

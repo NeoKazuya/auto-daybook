@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,10 @@ from typing import Awaitable, Callable, Literal, Mapping, Protocol, cast
 
 from daybook.events import Bus, OverlayHidden, OverlayShown
 from daybook.journal import Outcome
+
+# desktop.close_tab only acts within this many seconds of a successful
+# overlay.show by the same skill: a destructive step never happens unannounced.
+CLOSE_TAB_WARNING_WINDOW = 30
 
 # The `wait` step accepts these durations: at most 10 s, like a hook step, because
 # steps hold up the rest of the tick's reactions.
@@ -151,7 +156,8 @@ def build_catalog(
         ActionSpec(
             "desktop.close_tab",
             "Close the active browser tab, only if its window title matches a glob "
-            "such as *Instagram*",
+            "such as *Instagram* and this skill showed an overlay or bubble in the "
+            f"last {CLOSE_TAB_WARNING_WINDOW}s (warn first, then close)",
             {"title": text},
         ),
         ActionSpec(
@@ -434,8 +440,10 @@ def bind_handlers(
     async def stop(skill: str, args: Mapping[str, object]) -> Outcome:
         return await music.stop(skill=skill)
 
+    warned: dict[str, float] = {}  # skill -> monotonic time of its last shown overlay
+
     async def show(skill: str, args: Mapping[str, object]) -> Outcome:
-        return await overlay.show(
+        outcome = await overlay.show(
             OverlayRequest(
                 str(args["title"]),
                 str(args["body"]),
@@ -446,6 +454,9 @@ def bind_handlers(
             ),
             skill,
         )
+        if outcome.ok:
+            warned[skill] = time.monotonic()
+        return outcome
 
     async def hide(skill: str, args: Mapping[str, object]) -> Outcome:
         return await overlay.hide()
@@ -469,6 +480,9 @@ def bind_handlers(
         return await desktop.focus(str(args["app"]))
 
     async def close_tab(skill: str, args: Mapping[str, object]) -> Outcome:
+        shown = warned.get(skill)
+        if shown is None or time.monotonic() - shown > CLOSE_TAB_WARNING_WINDOW:
+            return Outcome("desktop.close_tab", False, "no_warning_shown")
         return await desktop.close_tab(str(args["title"]))
 
     async def wait(skill: str, args: Mapping[str, object]) -> Outcome:

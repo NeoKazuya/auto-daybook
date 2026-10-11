@@ -4,8 +4,10 @@ name: Break reminder
 signals:
   focused:
     ask: >
-      Is the user doing sustained, focused work (coding, debugging, writing, studying)
-      rather than browsing, chatting, watching media, or idling?
+      Is the user currently concentrating on an intentional work or study task,
+      such as coding, debugging, writing, or deliberate document reading and study,
+      rather than casual browsing, chatting, watching media, or idling?
+      Judge the present activity; the rule measures how long it lasts.
     type: bool
 rules:
   - when: focused is true for 50m

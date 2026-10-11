@@ -196,8 +196,7 @@ async function render(root) {
             `Stop allowing ${app}`, (b) => busy(b, () => save((p) => ({ allowed_apps: p.allowed_apps.filter((a) => a !== app) }), `${app} is no longer monitored.`)))))
         : h('p.muted', { style: 'margin:0' }, 'No apps allowed yet, so nothing is monitored. Add one below.'),
       addForm('allowed', 'App name, e.g. Code', false, (match, value) =>
-        privacy.allowed_apps.includes(value) ? toast(`${value} is already allowed.`)
-          : save((p) => ({ allowed_apps: [...new Set([...p.allowed_apps, value])] }), `${value} will be monitored.`))) : null;
+        save((p) => ({ allowed_apps: [...new Set([...p.allowed_apps, value])] }), `${value} will be monitored.`))) : null;
 
     const blocked = h('div.app-list',
       h('div.label', 'Never monitor'),
@@ -209,7 +208,6 @@ async function render(root) {
       addForm('blocked', 'App name, or text in a window title', true, (match, value) => {
         const key = match === 'app' ? 'exclude_apps' : 'exclude_titles';
         const pattern = match === 'title' ? literalTitlePattern(value) : value;
-        if (privacy[key].includes(pattern)) return toast(`${value} is already blocked.`);
         return save((p) => ({ [key]: [...new Set([...p[key], pattern])] }), `${value} will never be monitored.`);
       }));
 

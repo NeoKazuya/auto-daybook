@@ -55,15 +55,15 @@ const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(reso
 const defer = () => { let resolve,reject; const promise = new Promise((yes,no) => {resolve=yes;reject=no;}); return {promise,resolve,reject}; };
 const answer = { type: 'answer', text: 'You spent 4 minutes on journal tests', cites: ['s1'], window: { from: '2026-10-11T08:00:00Z', to: '2026-10-11T09:00:00Z' } };
 const draft = { type: 'draft', summary: 'Stand after meetings', entry: { id: 'stand-after-meeting' } };
-async function setup({ developer = false, manualTimers = false } = {}) {
+async function setup({ developer = false, manualTimers = false, demo = false } = {}) {
   let request = async path => path.startsWith('/api/timeline') ? { segments: [{id:'s1', title:'Old title'}] } : {};
   const streams = [], channels = [], calls = [], toasts = [], intervals = [], timers = [];
   const context = vm.createContext({
-    URLSearchParams, Date, console,
-    setTimeout:manualTimers?(fn,delay)=>{const timer={fn,delay};timers.push(timer);return timer;}:setTimeout,
+    URLSearchParams, URL, Date, console,
+    setTimeout:manualTimers?(fn,delay)=>{const timer={fn,delay};timers.push(timer);return timer;}:demo?fn=>{fn();return 0;}:setTimeout,
     clearTimeout:manualTimers?timer=>{if(timer)timer.cancelled=true;}:clearTimeout,
     setInterval:fn=>intervals.push(fn),
-    document: { querySelector: () => ({content:'test-token'}), activeElement:null },
+    document: { querySelector: () => ({content:demo?'':'test-token'}), activeElement:null },
     location: {search:''}, history: {replaceState(){}},
     fetch: async (path, options) => { calls.push([path, options]); const result = await request(path, options); return result instanceof Response ? result : {ok:true,json:async()=>result}; },
     EventSource: class { constructor() {this.listeners={}; streams.push(this);} addEventListener(n,f){this.listeners[n]=f;} close(){} },
@@ -81,7 +81,10 @@ async function setup({ developer = false, manualTimers = false } = {}) {
     if(path.endsWith('/ui.js') || path.endsWith('/prefs.js')) {
       const exports = path.endsWith('/prefs.js') ? {getPref:key=>key === 'developer' ? developer : false,setPref:()=>{},applyPrefs:()=>{}} : helpers;
       mod = new vm.SyntheticModule(Object.keys(exports), function(){for(const [k,v] of Object.entries(exports)) this.setExport(k,v);},{context});
-    } else mod = new vm.SourceTextModule(await readFile(path,'utf8'), {context,identifier:path});
+    } else mod = new vm.SourceTextModule(await readFile(path,'utf8'), {context,identifier:path,
+      importModuleDynamically:async(spec,from)=>{
+        const target=await load(resolve(dirname(from.identifier),spec));await target.evaluate();return target;
+      }});
     cache.set(path,mod);
     await mod.link(spec=>load(resolve(dirname(path),spec)));
     return mod;
@@ -1332,3 +1335,67 @@ for(const kind of ['segment','observation']){
     assert.equal(editedDailyRecord(f,kind)[kind==='segment'?'title':'seen'],'Newer resumed wording');
   });
 }
+
+
+for(const match of ['app','title'])for(const change of ['queued removal','external removal','fresh duplicate'])
+  test('Settings '+match+' Add uses current rules after '+change,async()=>{
+    const x=await setup(),pending=defer();
+    const value=match==='app'?'KeePassXC':'Budget [Q4]';
+    const key=match==='app'?'exclude_apps':'exclude_titles',pattern=match==='app'?value:'*Budget [[]Q4[]]*';
+    let privacy={paused:false,exclude_apps:match==='app'?[pattern]:[],exclude_titles:match==='title'?[pattern]:[],screenshots_stored:'none'};
+    let hold=false,held=false;
+    const writes=[];
+    x.setRequest((path,options)=>{
+      if(path==='/api/privacy'){
+        if(options.method==='GET'){
+          if(hold&&!held){held=true;return pending.promise;}
+          return structuredClone(privacy);
+        }
+        const body=JSON.parse(options.body);
+        if(body.expected)assert.deepEqual(body.expected,{paused:privacy.paused,exclude_apps:privacy.exclude_apps,exclude_titles:privacy.exclude_titles});
+        privacy={...privacy,paused:body.paused,exclude_apps:body.exclude_apps,exclude_titles:body.exclude_titles};
+        writes.push(structuredClone(privacy));return structuredClone(privacy);
+      }
+      if(path==='/api/status')return {gateway:{},music:{},capture:'running'};
+      return {totals:[]};
+    });
+    const p=await x.page('settings');
+    let removing;
+    if(change==='queued removal'){
+      hold=true;
+      const remove=walk(p.root).find(n=>n.title==='Stop blocking '+value);
+      removing=remove.onclick({currentTarget:remove});await settle();assert.equal(held,true);
+    }else if(change==='external removal'){
+      await x.api.setPrivacy({...privacy,[key]:[]});
+      assert.ok(walk(p.root).some(n=>n.title==='Stop blocking '+value),'the rendered rules are still stale');
+    }
+    const form=walk(p.root).find(n=>n.spec==='form.excl-form');
+    form.querySelector('input').value=value;form.querySelector('select').value=match;
+    form.onsubmit({preventDefault(){}});await settle();
+    if(removing){pending.resolve(writes.length?structuredClone(writes.at(-1)):structuredClone(privacy));await removing;}
+    await settle();
+    assert.deepEqual(privacy[key],[pattern]);
+    assert.equal(walk(p.root).filter(n=>n.title==='Stop blocking '+value).length,1);
+    if(change!=='fresh duplicate'){
+      assert.equal(writes.length,2,'the later Add must commit after the removal');
+      assert.deepEqual(writes[0][key],[]);assert.deepEqual(writes[1][key],[pattern]);
+      assert.equal(x.toasts.some(([message])=>/already blocked/.test(message)),false);
+    }
+  });
+
+test('demo Settings allowed Add follows a queued removal using the fresh allowed list',async()=>{
+  const x=await setup({demo:true});
+  const privacy=await x.api.privacy();
+  await x.api.setPrivacy({...privacy,apps_mode:'only',allowed_apps:['Code']});
+  const p=await x.page('settings');
+  const remove=walk(p.root).find(n=>n.title==='Stop allowing Code');
+  assert.ok(remove,'the shipped demo renders allowed-app controls');
+  const removing=remove.onclick({currentTarget:remove});
+  const form=walk(p.root).find(n=>n.spec==='form.excl-form'&&n.querySelector('input').getAttribute('list')==='apps-allowed');
+  form.querySelector('input').value='Code';form.onsubmit({preventDefault(){}});
+  await removing;await settle();
+  const current=await x.api.privacy();
+  assert.deepEqual(Array.from(current.allowed_apps),['Code']);
+  assert.equal(walk(p.root).filter(n=>n.title==='Stop allowing Code').length,1);
+  assert.equal(x.toasts.some(([message])=>/already allowed/.test(message)),false);
+});

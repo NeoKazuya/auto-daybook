@@ -525,3 +525,21 @@ def test_trim_rewinds_capture_spans_for_away(journal: Journal):
     assert spans[0].state == "running" and spans[0].end == time(90)
     assert spans[1].state == "away" and spans[1].start == time(90)
     assert spans[1].end is None
+
+
+@pytest.mark.parametrize("state", ["paused", "locked", "away", "withheld", "overlay"])
+def test_forget_all_preserves_current_capture_state(journal: Journal, state):
+    journal.set_capture_state("running", time(0))
+    journal.set_capture_state(state, time(10))
+    observe(journal, 0, 10)
+    journal.forget_all()
+    assert journal.portal.now().capture == state
+    spans = journal.portal.capture_spans(RANGE)
+    assert len(spans) == 1 and spans[0].state == state and spans[0].end is None
+    assert journal.portal.observations(RANGE) == []
+    journal.close()
+    reopened = Journal(journal.path, Bus())
+    try:
+        assert reopened.portal.now().capture == state
+    finally:
+        reopened.close()

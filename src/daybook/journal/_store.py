@@ -520,9 +520,11 @@ class Journal:
                 "segments",
                 "readings",
                 "ticks",
-                "capture_spans",
             ):
                 self._db.execute(f"DELETE FROM {table}")
+            # The open span owns live capture state; retain it across forgetting.
+            # Closed spans are historical notes and can be removed safely.
+            self._db.execute("DELETE FROM capture_spans WHERE end IS NOT NULL")
             events.extend(SegmentChanged(id) for id in ids)
 
     def trim_after(self, at: datetime) -> None:

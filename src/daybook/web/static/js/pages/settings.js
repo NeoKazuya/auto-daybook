@@ -186,7 +186,7 @@ async function render(root) {
     const mode = rules && h('div.segmented', { role: 'group', 'aria-label': 'Which apps to monitor' },
       [['all', 'All apps except blocked'], ['only', 'Only allowed apps']].map(([v, label]) =>
         h('button', { type: 'button', 'aria-pressed': String(privacy.apps_mode === v),
-          onclick: () => privacy.apps_mode !== v && save({ apps_mode: v },
+          onclick: () => save({ apps_mode: v },
             v === 'only' ? 'Daybook now monitors only the allowed apps.' : 'Daybook now monitors every app except blocked ones.') }, label)));
 
     const allowed = only ? h('div.app-list',

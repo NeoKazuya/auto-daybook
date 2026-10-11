@@ -1399,3 +1399,36 @@ test('demo Settings allowed Add follows a queued removal using the fresh allowed
   assert.equal(walk(p.root).filter(n=>n.title==='Stop allowing Code').length,1);
   assert.equal(x.toasts.some(([message])=>/already allowed/.test(message)),false);
 });
+
+
+const demoModeButton = (p,mode) => walk(p.root).find(n=>n.spec==='button'&&n.textContent===(mode==='only'?'Only allowed apps':'All apps except blocked'));
+for(const initial of ['all','only'])test('demo Settings rapid '+initial+' -> other -> '+initial+' applies the final queued mode',async()=>{
+  const x=await setup({demo:true});
+  const privacy={...await x.api.privacy(),apps_mode:initial,allowed_apps:['Code'],exclude_apps:['KeePassXC']};
+  await x.api.setPrivacy(privacy);
+  const p=await x.page('settings'),other=initial==='only'?'all':'only';
+  const first=demoModeButton(p,other).onclick();
+  const last=demoModeButton(p,initial).onclick();
+  await Promise.all([first,last]);await settle();
+  const current=await x.api.privacy();
+  assert.equal(current.apps_mode,initial);
+  assert.equal(demoModeButton(p,initial)['aria-pressed'],'true');
+  assert.equal(demoModeButton(p,other)['aria-pressed'],'false');
+  assert.deepEqual(Array.from(current.allowed_apps),['Code']);
+  assert.deepEqual(Array.from(current.exclude_apps),['KeePassXC']);
+});
+
+test('demo Settings duplicate current-mode selections are idempotent and preserve rule lists',async()=>{
+  const x=await setup({demo:true});
+  await x.api.setPrivacy({...await x.api.privacy(),apps_mode:'only',allowed_apps:['Code'],exclude_apps:['KeePassXC'],exclude_titles:['*Budget*']});
+  const p=await x.page('settings');
+  const first=demoModeButton(p,'only').onclick(),last=demoModeButton(p,'only').onclick();
+  await Promise.all([first,last]);await settle();
+  const current=await x.api.privacy();
+  assert.equal(current.apps_mode,'only');
+  assert.deepEqual(Array.from(current.allowed_apps),['Code']);
+  assert.deepEqual(Array.from(current.exclude_apps),['KeePassXC']);
+  assert.deepEqual(Array.from(current.exclude_titles),['*Budget*']);
+  assert.equal(walk(p.root).filter(n=>n.title==='Stop allowing Code').length,1);
+  assert.equal(walk(p.root).filter(n=>n.title==='Stop blocking KeePassXC').length,1);
+});

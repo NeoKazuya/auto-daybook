@@ -222,9 +222,9 @@ function step({ action, arguments: args = {} }) {
     case 'desktop.focus': return `bring ${args.app} to the front`;
     case 'desktop.close_tab': {
       const name = String(args.title ?? '').replace(/[*?]/g, '').trim() || 'matching';
-      const wait = args.after && args.after !== '0s' ? `after ${dur(args.after)}, ` : '';
-      return `${wait}close the ${name} tab if it's still the active one`;
+      return `close the ${name} tab if it's still the active one`;
     }
+    case 'wait': return `wait ${dur(String(args.for))}`;
     default: return action;
   }
 }

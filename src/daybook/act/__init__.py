@@ -14,8 +14,9 @@ from typing import Awaitable, Callable, Literal, Mapping, Protocol, cast
 from daybook.events import Bus, OverlayHidden, OverlayShown
 from daybook.journal import Outcome
 
-# desktop.close_tab may wait at most this long (seconds), like a hook's 10 s limit.
-CLOSE_TAB_MAX_WAIT = 10
+# The `wait` step accepts these durations: at most 10 s, like a hook step, because
+# steps hold up the rest of the tick's reactions.
+WAITS = tuple(f"{n}s" for n in range(1, 11))
 
 
 @dataclass(frozen=True)
@@ -149,10 +150,15 @@ def build_catalog(
         ActionSpec("desktop.focus", "Focus an app by WM_CLASS glob", {"app": text}),
         ActionSpec(
             "desktop.close_tab",
-            "Close the active browser tab, after an optional wait of at most "
-            f"{CLOSE_TAB_MAX_WAIT}s, only if its window title still matches a "
-            "glob such as *Instagram*",
-            {"title": text, "after": Parameter("duration", False, "0s")},
+            "Close the active browser tab, only if its window title matches a glob "
+            "such as *Instagram*",
+            {"title": text},
+        ),
+        ActionSpec(
+            "wait",
+            "Pause before the next step (1s to 10s); the next step runs only if "
+            "the skill may still act (not paused, still enabled)",
+            {"for": Parameter("enum", values=WAITS)},
         ),
     )
     return Catalog(specs, moods, handlers)
@@ -463,13 +469,13 @@ def bind_handlers(
         return await desktop.focus(str(args["app"]))
 
     async def close_tab(skill: str, args: Mapping[str, object]) -> Outcome:
-        # The wait runs inside the step, like a hook, so the outcome records what
-        # really happened; it's capped because steps hold up the tick's reactions.
-        wait = duration(args.get("after", "0s"))
-        if wait > CLOSE_TAB_MAX_WAIT:
-            return Outcome("desktop.close_tab", False, "wait_too_long")
-        await asyncio.sleep(wait)
         return await desktop.close_tab(str(args["title"]))
+
+    async def wait(skill: str, args: Mapping[str, object]) -> Outcome:
+        # Only sleeps: SkillBook.react re-checks eligibility before the next step,
+        # so pausing Daybook or disabling the skill during the wait stops it.
+        await asyncio.sleep(duration(args["for"]))
+        return Outcome("wait", True)
 
     return {
         "music.play_mood": play,
@@ -481,4 +487,5 @@ def bind_handlers(
         "desktop.launch": launch,
         "desktop.focus": focus,
         "desktop.close_tab": close_tab,
+        "wait": wait,
     }

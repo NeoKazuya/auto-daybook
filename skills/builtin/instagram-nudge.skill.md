@@ -16,7 +16,8 @@ rules:
           dismiss: Fine
           minutes: 0.0834
           layout: bubble
-      - desktop.close_tab: { title: "*Instagram*", after: 5s }
-allow: [overlay.show, desktop.close_tab]
+      - wait: { for: 5s }
+      - desktop.close_tab: { title: "*Instagram*" }
+allow: [overlay.show, wait, desktop.close_tab]
 ---
 When I open Instagram, give me a casual heads-up and close the tab 5 seconds later.

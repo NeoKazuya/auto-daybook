@@ -70,15 +70,11 @@ async def focus(app: str) -> Outcome:
         return Outcome("desktop.focus", False, "command_unavailable")
 
 
-async def active_title() -> str | None:
-    """The active window's title, or None when it can't be read."""
+async def output(*args: str) -> str | None:
+    """A command's stripped stdout, or None if it failed or couldn't run."""
     try:
         process = await asyncio.create_subprocess_exec(
-            "xdotool",
-            "getactivewindow",
-            "getwindowname",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
         )
         try:
             stdout, _ = await asyncio.wait_for(process.communicate(), 8)
@@ -100,15 +96,27 @@ def specific(pattern: str) -> bool:
 
 
 async def close_tab(title: str) -> Outcome:
-    """Press Ctrl+W, but only if the active window's title still matches `title`
-    (case-insensitive glob), so a tab the user already left is never closed."""
+    """Press Ctrl+W in the active window, only if its title matches `title`
+    (case-insensitive glob). The keystroke is bound to the window that passed the
+    check: one xdotool call re-activates that window ID and sends the key, so a
+    focus change after the check can't redirect it to another window."""
     if not specific(title):
         return Outcome("desktop.close_tab", False, "pattern_too_broad")
-    current = await active_title()
-    if current is None:
+    window = await output("xdotool", "getactivewindow")
+    if not window or not window.isdigit():
         return Outcome("desktop.close_tab", False, "window_unreadable")
-    if not fnmatch.fnmatchcase(current.lower(), title.lower()):
+    name = await output("xdotool", "getwindowname", window)
+    if name is None:
+        return Outcome("desktop.close_tab", False, "window_unreadable")
+    if not fnmatch.fnmatchcase(name.lower(), title.lower()):
         return Outcome("desktop.close_tab", False, "tab_not_active")
     return await command(
-        "desktop.close_tab", "xdotool", "key", "--clearmodifiers", "ctrl+w"
+        "desktop.close_tab",
+        "xdotool",
+        "windowactivate",
+        "--sync",
+        window,
+        "key",
+        "--clearmodifiers",
+        "ctrl+w",
     )

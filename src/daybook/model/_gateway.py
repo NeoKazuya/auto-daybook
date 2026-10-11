@@ -100,7 +100,7 @@ class ModelGateway:
         headers = {}
         if config.api_key_file:
             headers["Authorization"] = (
-                "Bearer " + Path(config.api_key_file).read_text().strip()
+                "Bearer " + Path(config.api_key_file).expanduser().read_text().strip()
             )
         self._client = httpx.AsyncClient(
             base_url=config.base_url.rstrip("/") + "/",

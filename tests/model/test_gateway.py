@@ -271,3 +271,16 @@ async def test_status_rolling_window_and_plain_output(monkeypatch):
     now[0] = 61.0
     assert gw.status().calls_per_minute == 0
     await gw.close()
+
+
+async def test_key_file_expands_home_path():
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+
+    with TemporaryDirectory(prefix=".daybook-key-test-", dir=Path.home()) as folder:
+        key_file = Path(folder) / "key"
+        key_file.write_text("test-only-token\n")
+        relative = "~/" + str(key_file.relative_to(Path.home()))
+        gw = ModelGateway(ModelConfig(api_key_file=relative))
+        assert gw._client.headers["Authorization"] == "Bearer test-only-token"
+        await gw.close()

@@ -65,8 +65,8 @@ or a difficult task alone do not establish slowing. The model must see repeated
 unsuccessful loops relative to earlier progress; a suggestion never asserts that
 the user is fatigued. Uncertainty should defer the reminder.
 
-The capture gate and runtime remain authoritative: paused, locked, excluded and
-away time is not interpreted as distraction. An explicitly recorded capture interruption
+The capture gate and runtime remain authoritative: paused, locked, excluded,
+away and overlay time is not interpreted as distraction. An explicitly recorded capture interruption
 breaks reminder streaks, however short it is. Missing readings and gaps longer
 than five minutes also break streaks. An actual call or identifiable intentional break
 has no notification rule. To reliably identify an intentional break, stop the

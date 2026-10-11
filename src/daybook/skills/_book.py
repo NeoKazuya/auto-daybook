@@ -290,7 +290,7 @@ class Book:
                 (
                     span.end or capture_range.end
                     for span in self.portal.capture_spans(capture_range)
-                    if span.state not in ("running", "overlay")
+                    if span.state != "running"
                 ),
                 default=None,
             )

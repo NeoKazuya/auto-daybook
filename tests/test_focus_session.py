@@ -193,7 +193,7 @@ async def test_reminders_fire_at_threshold_once_per_streak(
         assert "50 min" in calls[0]["body"]
 
 
-@pytest.mark.parametrize("capture", ["paused", "locked", "withheld", "away"])
+@pytest.mark.parametrize("capture", ["paused", "locked", "withheld", "away", "overlay"])
 @pytest.mark.parametrize(
     "state,threshold", [("off_task", 5), ("slowing", 10), ("working", 50)]
 )

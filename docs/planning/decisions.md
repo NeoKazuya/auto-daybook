@@ -112,9 +112,16 @@ could not reach 80%.
 
 A generic prompt/schema revision requires every nullable signal key, separates
 current facts from historical rollups, and requires a segment decision for new
-evidence. Its final effort `none` run matched all three signals on 11/13 running
-ticks (84.6%) and activity kind on 13/13 (100%) in 57.2 seconds for the complete
-batch. The meeting and focus reminders each fired once; locked and excluded
-periods made zero model calls. The earlier failed runs remain recorded; this is
-a measured pass on these recordings, not a guarantee of model accuracy on every
-screen.
+evidence. That effort `none` run matched all three signals on 11/13 running
+ticks (84.6%) and activity kind on 13/13 (100%). After a live notes fix preserved
+segment kinds across activity changes, the unchanged recordings scored 10/13
+signals (76.9%); that failed result remains recorded. Both break questions now
+ask about present concentration, explicitly include deliberate document study,
+and leave elapsed duration to the held-value rule. The resulting exact candidate
+`413ede899` matched 12/13 signals (92.3%) and 13/13 kinds in 57.2 seconds. Its one
+miss was an uncertain focus/mood answer just after capture resumed on Code.
+
+The meeting and focus reminders each fired once; locked and excluded periods
+made zero model calls. Labels stayed fixed through every comparison. These are
+measured results on the recordings; model outputs can still vary on other
+screens or repeated calls.

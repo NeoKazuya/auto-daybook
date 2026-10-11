@@ -181,7 +181,7 @@ Every commit publishes a domain event on the bus.
 
 **Forgetting part of a segment.** If a forget removes some of a segment's observations, and the segment's text is model-authored, its title and intent are cleared to `(summary removed after forget)` and its kind is reset to `other`, along with their search entries, in the same transaction, because they may describe the forgotten activity. An open segment gets new text on the next tick; a closed one keeps the placeholder. User-authored text is kept.
 
-**Forget barrier.** The journal keeps a **forget epoch** that every forget *and every `trim_after`* increments in the same transaction as the delete. Sense and mind read `journal.epoch` when a model call starts and pass it with the result (`add_observation(draft, epoch)`, `Tick.epoch`). The journal rejects any write whose epoch is older, so a result computed from content that was just forgotten can't be written back. Rejections are logged as `discarded_after_forget` and published as a status event.
+**Forget barrier.** The journal keeps a **forget epoch** that every forget, every `trim_after`, and every user edit increments in the same transaction as the change. Sense and mind read `journal.epoch` when a model call starts and pass it with the result (`add_observation(draft, epoch)`, `Tick.epoch`). The journal rejects any write whose epoch is older, so a result computed from content that was just forgotten can't be written back. Rejections are logged as `discarded_after_forget` and published as a status event.
 
 **Done when:**
 
@@ -406,7 +406,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
    - `portal.context(window, 8000, detail = observations if the window is 2 h or less, else segments)`
    - `portal.totals(window, by="title")` and `by="kind"`, rendered as a table
    - search hits if the question names something specific
-3. Make one call. The answer is 1–5 sentences, cites segment IDs, takes durations only from the totals table, and says "I don't have notes for that" when the notes lack it.
+3. Make one call, recording `journal.epoch` first; if the epoch changed by the time the answer returns (a forget or edit happened), the answer is discarded and recall runs again on the current notes. The answer is 1–5 sentences, cites segment IDs, takes durations only from the totals table, and says "I don't have notes for that" when the notes lack it.
 
 **Done when:**
 

@@ -51,9 +51,25 @@ It closes its own window and returns focus to the previous window even on failur
 This verifies desktop mechanics and image input, not Daybook's future note quality,
 Qt overlay, music selection, or privacy implementation.
 
-The model defaults to the existing Ollama server and `qwen3.6:35b`. To test another
-already-running backend, supply `--base-url`, `--model`, and optionally `--key-file`.
-Do not use the Ollama vision test while another large model is serving.
+`status` and `smoke --vision` read the model profile from
+`$DAYBOOK_HOME/daybook.toml` (default `~/.daybook/daybook.toml`): `[model]`
+`base_url`, `model`, and `api_key_file`. They only read the config and key file;
+they do not import or install Daybook, create a config, or start a model.
+
+If the config or a model setting is absent, the fallback matches the app's current
+Qwen profile: `http://127.0.0.1:18300/v1`, `qwen3.8-flash-next`, and
+`~/.config/qwen38/api-key`. An unreadable or malformed config, or an invalid
+model setting, fails with the config path rather than falling back silently.
+An empty `api_key_file` disables authentication. Desktop-only `smoke`, `run`,
+and `enable-app` do not read the model profile.
+
+To test another already-running backend, supply `--base-url`, `--model`, and
+`--key-file`. Changing `--base-url` to a different endpoint drops the inherited
+profile key; supply `--key-file` explicitly if that backend needs authentication.
+An override of the same endpoint (ignoring a trailing slash) keeps profile auth.
+`--model` changes only the model ID. Use `--key-file ''` to disable authentication.
+Keys are read from files and are not included in status output. Qwen3.8 is serving
+on the shared machine; Ollama must stay stopped while it is serving.
 
 The test takes the same `/tmp/daybook-capture.lock` specified by the app's design,
 so it refuses to run during another capture/test session. Wrap other standalone
@@ -89,8 +105,8 @@ Until there is an application checkout, the installed service stays inactive;
 there is no dummy app or failing restart loop. The service uses the application's
 own persisted settings and does not change its capture/consent behavior.
 
-Ollama and Tailscale already have enabled system services on the GX10. This setup
-doesn't start a second model, restart their services, or interrupt model downloads.
+Tailscale has an enabled system service on the GX10. Model serving is managed
+separately; this setup doesn't start a second model or restart its services.
 
 ## Verification scope
 

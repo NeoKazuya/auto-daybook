@@ -697,3 +697,40 @@ async def test_dismissal_during_a_tick_discards_its_upcoming_readings(journal):
     mind = Mind(journal, gateway, cast(SkillBook, book), clock=lambda: NOW)
     assert await mind.tick_now() is None
     assert book.reacted == 0
+
+
+class RevivingGateway(DismissingGateway):
+    """Dismiss and re-add the same item, now an event, during the model call."""
+
+    async def call(self, priority, prompt):
+        built = await prompt() if callable(prompt) else prompt
+        if built is None:
+            return None
+        self.journal.dismiss_upcoming(self.item)
+        [revived] = self.journal.add_upcoming(
+            [
+                UpcomingDraft(
+                    "CSE 130 Assignment 3", NOW + timedelta(hours=2), kind="event"
+                )
+            ],
+            self.journal.epoch,
+            at=NOW,
+        )
+        assert revived.id == self.item
+        return await ScriptedGateway.call(self, priority, built)
+
+
+async def test_revived_item_with_new_details_also_discards_the_tick(journal):
+    journal.set_capture_state("running", NOW)
+    source = note(journal, "YouTube video playing", title="YouTube")
+    [item] = journal.add_upcoming(
+        [UpcomingDraft("CSE 130 Assignment 3", NOW + timedelta(hours=2))],
+        journal.epoch,
+        at=NOW,
+    )
+    reply = tick_reply({"nudge.drifting": True}).replace("$id", source.id)
+    book = Book((DRIFT,))
+    gateway = RevivingGateway([reply], journal, item.id)
+    mind = Mind(journal, gateway, cast(SkillBook, book), clock=lambda: NOW)
+    assert await mind.tick_now() is None
+    assert book.reacted == 0

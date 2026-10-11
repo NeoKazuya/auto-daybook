@@ -202,9 +202,8 @@ class Runner:
                     and current.observation.id == observation_id
                     and self.capture_start(self.clock()) == capture_start
                     and (
-                        not reads_upcoming
-                        or [i.id for i in portal.upcoming(at, limit=5)]
-                        == [i.id for i in shown]
+                        # Whole items: a dismissed-then-revived item keeps its ID.
+                        not reads_upcoming or portal.upcoming(at, limit=5) == shown
                     )
                 )
 

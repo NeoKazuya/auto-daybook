@@ -15,12 +15,13 @@ from daybook.model import ModelGateway, Priority, Prompt
 # 3 days", "30 minutes left"), not just a clock time, so chat timestamps and log lines
 # alone don't cost a call. Words like "deadline" don't count: notes often say none
 # is visible.
+# Countdown units, full or abbreviated: "2 h", "3 hrs", "1 wk", "45min".
+UNIT = r"(?:months?|mos?|weeks?|wks?|w|days?|d|hours?|hrs?|h|minutes?|mins?|m)"
 DATED = re.compile(
     r"\b(?:january|february|march|april|june|july|august|september|october"
     r"|november|december|monday|tuesday|wednesday|thursday|friday|saturday"
     r"|sunday|today|tonight|tomorrow|next\s+week"
-    r"|(?:in|due)\s+\d+\s+(?:months?|weeks?|days?|hours?|minutes?|mins?)\b"
-    r"|\d+\s+(?:months?|weeks?|days?|hours?|minutes?|mins?)\s+(?:left|remaining)\b"
+    rf"|(?:in|due)\s+\d+\s*{UNIT}\b|\d+\s*{UNIT}\.?\s+(?:left|remaining)\b"
     r"|(?:jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)\.?\s+\d{1,2}\b"
     r"|\d{1,2}/\d{1,2}(?:/\d{2,4})?|\d{4}-\d{2}-\d{2})",
     re.IGNORECASE,

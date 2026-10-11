@@ -200,6 +200,11 @@ def test_events_start_rather_than_fall_due():
         ("Quiz closes in 30 minutes", True),
         ("15 min remaining", True),
         ("Project due in 1 month", True),
+        ("due in 2 h", True),
+        ("3 hrs remaining", True),
+        ("1 wk left", True),
+        ("Closes in 45min", True),
+        ("Found in 3 places", False),
     ],
 )
 def test_dated_gate_needs_a_date_not_just_a_clock_time(text, expected):

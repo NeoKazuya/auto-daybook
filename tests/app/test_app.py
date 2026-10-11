@@ -405,8 +405,9 @@ async def test_observe_once_printable_result_does_not_save_to_home(
     assert not (tmp_path / "journal.db-wal").exists()
 
 
+@pytest.mark.parametrize("stale_runtime", [False, True])
 async def test_tick_once_records_current_unassigned_notes_without_a_daemon(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, stale_runtime: bool
 ):
     from datetime import UTC, datetime
 
@@ -416,6 +417,17 @@ async def test_tick_once_records_current_unassigned_notes_without_a_daemon(
     from daybook.model import ScriptedGateway
 
     config = library_config(tmp_path)
+    if stale_runtime:
+        import socket
+
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            stale_port = listener.getsockname()[1]
+        app.launch_token(tmp_path)
+        # A reused/live PID is not evidence that this home has a daemon owner.
+        (tmp_path / "runtime.json").write_text(
+            json.dumps({"port": stale_port, "pid": os.getpid()})
+        )
     journal = Journal(config.home / "journal.db", Bus())
     now = datetime.now(UTC)
     journal.add_observation(
@@ -438,8 +450,17 @@ async def test_tick_once_records_current_unassigned_notes_without_a_daemon(
             )
         ]
     )
-    monkeypatch.setattr(daybook.model, "ModelGateway", lambda _: gateway)
+
+    def offline_gateway(_):
+        with pytest.raises(RuntimeError, match="DAYBOOK_HOME"):
+            with app.home_lock(tmp_path):
+                pytest.fail("offline tick did not own its home lock")
+        return gateway
+
+    monkeypatch.setattr(daybook.model, "ModelGateway", offline_gateway)
     result = await app.tick_once(config)
+    if stale_runtime:
+        assert not (tmp_path / "runtime.json").exists()
     assert isinstance(result, list) and result
     assert all(reading["tick"].startswith("tick:") for reading in result)
     reopened = Journal(config.home / "journal.db", Bus())
@@ -797,3 +818,96 @@ async def test_effects_enabled_daemon_only_supervises_a_runnable_shell(
     else:
         assert caplog.text.count("shell_unavailable") == 1
     assert not (tmp_path / "runtime.json").exists()
+
+
+@pytest.mark.parametrize("capture", ["running", "locked"])
+async def test_runtime_stops_active_capture_history_before_restart(
+    tmp_path: Path, monkeypatch, capture: str
+):
+    from datetime import UTC, datetime, timedelta
+
+    import daybook.model
+    from daybook.events import Bus
+    from daybook.journal import Journal, TimeRange
+    from daybook.model import ScriptedGateway
+
+    gateway = ScriptedGateway(
+        ['{"seen":"Editing code.","visible_text":""}'] if capture == "running" else []
+    )
+    monkeypatch.setattr(daybook.model, "ModelGateway", lambda _: gateway)
+    config = library_config(tmp_path)
+    fixture = Path(__file__).resolve().parents[2] / "fixtures/replay/example"
+    started = datetime.now(UTC)
+    async with app.open_runtime(
+        config,
+        replay=fixture if capture == "running" else None,
+        no_capture=capture != "running",
+    ) as runtime:
+        await runtime.services.sense.poll(started)
+        await runtime.services.sense.wait_idle()
+        assert runtime.services.journal.portal.now().capture == capture
+        before_close = datetime.now(UTC)
+    after_close = datetime.now(UTC)
+    reopened = Journal(config.home / "journal.db", Bus())
+    try:
+        assert reopened.portal.now().capture == (
+            "paused" if capture == "running" else capture
+        )
+        restarted = datetime.now(UTC)
+        reopened.set_capture_state("running", restarted)
+        spans = reopened.portal.capture_spans(
+            TimeRange(started, restarted + timedelta(seconds=1))
+        )
+        if capture == "running":
+            assert [span.state for span in spans] == ["running", "paused", "running"]
+            assert spans[0].end is not None
+            assert before_close <= spans[0].end <= after_close
+            assert spans[1].start == spans[0].end and spans[1].end == restarted
+        else:
+            assert [span.state for span in spans] == ["locked", "running"]
+        assert not (tmp_path / "privacy.json").exists()
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("reachable", [False, True])
+async def test_tick_once_keeps_live_home_ownership_and_uses_daemon(
+    tmp_path: Path, monkeypatch, reachable: bool
+):
+    config = app.load_config(tmp_path)
+    descriptor = json.dumps({"port": config.port, "pid": os.getpid()})
+    (tmp_path / "runtime.json").write_text(descriptor)
+    requested: list[str] = []
+
+    def request(_config, route, **_):
+        requested.append(route)
+        if not reachable:
+            raise RuntimeError("Cannot reach the daemon for this DAYBOOK_HOME.")
+        return (
+            {"recorded": True, "tick": "tick:current"}
+            if route == "/api/tick"
+            else {
+                "readings": [
+                    {"tick": "tick:current", "value": True},
+                    {"tick": "old", "value": False},
+                ]
+            }
+        )
+
+    monkeypatch.setattr(app, "daemon_request", request)
+    with app.home_lock(tmp_path):
+        if reachable:
+            assert await app.tick_once(config) == [
+                {"tick": "tick:current", "value": True}
+            ]
+        else:
+            with pytest.raises(RuntimeError, match="Cannot reach"):
+                await app.tick_once(config)
+        assert (tmp_path / "runtime.json").read_text() == descriptor
+    assert requested == (["/api/tick", "/api/now"] if reachable else ["/api/tick"])
+
+
+def test_debug_frame_retention_is_rejected_explicitly(tmp_path: Path):
+    (tmp_path / "daybook.toml").write_text("keep_frames=true\n")
+    with pytest.raises(ValueError, match="not supported"):
+        app.load_config(tmp_path)

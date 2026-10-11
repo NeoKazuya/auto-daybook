@@ -17,7 +17,13 @@ import threading
 import tomllib
 import urllib.error
 import urllib.request
-from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext
+from contextlib import (
+    AsyncExitStack,
+    ExitStack,
+    asynccontextmanager,
+    contextmanager,
+    nullcontext,
+)
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from importlib.machinery import PathFinder
@@ -33,6 +39,7 @@ from daybook.model import ModelConfig
 from daybook.sense import Screen, ScreenState
 
 if TYPE_CHECKING:
+    from daybook.journal import Journal
     from daybook.sense import X11Screen
     from daybook.web import Services
 
@@ -108,6 +115,10 @@ def load_config(home: Path | None = None) -> Config:
     keep_frames = data.get("keep_frames", False)
     if type(keep_frames) is not bool:
         raise ValueError("keep_frames must be a boolean")
+    if keep_frames:
+        raise ValueError(
+            "keep_frames=true is not supported; screenshot retention is not implemented"
+        )
     model = data.get("model", {})
     if not isinstance(model, dict):
         raise ValueError("model must be a TOML table")
@@ -329,6 +340,7 @@ async def open_runtime(
         bus = Bus()
         journal = Journal(config.home / "journal.db", bus)
         stack.callback(journal.close)
+        stack.callback(stop_capture_history, journal)
         gateway = ModelGateway(config.model)
         stack.push_async_callback(gateway.close)
         library = MusicLibrary.load(config.music_dir)
@@ -385,6 +397,12 @@ async def open_runtime(
             ),
             x11,
         )
+
+
+def stop_capture_history(journal: Journal) -> None:
+    # Daemon downtime is an interruption, not a persisted user privacy setting.
+    if journal.portal.now().capture == "running":
+        journal.set_capture_state("paused", datetime.now(UTC))
 
 
 @contextmanager
@@ -618,27 +636,29 @@ async def observe_once(config: Config) -> object:
 
 
 async def tick_once(config: Config) -> object:
-    if (config.home / "runtime.json").exists():
-        result = cast(
-            dict, await asyncio.to_thread(daemon_request, config, "/api/tick")
-        )
-        now = cast(
-            dict,
-            await asyncio.to_thread(daemon_request, config, "/api/now", method="GET"),
-        )
-        return (
-            [
-                reading
-                for reading in now["readings"]
-                if reading["tick"] == result["tick"]
-            ]
-            if result["recorded"]
-            else []
-        )
-    with home_lock(config.home):
-        async with open_runtime(config, no_capture=True) as runtime:
-            tick = await runtime.services.mind.tick_now()
-            return [asdict(reading) for reading in tick.readings] if tick else []
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(home_lock(config.home))
+        except RuntimeError:
+            if not (config.home / "runtime.json").exists():
+                raise
+        else:
+            # An exclusive home lock proves no supported daemon owns this home,
+            # even when a crash left a descriptor with a subsequently reused PID.
+            (config.home / "runtime.json").unlink(missing_ok=True)
+            async with open_runtime(config, no_capture=True) as runtime:
+                tick = await runtime.services.mind.tick_now()
+                return [asdict(reading) for reading in tick.readings] if tick else []
+    result = cast(dict, await asyncio.to_thread(daemon_request, config, "/api/tick"))
+    now = cast(
+        dict,
+        await asyncio.to_thread(daemon_request, config, "/api/now", method="GET"),
+    )
+    return (
+        [reading for reading in now["readings"] if reading["tick"] == result["tick"]]
+        if result["recorded"]
+        else []
+    )
 
 
 def main() -> None:

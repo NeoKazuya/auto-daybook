@@ -89,12 +89,13 @@ capture lock and pass the running model explicitly:
 
 ```sh
 ~/.local/bin/gx10 run -- ~/.local/bin/gx10 status \
-  --base-url http://127.0.0.1:18300/v1 --model qwen3.8-flash-next \
+  --base-url http://127.0.0.1:18300/v1 \
   --key-file ~/.config/qwen38/api-key
 ```
 
 This reads screen pixels only in memory and calls the model-list endpoint;
-it does not run inference or load a model. The generic examples in
+it does not run inference, load a model, or assert a particular model ID.
+The configured-model assertion below is required before starting Daybook. The generic examples in
 [gx10-unattended.md](gx10-unattended.md) describe the older installer defaults.
 For current vision acceptance, use the model runbook below.
 

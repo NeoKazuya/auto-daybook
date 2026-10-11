@@ -21,9 +21,13 @@ Start your own persistent session and check the machine:
 ```sh
 tmux new -s <your-name>
 ~/.local/bin/gx10 run -- ~/.local/bin/gx10 status \
-  --base-url http://127.0.0.1:18300/v1 --model qwen3.8-flash-next \
+  --base-url http://127.0.0.1:18300/v1 \
   --key-file ~/.config/qwen38/api-key
 ```
+
+Status checks desktop health and API reachability; its model list is informational.
+Before starting Daybook, complete the [configured model assertion in setup §6](../setup.md#6-the-model)
+with the intended DAYBOOK_HOME. That check rejects a configured model ID the server does not provide.
 
 VS Code/Cursor Remote-SSH can use the same SSH address. Everyone shares the `asus`
 Unix account; set your own `GH_TOKEN` in your agent session for GitHub operations.

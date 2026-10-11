@@ -256,3 +256,21 @@ async def test_chat_production_clock_retains_dst_rules(monkeypatch):
     reply = await notes.chat(ScriptedGateway([])).respond("/ask yesterday")
     assert isinstance(reply, Answer)
     assert (reply.window.end - reply.window.start).total_seconds() == 25 * 3600
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "what did I do during the paused period and how long was it?",
+        "what did I do while locked and why?",
+        "tell me about the private period and its duration",
+    ],
+)
+async def test_gap_only_conjunction_stays_no_notes_when_model_unavailable(message):
+    gateway = ScriptedGateway([ModelUnavailable()])
+    reply = await Notes().chat(gateway).respond("/ask " + message)
+    assert isinstance(reply, Answer)
+    assert "don't have notes" in reply.text
+    assert not reply.cites
+    assert not gateway.prompts

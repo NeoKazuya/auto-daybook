@@ -182,7 +182,7 @@ class Chat:
                 re.IGNORECASE,
             )
             mixed = re.search(
-                r"\b(before|after|around|outside|except|besides|also|and|but|then)\b",
+                r"\b(before|after|around|outside|earlier|later|preceding|following)\b",
                 message,
                 re.IGNORECASE,
             )

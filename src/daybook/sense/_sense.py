@@ -64,6 +64,7 @@ class Sense:
         self._observation: Observation | None = None
         self._last_thumb: bytes | None = None
         self._last_window = None
+        self._pending_window = False
         self._switch = 0
         self._notified_switch = 0
         self._last_request: datetime | None = None
@@ -173,12 +174,13 @@ class Sense:
             and self._last_window.app != facts.active.app
         )
         self._last_window = facts.active
+        self._pending_window |= window_changed
         if app_switched:
             self._switch += 1
         pending_switch = self._switch > self._notified_switch
         new = (
             resumed
-            or window_changed
+            or self._pending_window
             or self._last_thumb is None
             or changed(self._last_thumb, thumbnail)
         )
@@ -187,6 +189,7 @@ class Sense:
             or (at - self._last_request).total_seconds() >= 10
         )
         if new and (due or app_switched or resumed):
+            self._pending_window = False
             self._last_request = at
             self._last_thumb = thumbnail
             self._sequence += 1
@@ -254,6 +257,9 @@ class Sense:
         try:
             result = await self.gateway.call(Priority.OBSERVE, builder)
         except ObserveReplaced:
+            if epoch != self.journal.epoch:
+                self.bus.publish(StatusChanged("sense", "discarded_after_forget"))
+                return
             self._failed(at, sequence, "observe_replaced")
             return
         except Exception:

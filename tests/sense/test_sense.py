@@ -11,7 +11,7 @@ from PIL import Image
 
 from daybook.events import Bus
 from daybook.journal import Journal, Observation, WindowInfo
-from daybook.model import ModelUnavailable, Prompt, ScriptedGateway
+from daybook.model import ModelUnavailable, ObserveReplaced, Prompt, ScriptedGateway
 from daybook.sense import (
     PrivacySettings,
     Rect,
@@ -524,7 +524,10 @@ async def test_older_active_observe_failure_trims_original_change(tmp_path):
     assert journal.trims[0] == BASE + timedelta(seconds=10)
 
 
-async def test_queued_observe_cannot_return_to_forgotten_time(tmp_path):
+@pytest.mark.parametrize(
+    "failure", [None, ObserveReplaced("replaced"), ModelUnavailable("timeout")]
+)
+async def test_queued_observe_cannot_return_to_forgotten_time(tmp_path, failure):
     class AdmissionGateway(ScriptedGateway):
         def __init__(self):
             super().__init__(['{"seen":"code","visible_text":""}'])
@@ -534,6 +537,8 @@ async def test_queued_observe_cannot_return_to_forgotten_time(tmp_path):
         async def call(self, priority, prompt):
             self.entered.set()
             await self.release.wait()
+            if failure:
+                raise failure
             return await super().call(priority, prompt)
 
     screen, journal, gw = FakeScreen(), FakeJournal(), AdmissionGateway()
@@ -543,7 +548,7 @@ async def test_queued_observe_cannot_return_to_forgotten_time(tmp_path):
     journal.epoch += 1
     gw.release.set()
     await obj.wait_idle()
-    assert not journal.rows and not gw.prompts
+    assert not journal.rows and not gw.prompts and not journal.trims
 
 
 async def test_forget_between_poll_and_task_admission(tmp_path):
@@ -569,3 +574,13 @@ async def test_app_switch_nudge_survives_failed_observe(tmp_path):
     await poll(obj, 1)
     await poll(obj, 5)
     assert nudges == [False, True]
+
+
+async def test_same_app_document_change_survives_cooldown(tmp_path):
+    obj, screen, journal, _, _ = sense(tmp_path)
+    await poll(obj, 0)
+    document = WindowInfo("Code", "other.py")
+    screen.facts = state(active=document, windows=(VisibleWindow("2", document, RECT),))
+    await poll(obj, 1)
+    await poll(obj, 10)
+    assert len(journal.rows) == 2 and journal.rows[-1].window == document

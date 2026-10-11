@@ -543,3 +543,18 @@ def test_forget_all_preserves_current_capture_state(journal: Journal, state):
         assert reopened.portal.now().capture == state
     finally:
         reopened.close()
+
+
+@pytest.mark.parametrize("state", ["paused", "locked", "away", "withheld", "overlay"])
+def test_failed_observe_trim_preserves_newer_capture_state(journal: Journal, state):
+    journal.set_capture_state("running", time(0))
+    observe(journal, 0, 100)
+    journal.set_capture_state(state, time(50))
+    journal.trim_after(time(20))
+    assert journal.portal.now().capture == state
+    spans = journal.portal.capture_spans(RANGE)
+    assert len(spans) == 2
+    assert spans[0].end == time(50)
+    assert spans[1].state == state and spans[1].start == time(50)
+    assert spans[1].end is None
+    assert journal.portal.observations(RANGE)[0].last_seen_at == time(20)

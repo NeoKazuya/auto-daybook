@@ -328,6 +328,17 @@ class Journal:
             current = self._db.execute(
                 "SELECT * FROM capture_spans ORDER BY id DESC LIMIT 1"
             ).fetchone()
+            # Only AWAY rewinds state history, because its boundary is the last
+            # input time. Failed-observe trim must preserve newer pause/lock states.
+            if current is not None and state == "away" and time < current["start"]:
+                self._db.execute("DELETE FROM capture_spans WHERE start>?", (time,))
+                self._db.execute(
+                    "UPDATE capture_spans SET end=? WHERE start<=? AND (end IS NULL OR end>?)",
+                    (time, time, time),
+                )
+                current = self._db.execute(
+                    "SELECT * FROM capture_spans ORDER BY id DESC LIMIT 1"
+                ).fetchone()
             if current is not None:
                 if current["state"] == state and current["end"] is None:
                     return
@@ -556,13 +567,6 @@ class Journal:
             ).fetchall():
                 events.append(SegmentChanged(row[0]))
             self._db.execute("UPDATE segments SET open=0 WHERE open=1")
-            # Sense may discover AWAY retrospectively, at the last input time.
-            # Remove later state history so the replacement gap starts there.
-            self._db.execute("DELETE FROM capture_spans WHERE start>?", (time,))
-            self._db.execute(
-                "UPDATE capture_spans SET end=? WHERE start<=? AND (end IS NULL OR end>?)",
-                (time, time, time),
-            )
 
     def clear_skill_readings(self, skill: str) -> None:
         """Reset a changed skill's history without letting an old tick restore it."""

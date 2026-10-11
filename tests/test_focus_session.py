@@ -193,6 +193,35 @@ async def test_reminders_fire_at_threshold_once_per_streak(
         assert "50 min" in calls[0]["body"]
 
 
+@pytest.mark.parametrize("capture", ["paused", "locked", "withheld", "away"])
+@pytest.mark.parametrize(
+    "state,threshold", [("off_task", 5), ("slowing", 10), ("working", 50)]
+)
+async def test_short_capture_interruption_restarts_reminder_timer(
+    runtime, capture, state, threshold
+):
+    journal, book, calls = runtime
+    base = datetime.now(timezone.utc) + timedelta(seconds=1)
+    for minute in range(threshold):
+        await record_state(journal, book, base, minute, state)
+    # Even a short, explicitly recorded interruption must break the streak.
+    journal.set_capture_state(
+        capture, base + timedelta(minutes=threshold - 1, seconds=10)
+    )
+    journal.set_capture_state(
+        "running", base + timedelta(minutes=threshold - 1, seconds=50)
+    )
+    await record_state(journal, book, base, threshold, state)
+    assert not calls
+    for minute in range(threshold + 1, 2 * threshold):
+        await record_state(journal, book, base, minute, state)
+    assert not calls
+    await record_state(journal, book, base, 2 * threshold, state)
+    assert len(calls) == 1
+    if state == "working":
+        assert "50 min" in calls[0]["body"]
+
+
 async def test_starting_new_task_drops_old_distraction_history(runtime):
     journal, book, calls = runtime
     base = datetime.now(timezone.utc) + timedelta(seconds=1)

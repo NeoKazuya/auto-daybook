@@ -179,6 +179,8 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 
 Every commit publishes a domain event on the bus.
 
+**Forgetting part of a segment.** If a forget removes some of a segment's observations, and the segment's text is model-authored, its title and intent are cleared to `(summary removed after forget)`, along with their search entries, in the same transaction, because they may describe the forgotten activity. An open segment gets new text on the next tick; a closed one keeps the placeholder. User-authored text is kept.
+
 **Forget barrier.** The journal keeps a **forget epoch** that every forget *and every `trim_after`* increments in the same transaction as the delete. Sense and mind read `journal.epoch` when a model call starts and pass it with the result (`add_observation(draft, epoch)`, `Tick.epoch`). The journal rejects any write whose epoch is older, so a result computed from content that was just forgotten can't be written back. Rejections are logged as `discarded_after_forget` and published as a status event.
 
 **Done when:**
@@ -188,7 +190,7 @@ Every commit publishes a domain event on the bus.
 - Deleting an observation shrinks its segment's derived times. Deleting a segment removes its observations and their FTS rows.
 - A user-authored segment survives a later `Continue`.
 - A tick or observation started before a `forget_range` is rejected after it, and nothing from the forgotten range reappears.
-- After `forget_range` returns, a byte search of `journal.db` and `journal.db-wal` for a unique string from the forgotten notes finds nothing.
+- After `forget_range` returns, a byte search of `journal.db` and `journal.db-wal` for a unique string from the forgotten notes finds nothing, including in the title or intent of a segment that only partly overlapped the range.
 - A tick with no new observations writes readings and no segment change.
 - `context()` respects its budget and includes capture spans.
 - `totals()` matches hand-computed durations on a fixture.
@@ -353,7 +355,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
 | Action | Parameters | Behavior |
 |---|---|---|
-| `music.play_mood` | `mood: music.mood`, `min_dwell = "60s"` | No-op if that mood is already playing. Refused (ok, with a "dwell" detail) if *the same skill* last changed the mood less than `min_dwell` ago; another skill's change (such as the break) doesn't reset this skill's clock, so music returns right after a break. Otherwise it fades the volume out over 1.5 s, loads a shuffled, looping playlist from the mood's folder, and fades back in |
+| `music.play_mood` | `mood: music.mood`, `min_dwell = "60s"` | No-op if that mood is already playing. Refused (ok, with a "dwell" detail) if *the same skill* last changed the mood less than `min_dwell` ago; another skill's change (such as the break) doesn't reset this skill's clock, so music returns right after a break. **While an overlay is up, only the skill that showed it can change the music**, so the break's music isn't replaced by another skill firing on the same tick. Otherwise it fades the volume out over 1.5 s, loads a shuffled, looping playlist from the mood's folder, and fades back in |
 | `music.stop` | — | Stops playback |
 | `overlay.show` | `title`, `body`, `dismiss = "OK"`, `minutes = 1`, `style = calm\|alert` | Replaces any current overlay. Auto-hides after `minutes` |
 | `overlay.hide` | — | |
@@ -380,7 +382,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 **Done when:**
 
 - `daybook music play focus` then `daybook music play calm` audibly fades and switches on the GX10.
-- `min_dwell` refusals are tested, including that a break's mood change doesn't delay the music skill's next change.
+- `min_dwell` refusals are tested, including that a break's mood change doesn't delay the music skill's next change. When `break` and `music` fire on the same tick, in either order, break music plays until the overlay is dismissed.
 - `daybook music check` passes on the downloaded library.
 - An overlay request round-trips to a connected shell, and fails cleanly without one.
 - Every `desktop.*` action works under `XdoDesktop` on `:1`.

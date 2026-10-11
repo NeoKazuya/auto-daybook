@@ -697,3 +697,103 @@ async def test_shell_reaping_finishes_after_repeated_cancellation(tmp_path: Path
                 except ProcessLookupError:
                     break
                 await asyncio.sleep(0.01)
+
+
+@pytest.mark.parametrize(
+    ("entry", "available"),
+    [
+        ("absent", False),
+        ("package_without_main", False),
+        ("package", True),
+        ("module", True),
+    ],
+)
+async def test_effects_enabled_daemon_only_supervises_a_runnable_shell(
+    tmp_path: Path, monkeypatch, caplog, entry: str, available: bool
+):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    import daybook
+    import daybook.web
+
+    modules = tmp_path / "modules"
+    modules.mkdir()
+    if entry.startswith("package"):
+        package = modules / "shell"
+        package.mkdir()
+        # Discovery must not initialize Qt or any shell package side effects.
+        (package / "__init__.py").write_text("raise AssertionError('shell imported')")
+        if entry == "package":
+            (package / "__main__.py").write_text(
+                "raise AssertionError('shell executed')"
+            )
+    elif entry == "module":
+        (modules / "shell.py").write_text("raise AssertionError('shell imported')")
+    monkeypatch.setattr(daybook, "__path__", [str(modules)])
+    monkeypatch.delitem(sys.modules, "daybook.shell", raising=False)
+    monkeypatch.setattr(app, "CAPTURE_LOCK", tmp_path / "capture.lock")
+    monkeypatch.setattr(app, "desktop_environment", lambda _: dict(os.environ))
+    config = app.load_config(tmp_path)
+    started: list[str] = []
+    launches: list[tuple[tuple[str, ...], dict[str, str]]] = []
+    pids: list[int | None] = []
+
+    class Loop:
+        def __init__(self, name):
+            self.name = name
+
+        async def run(self):
+            started.append(self.name)
+            await asyncio.Event().wait()
+
+    @asynccontextmanager
+    async def runtime(_config, **kwargs):
+        assert kwargs["real_effects"]
+        yield SimpleNamespace(
+            services=SimpleNamespace(sense=Loop("sense"), mind=Loop("mind")),
+            screen=SimpleNamespace(set_shell_pid=pids.append),
+        )
+
+    class Supervisor:
+        def __init__(self, command, environment, on_pid):
+            launches.append((command, environment))
+            self.on_pid = on_pid
+
+        async def run(self):
+            self.on_pid(12345)
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.on_pid(None)
+
+    class Server:
+        async def serve(self):
+            await asyncio.sleep(0)
+            assert sorted(started) == ["mind", "sense"]
+
+    monkeypatch.setattr(app, "open_runtime", runtime)
+    monkeypatch.setattr(app, "ShellSupervisor", Supervisor)
+    monkeypatch.setattr(app, "http_server", lambda *_: Server())
+    monkeypatch.setattr(daybook.web, "create_app", lambda **_: object())
+    args = argparse.Namespace(
+        mock_api=False, no_capture=False, replay=None, real_effects=False
+    )
+    await app.run_daemon(config, args)
+    launch_count = len(launches)
+    assert launch_count == int(available)
+    assert pids == ([12345, None] if available else [])
+    if available:
+        command, environment = launches[0]
+        assert command == (
+            sys.executable,
+            "-m",
+            "daybook.shell",
+            "--port",
+            str(config.port),
+        )
+        assert environment["DAYBOOK_TOKEN"] == (tmp_path / "token").read_text()
+        assert "shell_unavailable" not in caplog.text
+    else:
+        assert caplog.text.count("shell_unavailable") == 1
+    assert not (tmp_path / "runtime.json").exists()

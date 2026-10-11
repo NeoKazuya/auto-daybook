@@ -20,6 +20,8 @@ import urllib.request
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
+from importlib.machinery import PathFinder
+from importlib.util import find_spec
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterator, Literal, cast
 
@@ -198,6 +200,24 @@ def desktop_environment(config: Config) -> dict[str, str]:
         "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
         "DAYBOOK_HOME": str(config.home),
     }
+
+
+def shell_entry_available() -> bool:
+    """Inspect Python's entry point without importing the shell or initializing Qt."""
+    spec = find_spec("daybook.shell")
+    if spec is not None and spec.submodule_search_locations is not None:
+        spec = PathFinder.find_spec(
+            "daybook.shell.__main__", spec.submodule_search_locations
+        )
+    if spec is None:
+        return False
+    get_code = getattr(spec.loader, "get_code", None)
+    if get_code is None:
+        return False
+    try:
+        return get_code(spec.name) is not None
+    except (ImportError, OSError, SyntaxError):
+        return False
 
 
 class ShellSupervisor:
@@ -488,7 +508,7 @@ async def run_daemon(config: Config, args: argparse.Namespace) -> None:
                         group.create_task(services.sense.run()),
                         group.create_task(services.mind.run()),
                     ]
-                    if effects:
+                    if effects and shell_entry_available():
                         shell = ShellSupervisor(
                             (
                                 sys.executable,
@@ -503,6 +523,10 @@ async def run_daemon(config: Config, args: argparse.Namespace) -> None:
                             else lambda _: None,
                         )
                         tasks.append(group.create_task(shell.run()))
+                    elif effects:
+                        LOG.warning(
+                            "shell_unavailable: tray and overlay require daybook.shell"
+                        )
                     try:
                         await server.serve()
                     finally:

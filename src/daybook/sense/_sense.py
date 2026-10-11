@@ -169,7 +169,13 @@ class Sense:
         self._state(state, at, reason=reason)
 
     def _failed(
-        self, at: datetime, sequence: int, status: str, *, captured: bool = False
+        self,
+        at: datetime,
+        sequence: int,
+        status: str,
+        *,
+        captured: bool = False,
+        reason: CaptureReason = "observation_unavailable",
     ) -> None:
         self.bus.publish(StatusChanged("sense", status))
         # A replaced builder had no pixels and a newer trigger supersedes it.
@@ -184,7 +190,7 @@ class Sense:
         self._last_observed_at = None
         self._last_thumb = None
         if self._last_state == "running":
-            self._state("withheld", at, reason="observation_unavailable")
+            self._state("withheld", at, reason=reason)
 
     async def poll(self, at: datetime | None = None) -> None:
         if self._closed:
@@ -288,9 +294,16 @@ class Sense:
         admitted = False
         captured_at: datetime | None = None
         admitted_questions: tuple[str, ...] = ()
+        discard_reason: CaptureReason | None = None
 
         async def builder() -> Prompt[_Observed] | None:
-            nonlocal window, built, admitted, admitted_questions, captured_at
+            nonlocal \
+                window, \
+                built, \
+                admitted, \
+                admitted_questions, \
+                captured_at, \
+                discard_reason
             before = self.screen.state()
             if (
                 epoch != self.journal.epoch
@@ -315,13 +328,15 @@ class Sense:
             captured_at = self._last_poll or at
             image = self.screen.grab(before)
             after = self.screen.state()
+            decision = gate(after, self._privacy)
             if (
                 epoch != self.journal.epoch
                 or consent != self._generation
-                or gate(after, self._privacy).state != "running"
+                or decision.state != "running"
                 or before.active != after.active
                 or before.windows != after.windows
             ):
+                discard_reason = decision.reason
                 return None
             built = True
             return Prompt(
@@ -375,7 +390,13 @@ class Sense:
             self._failed(at, sequence, "discarded_after_consent", captured=admitted)
             return
         if result is None or not built or window is None:
-            self._failed(at, sequence, "frame_discarded", captured=admitted)
+            self._failed(
+                at,
+                sequence,
+                "frame_discarded",
+                captured=admitted,
+                reason=discard_reason or "observation_unavailable",
+            )
             return
         current = self.screen.state()
         decision = gate(current, self._privacy)

@@ -229,3 +229,23 @@ async def test_post_inference_daybook_gate_keeps_specific_reason(real_sense):
     await sense.wait_idle()
     assert sense.status == CaptureStatus("withheld", "daybook_visible")
     assert journal.portal.now().observation is None
+
+
+@pytest.mark.parametrize(
+    "window,reason", [(DAYBOOK, "daybook_visible"), (PRIVATE, "excluded_window")]
+)
+async def test_post_grab_exclusion_keeps_specific_reason(real_sense, window, reason):
+    sense, screen, journal, _ = real_sense
+    screen.facts = facts()
+
+    def grab(expected):
+        assert expected == screen.facts
+        screen.facts = facts(window)
+        return b"discarded boundary pixels"
+
+    screen.grab = grab
+    await sense.poll(BASE)
+    await sense.wait_idle()
+    assert sense.status == CaptureStatus("withheld", reason)
+    assert not sense.gateway.prompts
+    assert journal.portal.now().observation is None

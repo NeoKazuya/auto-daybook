@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+import tomllib
 import urllib.request
 from pathlib import Path
 
@@ -57,6 +58,48 @@ def request_json(url, payload=None, key_file=None):
     request = urllib.request.Request(url, data=data, headers=headers)
     with urllib.request.urlopen(request, timeout=60) as response:
         return json.load(response)
+
+
+def model_profile(args):
+    """Read the app's model settings without importing or creating the app."""
+    path = Path(os.environ.get("DAYBOOK_HOME", "~/.daybook")).expanduser()
+    path = path / "daybook.toml"
+    try:
+        with path.open("rb") as config:
+            data = tomllib.load(config)
+    except FileNotFoundError:
+        data = {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError(f"Cannot read model profile from {path}: {exc}") from None
+    model = data.get("model", {})
+    if not isinstance(model, dict):
+        raise RuntimeError(
+            f"Invalid model profile in {path}: model must be a TOML table"
+        )
+    profile = {}
+    for option, setting, default in [
+        ("base_url", "base_url", "http://127.0.0.1:18300/v1"),
+        ("model", "model", "qwen3.8-flash-next"),
+        ("key_file", "api_key_file", "~/.config/qwen38/api-key"),
+    ]:
+        value = model.get(setting, default)
+        if not isinstance(value, str) or (not value.strip() and option != "key_file"):
+            raise RuntimeError(
+                f"Invalid model profile in {path}: model.{setting} must be a string"
+                + (" (nonempty)" if option != "key_file" else "")
+            )
+        profile[option] = value
+    if (
+        args.base_url is not None
+        and args.base_url.rstrip("/") != profile["base_url"].rstrip("/")
+        and args.key_file is None
+    ):
+        # An endpoint override must not send the profile's key to another server.
+        args.key_file = ""
+    for option, value in profile.items():
+        if getattr(args, option) is None:
+            setattr(args, option, value)
+    args.base_url = args.base_url.rstrip("/")
 
 
 def screenshot_status():
@@ -263,14 +306,17 @@ def main():
         action="store_true",
         help="also read the synthetic screen with the local model",
     )
-    parser.add_argument("--base-url", default="http://127.0.0.1:11434/v1")
-    parser.add_argument("--model", default="qwen3.6:35b")
-    parser.add_argument("--key-file")
+    parser.add_argument("--base-url", help="override the active model profile endpoint")
+    parser.add_argument("--model", help="override the active model profile model ID")
+    parser.add_argument(
+        "--key-file", help="override the profile key file; empty disables auth"
+    )
     args, args_command = parser.parse_known_args()
     args.command = args_command
     if args.action in ("status", "smoke") and args.command:
         parser.error("unexpected arguments: " + " ".join(args.command))
-    args.base_url = args.base_url.rstrip("/")
+    if args.action == "status" or (args.action == "smoke" and args.vision):
+        model_profile(args)
     if args.action == "enable-app":
         if len(args.command) != 1:
             parser.error("enable-app requires the absolute checkout path")

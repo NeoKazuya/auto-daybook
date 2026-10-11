@@ -220,9 +220,14 @@ class Runner:
                 result = await self.gateway.call(Priority.TICK, prompt)
             except ModelUnavailable:
                 return None
+            current = portal.now()
             if (
                 result is None
-                or portal.now().capture != "running"
+                or current.capture != "running"
+                or current.observation is None
+                # A queued OBSERVE can replace CURRENT while this tick awaits.
+                # Extensions of the same observation still represent valid evidence.
+                or current.observation.id != latest.id
                 or self.capture_start(self.clock()) != capture_start
             ):
                 return None

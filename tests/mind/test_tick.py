@@ -2,6 +2,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -17,7 +18,14 @@ from daybook.journal import (
     WindowInfo,
 )
 from daybook.mind import Mind, parse_tick
-from daybook.model import ModelUnavailable, Priority, ScriptedGateway
+from daybook.model import (
+    ModelConfig,
+    ModelGateway,
+    ModelUnavailable,
+    Priority,
+    Prompt,
+    ScriptedGateway,
+)
 from daybook.skills import Signal, SkillBook
 
 NOW = datetime.now(timezone.utc) + timedelta(seconds=1)
@@ -588,3 +596,74 @@ async def test_kind_transition_preserves_prior_durations_and_same_kind_continues
         assert after and after.id == current.id
     finally:
         journal.close()
+
+
+@pytest.mark.parametrize("changed_id", [True, False])
+async def test_queued_tick_rejects_replaced_current_but_keeps_extensions(
+    runtime, changed_id
+):
+    journal, clock, observation, skills = runtime
+    clock.advance(30)
+    journal.extend_observation(observation.id, clock())
+    observe_started = asyncio.Event()
+    release_observe = asyncio.Event()
+    tick_started = asyncio.Event()
+    release_tick = asyncio.Event()
+
+    async def transport(request):
+        body = json.loads(request.content)
+        if body["messages"][-1]["content"] == "observe":
+            observe_started.set()
+            await release_observe.wait()
+            content = "New visible screen"
+        else:
+            tick_started.set()
+            await release_tick.wait()
+            content = reply()
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": content}}]}
+        )
+
+    gateway = ModelGateway(ModelConfig())
+    await gateway._client.aclose()
+    gateway._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(transport), base_url="http://mock/v1/"
+    )
+
+    async def observe():
+        seen = await gateway.call(Priority.OBSERVE, Prompt("Describe", "observe", str))
+        clock.advance(1)
+        if changed_id:
+            assert seen
+            journal.add_observation(
+                ObservationDraft(clock(), WindowInfo("Meeting", "Call"), seen),
+                journal.epoch,
+            )
+        else:
+            journal.extend_observation(observation.id, clock())
+
+    observing = asyncio.create_task(observe())
+    try:
+        await asyncio.wait_for(observe_started.wait(), 1)
+        mind = Mind(journal, gateway, skills, clock=clock)
+        ticking = asyncio.create_task(mind.tick_now())
+        while not gateway.status().queue_depth:
+            await asyncio.sleep(0)
+        assert gateway.status().in_flight == "observe"
+        release_observe.set()
+        await asyncio.wait_for(tick_started.wait(), 1)
+        await observing
+        release_tick.set()
+        tick = await ticking
+        if changed_id:
+            assert tick is None
+            assert not skills.fired
+            assert not journal.portal.now().readings
+            assert journal.portal.now().segment is None
+        else:
+            assert tick and skills.fired == [tick]
+            assert journal.portal.now().segment
+    finally:
+        release_observe.set()
+        release_tick.set()
+        await gateway.close()

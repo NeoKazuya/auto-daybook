@@ -73,8 +73,19 @@ def read_state():
                     continue
                 geometry = window.get_geometry()
                 xy = root.translate_coords(window, 0, 0)
+                extents = prop(window, "_NET_FRAME_EXTENTS")
+                left, right, top, bottom = (
+                    tuple(int(v) for v in extents)
+                    if extents is not None and len(extents) == 4
+                    else (0, 0, 0, 0)
+                )
                 rect = clip(
-                    (xy.x, xy.y, geometry.width, geometry.height),
+                    (
+                        xy.x - left,
+                        xy.y - top,
+                        geometry.width + left + right,
+                        geometry.height + top + bottom,
+                    ),
                     (0, 0, dimensions.width, dimensions.height),
                 )
                 if not rect[2] or not rect[3]:

@@ -50,7 +50,7 @@ When your person asks for something:
 ### 2. Build
 
 - Stay inside the task and its area of the code.
-- If the task needs a change to a shared contract, it is **shared-contract work**. It waits for review before merging (step 5). Shared contracts include types or schema used across modules, API shapes between frontend and backend, auth, secrets handling, build or deploy config, and anything under `skills/builtin/` (built-in skills and their Python hooks run without in-app review).
+- If the task needs a change to a shared contract, it is **shared-contract work**. It waits for review before merging (step 5). Shared contracts include types or schema used across modules, API shapes between frontend and backend, auth, secrets handling, and build or deploy config.
 - For shared-contract work, read [docs/agents/design-red-flags.md](docs/agents/design-red-flags.md) first. Write the caller's usage before the types. Give each piece of state one owner. Move every caller to the new shape and delete the old one in the same PR.
 
 ### 3. Verify
@@ -106,7 +106,7 @@ git pull --rebase origin main    # if main moved: run the checks again, then pus
 gh pr merge <number> --squash --delete-branch
 ```
 
-The exception is **shared-contract work**. Wait up to 20 minutes for the review, triage it (step 6), fix any "Act on" findings, then merge. If no review arrives in 20 minutes, merge anyway, note it in the PR, and triage the review when it comes. **Exception:** a PR that changes anything under `skills/builtin/` never merges without a completed review, because built-in skills and their hooks are trusted on `main` without in-app review. If its review doesn't arrive, escalate.
+The exception is **shared-contract work**. Wait up to 20 minutes for the review, triage it (step 6), fix any "Act on" findings, then merge. If no review arrives in 20 minutes, merge anyway, note it in the PR, and triage the review when it comes.
 
 After merging:
 

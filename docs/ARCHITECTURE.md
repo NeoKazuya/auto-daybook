@@ -310,14 +310,14 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
 **Owns** the skill files (`skills/builtin/` in the repo, `$DAYBOOK_HOME/skills/` for user skills), the `skill_state` and `firings` tables, the only parser, the trigger evaluator, and the chat skill generator. The full format is in [skills.md](skills.md).
 
-- **`parse_skill(text, *, source, catalog, hook_text) -> Skill | [SkillError]`.** The only parser of a single file. The loader, the UI editor's live check, the CLI, and the generator all use it. `source` is a `SkillSource(path, origin: builtin|user, trusted: bool)` built by `SkillBook`; `trusted` is true only for a built-in that matches the reviewed revision (see Approval below). It checks that:
+- **`parse_skill(text, *, source, catalog, hook_text) -> Skill | [SkillError]`.** The only parser of a single file. The loader, the UI editor's live check, the CLI, and the generator all use it. `source` is a `SkillSource(path, origin: builtin|user)` built by `SkillBook` from where the file was loaded. It checks that:
   - `id` matches the file name in `source.path`
   - every `do` action is in `allow`
   - every allowed action is in the catalog
   - arguments match the catalog's parameter types, including catalog types such as `music.mood`
   - every referenced signal is declared
   - a skill has at most 4 signals
-  - a hook step appears only when `source.trusted` is true, and has a matching function in `<id>.hook.py`. Hooks in user or chat-made skills are parse errors, and `.hook.py` files outside `skills/builtin/` are never loaded
+  - a hook step appears only when `source.origin` is `builtin`, and has a matching function in `<id>.hook.py`. Hooks in user or chat-made skills are parse errors, and `.hook.py` files outside `skills/builtin/` are never loaded
 - **`evaluate(rule, history, max_gap=5 min, now) -> Occurrence | None`.** Pure. It covers the four trigger forms and the keys that make firing idempotent.
 - **Approval and enablement** (stored separately, in `skill_state`).
   - A skill is active only if it is enabled *and* `sha256(skill file + hook file)` is approved.
@@ -325,7 +325,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
   - **Cross-skill limit.** `SkillBook` (not the parser) enforces at most 12 active signals in total: `approve` and `enable` are refused with a clear error if they would exceed it, and `entries()` reports the current total.
   - Any edit, whether by hand, in the UI, or by the generator, returns it to "needs review".
   - Approving an outdated hash fails with `StaleApproval`.
-  - A built-in skill in `skills/builtin/` counts as approved (and `trusted`, so its hooks may run) only while its skill file and hook file match the **reviewed revision**: the blobs on `origin/main` as of the last fetch (`git ls-tree origin/main skills/builtin/`). Changes to `skills/builtin/` are shared-contract work under [CONTRIBUTING.md](../CONTRIBUTING.md), so they reach `main` only after review. A built-in that differs from `origin/main`, including one committed on a feature branch, loses the exception and needs review like any other skill. Without a `git` checkout, no built-in is trusted. New installs start with only `music` enabled; every other built-in starts approved but disabled.
+  - Built-in skills in `skills/builtin/` are part of the repo and count as approved; they're reviewed through normal PRs, not in the app. New installs start with only `music` enabled; every other built-in starts approved but disabled.
 - **`react(tick)`.** For each active skill and each rule:
   1. evaluate the rule
   2. check its cooldown
@@ -342,7 +342,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 
 - The parser accepts the built-in skills and the generated example from [skills.md](skills.md), and rejects a table of bad files with precise error locations.
 - `evaluate` is table-tested for all four forms, including gaps, startup (an edge needs a prior reading), and streak keys.
-- Approve, edit, and approve again works; the stale hash case is covered. Disable then enable keeps the approval. A locally edited built-in needs review.
+- Approve, edit, and approve again works; the stale hash case is covered. Disable then enable keeps the approval.
 - `react` fires once per occurrence (proven by applying a tick twice), and cooldown is respected.
 - A disallowed action can't run, even from a hook.
 - The generator turns the demo request into a valid skill with the real model, in under 30 s.
@@ -528,7 +528,7 @@ pyproject.toml            # Python 3.12, uv; deps: fastapi, uvicorn, httpx, pyda
 src/daybook/
   app.py  events.py
   journal/  model/  sense/  mind/  skills/  act/  chat/  web/ (static/)  shell/ (overlay.qml)
-skills/builtin/           # music, break, break-demo (approved while identical to origin/main)
+skills/builtin/           # music, break, break-demo (approved by being in the repo)
 fixtures/replay/<scenario>/   # recorded steps: frame PNGs, window.json, lock flags, expected labels
 scripts/check.sh          # the local checks
 scripts/check_boundaries.py

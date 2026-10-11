@@ -27,6 +27,8 @@ If more than five findings land in **Act on**, you're probably not filtering har
 
 **Premature abstraction.** Suggestions to extract a helper, add an interface, or generalize only matter if this code will need to change in a second way. If not, simple inline code wins.
 
+**Hackathon cost test.** This is a 2–3 person project on one shared, trusted machine. A hardening fix against a threat that doesn't apply here, such as a teammate's agent acting maliciously or forensic recovery, belongs in "Act on" only if it doesn't make the team's job harder. If it adds machinery, process, or merge friction, put it in Consider or Dismissed and say so. Privacy features the demo promises (pause, exclusions, no screenshots on disk, deleting notes) are product behavior, not hardening, so they still count.
+
 **"I would have done it differently."** A preference is not a bug unless the reviewer shows a concrete problem with the current approach.
 
 **Missing context.** Watch for findings that show the reviewer didn't have the full picture. Examples: comments on code this PR didn't write or modify, flagging a pattern the rest of the codebase already uses, or a suggestion that conflicts with a constraint you know about.

@@ -46,7 +46,14 @@ if TYPE_CHECKING:
 LOG = logging.getLogger(__name__)
 CAPTURE_LOCK = Path("/tmp/daybook-capture.lock")
 BUILTIN_SKILLS = Path(__file__).resolve().parents[2] / "skills/builtin"
-DEFAULT_CONFIG = """port = 8765
+DEFAULT_MODEL = ModelConfig(
+    base_url="http://127.0.0.1:18300/v1",
+    model="qwen3.8-flash-next",
+    api_key_file="~/.config/qwen38/api-key",
+    dialect="vllm",
+    max_concurrency=2,
+)
+DEFAULT_CONFIG = f"""port = 8765
 display = ":1"
 xauthority = "/run/user/1000/gdm/Xauthority"
 music_dir = "~/Music/daybook"
@@ -57,10 +64,11 @@ tick_interval = "90s"
 tick_effort = "none"
 
 [model]
-base_url = "http://127.0.0.1:11434/v1"
-model = "qwen3.6:35b"
-api_key_file = ""
-dialect = "ollama"
+base_url = "{DEFAULT_MODEL.base_url}"
+model = "{DEFAULT_MODEL.model}"
+api_key_file = "{DEFAULT_MODEL.api_key_file}"
+dialect = "{DEFAULT_MODEL.dialect}"
+max_concurrency = {DEFAULT_MODEL.max_concurrency}
 """
 
 
@@ -75,7 +83,7 @@ class Config:
     keep_frames: bool = False
     tick_interval: float = 90
     tick_effort: Literal["none", "low"] = "none"
-    model: ModelConfig = ModelConfig()
+    model: ModelConfig = DEFAULT_MODEL
 
 
 def duration(value: object) -> float:
@@ -122,7 +130,7 @@ def load_config(home: Path | None = None) -> Config:
     model = data.get("model", {})
     if not isinstance(model, dict):
         raise ValueError("model must be a TOML table")
-    dialect = model.get("dialect", "ollama")
+    dialect = model.get("dialect", DEFAULT_MODEL.dialect)
     if dialect not in ("ollama", "vllm", "openai"):
         raise ValueError("model.dialect must be ollama, vllm or openai")
 
@@ -143,10 +151,11 @@ def load_config(home: Path | None = None) -> Config:
         tick_interval=duration(data.get("tick_interval", "90s")),
         tick_effort=effort,
         model=ModelConfig(
-            base_url=string(model, "base_url", "http://127.0.0.1:11434/v1"),
-            model=string(model, "model", "qwen3.6:35b"),
-            api_key_file=string(model, "api_key_file", ""),
+            base_url=string(model, "base_url", DEFAULT_MODEL.base_url),
+            model=string(model, "model", DEFAULT_MODEL.model),
+            api_key_file=string(model, "api_key_file", DEFAULT_MODEL.api_key_file),
             dialect=dialect,
+            max_concurrency=model.get("max_concurrency", DEFAULT_MODEL.max_concurrency),
         ),
     )
 

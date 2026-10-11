@@ -18,22 +18,84 @@ import pytest
 from daybook import app
 
 
+@pytest.fixture(autouse=True)
+def isolated_model_credentials(tmp_path_factory, monkeypatch):
+    # Real gateway construction reads the configured key immediately. Keep both
+    # this process and owned CLI subprocesses away from the developer's HOME.
+    home = tmp_path_factory.mktemp("app-model-home")
+    key = home / ".config/qwen38/api-key"
+    key.parent.mkdir(parents=True)
+    key.write_text("isolated-app-test-key")
+    monkeypatch.setenv("HOME", str(home))
+
+
 def test_missing_config_creates_defaults_and_keeps_existing_values(tmp_path: Path):
+    from daybook.model import ModelConfig
+
     config = app.load_config(tmp_path)
     assert config.home == tmp_path
     assert config.port == 8765 and config.tick_interval == 90
-    assert config.model.model == "qwen3.6:35b"
-    assert config.model.dialect == "ollama"
     assert config.tick_effort == "none" and not config.keep_frames
-    path = tmp_path / "daybook.toml"
-    path.write_text(
-        'port=8771\ntick_interval="0.5m"\ntick_effort="low"\n[model]\ndialect="vllm"\napi_key_file="~/private/key"\n'
+    expected = ModelConfig(
+        base_url="http://127.0.0.1:18300/v1",
+        model="qwen3.8-flash-next",
+        api_key_file="~/.config/qwen38/api-key",
+        dialect="vllm",
+        max_concurrency=2,
     )
+    assert config.model == expected
+    assert app.Config(home=tmp_path).model == expected
+    path = tmp_path / "daybook.toml"
+    generated = path.read_text()
+    assert "max_concurrency = 2" in generated
+    assert app.load_config(tmp_path).model == expected
+    assert path.read_text() == generated
+
+    custom = (
+        "# Keep this existing deployment.\n"
+        'port=8771\ntick_interval="0.5m"\ntick_effort="low"\n'
+        '[model]\nbase_url="http://127.0.0.1:11434/v1"\n'
+        'model="qwen3.6:35b"\ndialect="ollama"\n'
+        'api_key_file="~/private/key"\nmax_concurrency=3\n'
+    )
+    path.write_text(custom)
     updated = app.load_config(tmp_path)
     assert updated.port == 8771 and updated.tick_interval == 30
     assert updated.tick_effort == "low"
-    assert updated.model.api_key_file == "~/private/key"
-    assert path.read_text().startswith("port=8771")
+    assert updated.model == ModelConfig(
+        base_url="http://127.0.0.1:11434/v1",
+        model="qwen3.6:35b",
+        api_key_file="~/private/key",
+        dialect="ollama",
+        max_concurrency=3,
+    )
+    assert path.read_text() == custom
+    # The gateway remains generic; the app owns the GX10 deployment profile.
+    assert ModelConfig().model == "qwen3.6:35b"
+    assert ModelConfig().max_concurrency == 1
+
+
+@pytest.mark.parametrize("table", ["", "[model]\n", '[model]\nmodel="custom-qwen"\n'])
+def test_partial_model_config_uses_app_profile_defaults(tmp_path: Path, table: str):
+    path = tmp_path / "daybook.toml"
+    path.write_text(table)
+    config = app.load_config(tmp_path)
+    assert config.model.base_url == "http://127.0.0.1:18300/v1"
+    assert config.model.model == (
+        "custom-qwen" if "custom-qwen" in table else "qwen3.8-flash-next"
+    )
+    assert config.model.api_key_file == "~/.config/qwen38/api-key"
+    assert config.model.dialect == "vllm"
+    assert config.model.max_concurrency == 2
+    assert config.tick_interval == 90 and config.tick_effort == "none"
+    assert path.read_text() == table
+
+
+@pytest.mark.parametrize("limit", ["0", "true", "1.5"])
+def test_invalid_model_concurrency_fails_clearly(tmp_path: Path, limit: str):
+    (tmp_path / "daybook.toml").write_text(f"[model]\nmax_concurrency={limit}\n")
+    with pytest.raises(ValueError, match="max_concurrency must be a positive integer"):
+        app.load_config(tmp_path)
 
 
 @pytest.mark.parametrize(

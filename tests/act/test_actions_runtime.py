@@ -559,6 +559,24 @@ async def test_wait_step_sleeps_and_close_tab_goes_through_the_desktop(
     assert (await actions.run("wait", **{"for": "5s"})).ok and waits == [5]
     assert (await actions.run("desktop.close_tab", title="*Instagram*")).ok
     assert desktop.calls == [("close_tab", "*Instagram*")]
+    # One warning authorizes one close.
+    again = await actions.run("desktop.close_tab", title="*Instagram*")
+    assert again.detail == "no_warning_shown"
+    # A later warning that fails withdraws an earlier successful one.
+    assert (
+        await actions.run(
+            "overlay.show", title="Instagram?", body="Bro.", layout="bubble"
+        )
+    ).ok
+    overlay.shell_connected(False)
+    failed = await actions.run(
+        "overlay.show", title="Instagram?", body="Bro.", layout="bubble"
+    )
+    assert not failed.ok
+    stale = await actions.run("desktop.close_tab", title="*Instagram*")
+    assert stale.detail == "no_warning_shown"
+    assert desktop.calls == [("close_tab", "*Instagram*")]
+    overlay.shell_connected(True)
     # Another skill's warning doesn't count.
     other = catalog.allowed(("desktop.close_tab",), "other-skill")
     assert (await other.run("desktop.close_tab", title="*Instagram*")).detail == (
@@ -701,6 +719,20 @@ async def test_xdo_close_tab_targets_only_the_checked_window(monkeypatch):
     assert (await desktop.close_tab("*Instagram*")).ok
     assert len(ran) == 2
     ran.pop()
+
+    # Focus moves away between the checks and the keystroke: abort, don't reactivate.
+    calls = {"n": 0}
+
+    async def moving(*args):
+        if args == ("xdotool", "getactivewindow"):
+            calls["n"] += 1
+            return "4242" if calls["n"] == 1 else "9999"
+        return await output(*args)
+
+    monkeypatch.setattr(_desktop, "output", moving)
+    assert (await desktop.close_tab("*Instagram*")).detail == "tab_not_active"
+    assert len(ran) == 1
+    monkeypatch.setattr(_desktop, "output", output)
 
     screen["window"] = ""
     assert (await desktop.close_tab("*Instagram*")).detail == "window_unreadable"

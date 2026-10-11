@@ -454,8 +454,11 @@ def bind_handlers(
             ),
             skill,
         )
+        # Only the latest attempt counts: a failed warning withdraws an earlier one.
         if outcome.ok:
             warned[skill] = time.monotonic()
+        else:
+            warned.pop(skill, None)
         return outcome
 
     async def hide(skill: str, args: Mapping[str, object]) -> Outcome:
@@ -480,7 +483,7 @@ def bind_handlers(
         return await desktop.focus(str(args["app"]))
 
     async def close_tab(skill: str, args: Mapping[str, object]) -> Outcome:
-        shown = warned.get(skill)
+        shown = warned.pop(skill, None)  # one warning authorizes one close
         if shown is None or time.monotonic() - shown > CLOSE_TAB_WARNING_WINDOW:
             return Outcome("desktop.close_tab", False, "no_warning_shown")
         return await desktop.close_tab(str(args["title"]))

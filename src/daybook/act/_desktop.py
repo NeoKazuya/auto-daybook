@@ -161,6 +161,10 @@ async def close_tab(title: str) -> Outcome:
         return Outcome("desktop.close_tab", False, "window_unreadable")
     if not browser(wm_class):
         return Outcome("desktop.close_tab", False, "not_a_browser")
+    # Abort if focus moved while we were checking, so the activation below never
+    # brings back a window the user has left; it then only binds the key to it.
+    if await output("xdotool", "getactivewindow") != window:
+        return Outcome("desktop.close_tab", False, "tab_not_active")
     return await command(
         "desktop.close_tab",
         "xdotool",

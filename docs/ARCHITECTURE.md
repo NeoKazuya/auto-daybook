@@ -95,14 +95,14 @@ GNOME Xorg :1 ──────────────────────
 
 ## 4. Data model
 
-All notes live in one SQLite file, `$DAYBOOK_HOME/journal.db`, in WAL mode with `secure_delete=ON` and an FTS5 index. The `journal` package is its only writer, except for the `skill_state` and `firings` tables, which only `skills` writes. There is no image column anywhere.
+All notes live in one SQLite file, `$DAYBOOK_HOME/journal.db`, in WAL mode with `secure_delete=ON` and an FTS5 index created with FTS5's `secure-delete` option. The `journal` package is its only writer, except for the `skill_state` and `firings` tables, which only `skills` writes. There is no image column anywhere.
 
 | Type | Fields | Rules |
 |---|---|---|
 | `Observation` | `id`, `started_at`, `last_seen_at`, `window: WindowInfo(app, title)`, `seen` (1–2 sentences), `visible_text` (≤300 chars), `segment` (or none) | **What was on screen.** `window` comes from X11, not the model. `seen` describes only what's visible and never guesses intent. While the screen stays unchanged, sense moves `last_seen_at` forward without a model call. `active = last_seen_at − started_at + one poll interval`. `segment is None` means it hasn't been rolled up yet |
 | `Segment` | `id`, `title`, `kind: ActivityKind`, `intent`, `authored: model\|user`, `open`; derived: `started_at`, `ended_at`, `active`, `observations` | **The interpretation.** Times are derived from member observations at read time and never stored, so deleting an observation shrinks its segment. Once a user edits the text, `authored = user` and ticks never overwrite it |
 | `SignalReading` | `signal: SignalId(skill, name)`, `value: bool\|str\|float\|None`, `at`, `tick` | One row per signal per tick. `None` means the model couldn't tell or answered outside the type. "Held for 50 minutes" is computed from readings, so it survives a restart |
-| `CaptureSpan` | `state: running\|paused\|locked\|withheld\|overlay`, `start`, `end` | Why capture was or wasn't happening. The timeline shows gaps honestly, and recall won't invent activity inside them |
+| `CaptureSpan` | `state: running\|paused\|locked\|away\|withheld\|overlay`, `start`, `end` | Why capture was or wasn't happening. The timeline shows gaps honestly, and recall won't invent activity inside them |
 | `Tick` | `at`, `epoch`, `evidence_until`, `observations` (may be empty), `segment: Continue\|Start` (or none), `readings` | Applied in one transaction. Unique on `evidence_until`, the newest `last_seen_at` it read, so re-applying is a no-op. A tick with no new observations still writes readings, which is how streaks keep growing on a still screen. Rejected whole if `epoch` is older than the journal's forget epoch |
 | `SkillState` | `skill`, `enabled`, `approved_hash` (or none), `at` | Enablement and approval are stored separately. A skill is **active** only if `enabled` is true *and* its current hash is approved. Disabling keeps the approval, so re-enabling needs no new review; any edit changes the hash, so the skill needs review again |
 | `Firing` | `skill`, `rule`, `key`, `at`, `outcomes` | Unique on (skill, rule, key). This makes each rule fire at most once per occurrence |
@@ -171,7 +171,7 @@ Each module is a package with a public `__init__.py`. Internals live in `_*.py` 
 
 **`Journal`** (writes):
 
-- **sense:** `add_observation`, `extend_observation`, `set_capture_state` (idempotent).
+- **sense:** `add_observation`, `extend_observation`, `trim_observation` (when going away), `set_capture_state` (idempotent).
 - **mind:** `record_tick` (one transaction; idempotent; rejected if started before the last forget) and `close_open_segment`.
 - **web, on user request:**
   - `edit_segment` (sets `authored=user`), `edit_observation`
@@ -188,6 +188,7 @@ Every commit publishes a domain event on the bus.
 - Deleting an observation shrinks its segment's derived times. Deleting a segment removes its observations and their FTS rows.
 - A user-authored segment survives a later `Continue`.
 - A tick or observation started before a `forget_range` is rejected after it, and nothing from the forgotten range reappears.
+- After `forget_range` returns, a byte search of `journal.db` and `journal.db-wal` for a unique string from the forgotten notes finds nothing.
 - A tick with no new observations writes readings and no segment change.
 - `context()` respects its budget and includes capture spans.
 - `totals()` matches hand-computed durations on a fixture.
@@ -234,10 +235,11 @@ The bus is in-process pub/sub. The web SSE route is the only place events are se
    - paused → `PAUSED`
    - no active window → `LOCKED`
    - our own overlay is up → `OVERLAY`
-   - any *viewable* top-level window on the current desktop matches an exclusion → `WITHHELD`
+   - no keyboard or mouse input for 5 minutes (X11 idle time from the XScreenSaver extension) → `AWAY`. Idle time is ignored while any app is recording from the microphone (`pactl list short source-outputs` isn't empty), so listening in a call doesn't count as away
+   - any excluded window has a visible part on screen → `WITHHELD`. "Visible" is computed from the stacking order (`_NET_CLIENT_LIST_STACKING`) and window geometry: an excluded window counts only if its rectangle isn't fully covered by the windows above it. A password manager or the Daybook UI hidden behind VS Code doesn't block capture
 2. **Thumbnail.** Grab a 32×18 grayscale thumbnail. If it's black → `LOCKED`.
-3. **Keep time continuous.** Every poll that passes the gate extends the latest observation (`extend_observation`), whether or not the screen changed. An observation therefore covers the time until the next one starts, and totals don't lose the seconds between a change and the next model call.
-4. **New observation** if the window changed or the thumbnail differs by 3% or more, and at least 10 s have passed since the last observe (an app switch skips the wait). Call the gateway with an OBSERVE builder. The builder rechecks the gate, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it re-lists the windows.** If the window set changed, it discards the frame.
+3. **Keep time continuous, but never across a gap.** If the previous poll was also `RUNNING`, extend the latest observation (`extend_observation`) whether or not the screen changed, so totals don't lose the seconds between a change and the next model call. If the previous poll was in any other state, don't extend: the next observation starts fresh, and step 4 skips the cooldown. When `AWAY` begins, the latest observation is trimmed back to the last input time (`trim_observation`), so the idle minutes don't count as activity.
+4. **New observation** if the window changed, the thumbnail differs by 3% or more, or capture just resumed after a gap. At least 10 s must have passed since the last observe; an app switch or a resume skips that wait. Call the gateway with an OBSERVE builder. The builder rechecks the gate, grabs the full frame with `mss`, resizes it to 1280 px, and encodes it as JPEG. **After the grab, it re-lists the windows.** If the window set changed, it discards the frame.
 5. **Write the result.** `add_observation(draft, epoch)`, then `mind.nudge(app_switched)`. A result is discarded if the consent generation changed while it was in flight (see [§7](#7-privacy)), and the journal rejects it if a forget happened since the call started.
 
 **Observe prompt:** describe only what's visible, in 1–2 sentences, plus up to 300 characters of salient on-screen text. No guesses about goals or feelings; that's the tick's job. The window app and title are given to the model as facts.
@@ -252,12 +254,13 @@ Our overlay is recognized by `_NET_WM_PID` matching the shell process that `dayb
 
 **Screens:**
 
-- `X11Screen` uses `mss` for pixels and `python-xlib` for `_NET_ACTIVE_WINDOW`, `_NET_CLIENT_LIST_STACKING`, `WM_CLASS`, `_NET_WM_NAME`, `_NET_WM_PID`, and the map state. The lock state comes from `loginctl show-session <seat0 session> -p LockedHint`.
+- `X11Screen` uses `mss` for pixels and `python-xlib` for `_NET_ACTIVE_WINDOW`, `_NET_CLIENT_LIST_STACKING`, `WM_CLASS`, `_NET_WM_NAME`, `_NET_WM_PID`, window geometry, the map state, and input idle time (`Xlib.ext.screensaver.query_info`). The lock state comes from `loginctl show-session <seat0 session> -p LockedHint`.
 - `ReplayScreen` plays a folder of steps (a PNG, `window.json`, a lock flag, and visible windows) at real or accelerated speed.
 
 **Done when:**
 
-- `gate()` has a table test for every branch, including an excluded window in the background and an unreadable lock state.
+- `gate()` has a table test for every branch, including an unreadable lock state, idle input, an excluded window that's partly visible (withheld), and one that's fully covered (not withheld). The visibility calculation is a pure function with its own geometry tests.
+- After a pause, lock, or away span, the first running poll starts a new observation; the gap's time is attributed to nothing. Going away trims the last observation to the last input time.
 - The black-frame check passes against the real locked-screen capture from grounding.
 - A replay run writes observations, and unchanged frames extend instead of calling the model. A changed frame inside the 10 s cooldown still extends the current observation, so `totals()` has no gap.
 - A frame whose window set changed after the grab is discarded.
@@ -487,8 +490,9 @@ Each control is enforced at one boundary:
 | Pause / resume | `sense` | `privacy.json` is the persisted switch. Pausing:<ul><li>increments the **consent generation**</li><li>makes the gateway drop pending OBSERVE work</li><li>discards any model result started under an older generation before it reaches the journal</li><li>hides the overlay</li><li>stops skills from reacting</li></ul>Music keeps playing; the user stops it separately |
 | Exclusions | `sense.gate` | Checked against every viewable window before any pixels are read, and rechecked after the grab. Withheld time is a `WITHHELD` capture span. Excluded window titles are never stored or logged. Changing exclusions increments the consent generation |
 | Locked screen | `sense.gate` | `LockedHint`, an empty active window, an unreadable state, or a black thumbnail all count as locked. Fails closed |
+| Away | `sense.gate` | 5 minutes without input is `AWAY`: no capture, no ticks, and the idle stretch is trimmed from the last observation |
 | Screenshots | `sense` + `model` | Frames exist only as bytes inside the observe builder and the HTTP request. Nothing is queued or written to disk. `debug.keep_frames` is off by default and shown in the UI if turned on |
-| Edit / delete notes | `journal` | Edits mark segments as user-authored. Deletion of an observation, a segment, a time range, or everything is immediate, with `secure_delete=ON`. A deleted observation can't come back through a later tick, and the forget epoch makes the journal reject any observe or tick result that started before the forget |
+| Edit / delete notes | `journal` | Edits mark segments as user-authored. Deletion of an observation, a segment, a time range, or everything removes the rows and their FTS entries in one transaction. Then the journal runs `PRAGMA wal_checkpoint(TRUNCATE)`, so the old pages don't stay in the write-ahead log. `secure_delete=ON` and FTS5 `secure-delete` overwrite freed content. If the checkpoint can't truncate because a reader is active, it retries after the reader finishes, and the privacy page shows "deletion pending" until it succeeds. This removes note text from the database files; it doesn't claim to defeat forensic recovery from the SSD itself. A deleted observation can't come back through a later tick, and the forget epoch makes the journal reject any observe or tick result that started before the forget |
 | Logs | every module | Logs hold timings, states, IDs, and error kinds. Never prompts, frames, titles, or note text |
 | Local API | `web` | Loopback only, plus the per-launch token and `Origin` check |
 | Model server | setup | Request logging off on Ollama/vLLM, verified in [setup.md](setup.md) |
@@ -638,6 +642,7 @@ The system is finished when all of these pass live on the GX10, with the real mo
 | Qwen3.8 isn't ready, or can't read images | Stay on `qwen3.6:35b`. Switching is a config change gated on `accept.py --vision` plus the fixtures |
 | Venue Wi‑Fi is shared with the 124 GiB Qwen3.8 download | The music download and package installs are small. Avoid large downloads (for example, PySide6-Addons isn't used) |
 | One screen and one capture loop for everyone | `--replay` development instances and the capture flock. Real-screen checks happen at the machine |
+| Passive time (a long video, reading without scrolling) counts as away after 5 minutes without input | Microphone use counts as presence, so calls are covered. Five minutes keeps normal reading inside the threshold. Tune it from the replay fixtures if needed |
 | A "meeting ended" false positive from a brief tab switch | `becomes false` needs a prior known reading within 5 min, and the tick sees the last 30 min of context. The demo uses a clear switch from Meet to the editor |
 
 Open questions for the user:

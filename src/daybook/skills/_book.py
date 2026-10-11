@@ -80,7 +80,7 @@ class Book:
         if state is None:
             self.ledger.set_state(
                 id,
-                enabled=source.origin == "builtin" and id == "music",
+                enabled=False,
                 approved_hash=hash if source.origin == "builtin" else None,
                 approved_at=datetime.now(timezone.utc).isoformat()
                 if source.origin == "builtin"
@@ -88,6 +88,13 @@ class Book:
                 observed_hash=hash,
             )
             state = self.ledger.state(id)
+            if (
+                source.origin == "builtin"
+                and id == "music"
+                and isinstance(parsed, Skill)
+            ):
+                self.try_builtin_enable(id, parsed)
+                state = self.ledger.state(id)
         assert state is not None
         if source.origin == "user" and state["observed_hash"] != hash:
             self.ledger.set_state(
@@ -100,7 +107,10 @@ class Book:
             state = self.ledger.state(id)
             assert state is not None
         if source.origin == "builtin" and state["approved_hash"] != hash:
-            self.replace_approval(id, hash, enabled=bool(state["enabled"]))
+            was_enabled = bool(state["enabled"])
+            self.replace_approval(id, hash, enabled=False)
+            if was_enabled and isinstance(parsed, Skill):
+                self.try_builtin_enable(id, parsed)
             state = self.ledger.state(id)
             assert state is not None
         approved = state["approved_hash"] == hash
@@ -126,6 +136,16 @@ class Book:
             approved,
             status,
         )
+
+    def try_builtin_enable(self, id: str, skill: Skill) -> None:
+        count = sum(
+            len(e.skill.signals)
+            for e in self.entries()
+            if e.id != id and e.status == "active" and e.skill
+        )
+        if count + len(skill.signals) <= 12:
+            self.toggle(id, True)
+        self.bus.publish(SkillsChanged(id))
 
     def entries(self) -> list[SkillEntry]:
         return [self.entry(id) for id in sorted(self.sources())]
@@ -296,7 +316,15 @@ class Book:
                             outcomes.append(Outcome("hook", True))
                         else:
                             args = {
-                                key: render(value, occurrence, history)
+                                key: render(
+                                    value,
+                                    occurrence,
+                                    history,
+                                    textual=self.catalog.specs[step.action]
+                                    .parameters[key]
+                                    .type
+                                    == "str",
+                                )
                                 for key, value in step.arguments.items()
                             }
                             outcomes.append(await actions.run(step.action, **args))
@@ -308,11 +336,15 @@ class Book:
 
 
 def render(
-    value: object, occurrence: Occurrence, history: list[SignalReading]
+    value: object,
+    occurrence: Occurrence,
+    history: list[SignalReading],
+    *,
+    textual: bool = False,
 ) -> object:
     if not isinstance(value, str):
         return value
-    if re.fullmatch(r"\$[a-zA-Z_][a-zA-Z0-9_]*", value):
+    if not textual and re.fullmatch(r"\$[a-zA-Z_][a-zA-Z0-9_]*", value):
         return occurrence.values.get(value[1:])
 
     def replace(match: re.Match[str]) -> str:

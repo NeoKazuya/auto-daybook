@@ -280,3 +280,39 @@ def test_cleanup_callback_is_required(tmp_path):
             build_catalog(MOODS),
             Bus(),
         )
+
+
+async def test_exact_placeholder_in_text_argument_is_rendered_as_text(setup_book):
+    book, portal, called, _ = setup_book
+    saved = book.save("demo", text().replace("'Focused for $focused.for'", "$focused"))
+    book.approve("demo", saved.hash)
+    at = datetime.now(timezone.utc) + timedelta(seconds=1)
+    reading = SignalReading(SignalId("demo", "focused"), True, at, "one")
+    portal.history = [reading]
+    await book.react(Tick(at, 0, at, (), None, (reading,)))
+    assert called[0][1]["body"] == "True"
+
+
+def test_builtin_upgrade_respects_existing_active_capacity(tmp_path):
+    builtin = tmp_path / "builtin"
+    builtin.mkdir()
+    file = builtin / "music.skill.md"
+    file.write_text(text(id="music"))
+    book = SkillBook(
+        tmp_path,
+        builtin,
+        tmp_path / "db",
+        MemoryPortal(),
+        build_catalog(MOODS),
+        Bus(),
+        clear_readings=lambda skill: None,
+    )
+    assert book.entries()[0].status == "active"
+    for id, count in (("a", 4), ("b", 4), ("c", 3)):
+        entry = book.save(id, text(id=id, count=count))
+        book.approve(id, entry.hash)
+    assert len(book.active_signals()) == 12
+    file.write_text(text(id="music", count=4))
+    assert len(book.active_signals()) <= 12
+    upgraded = next(e for e in book.entries() if e.id == "music")
+    assert upgraded.approved and upgraded.status == "disabled"

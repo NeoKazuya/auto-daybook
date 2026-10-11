@@ -1,53 +1,60 @@
-# Lane A: the core
+# Lane A: build the core
 
-**Owner:** the Codex wave. One orchestrating agent hands tasks to worker agents, each in its own worktree, and every task is claimed on the [Tracker](https://github.com/NeoKazuya/auto-daybook/issues/1) under its ID.
+**Goal:** build the complete working Daybook backend, start to end. It watches the screen, writes notes, runs the tick and the skills, plays music, drives the overlay and desktop actions, answers chat, and serves the API that the UI uses. At the end, `daybook run` on the GX10 passes the end-to-end acceptance in [ARCHITECTURE.md §11.2](../ARCHITECTURE.md#112-end-to-end-acceptance), with Lane B's UI on top.
 
-**Owns:** everything except the web UI's static files and the shell. See the ownership table in [README.md](README.md#ownership-by-path).
+**Owner:** the Codex wave. How the work is divided among Codex's agents, and in what order, is Codex's call. This brief says what has to exist when it's done. Claim the lane once on the [Tracker](https://github.com/NeoKazuya/auto-daybook/issues/1); each PR says `Part of #1` and names the lane.
 
-**Spec:** each task's full scope and "Done when" checks are in the [ARCHITECTURE.md](../ARCHITECTURE.md) section it names. This brief adds only the order, the test setup, and what to watch for. If this brief and ARCHITECTURE disagree, ARCHITECTURE wins; fix this brief.
+**Owns:** every path except `src/daybook/web/static/` and `src/daybook/shell/` (see [README.md](README.md#ownership-by-path)).
 
-**Starts after:** [Contracts (C1)](contracts.md) is merged.
+**Spec:** [ARCHITECTURE.md](../ARCHITECTURE.md) is the spec for every module, including its "Done when" checks. [skills.md](../skills.md) is the skill format. If this brief and ARCHITECTURE disagree, ARCHITECTURE wins.
 
-## Tasks
+## The first PR: the shared skeleton
 
-| ID | Task | Spec | Paths | Needs first |
-|---|---|---|---|---|
-| A1 | Notes store and event bus | §6.1, §6.2, §4 | `journal/`, `events.py` | — |
-| A2 | Model gateway | §6.3, §5 | `model/` | — |
-| A3 | Skills: parser, trigger evaluator, `SkillBook`, generator | §6.6, [skills.md](../skills.md) | `skills/`, `skills/builtin/` | — |
-| A4 | Actions: catalog, music player and library, overlay state, desktop backends | §6.7 | `act/` | A5 for the real-music checks |
-| A5 | Music library: 20–30 CC-licensed tracks with `library.toml` on the GX10 | [setup.md](../setup.md) §5, [skills.md](../skills.md#music-library) | `~/Music/daybook/` (not in the repo) | — |
-| A6 | Fixture recorder and the four replay scenarios | §10 | `scripts/record_fixture.py`, `fixtures/replay/` | — |
-| A7 | Screen capture and privacy gate | §6.4, §7 | `sense/` | A6 for replay tests beyond the C1 example |
-| A8 | The tick | §6.5 | `mind/` | A1, A2, A3 for integration (fakes before that) |
-| A9 | Chat: routing, recall, skill drafting | §6.8 | `chat/` | A1, A2, A3 for integration. **Lane B may claim this instead** |
-| A10 | App wiring, CLI, child processes, capture lock, startup service | §6.11, §9 | `app.py` | all of A1–A9 for full wiring |
-| A11 | Real web route handlers (replacing the mock backend per route) | §6.9 | `web/` except `static/` and `wire.py` | the module each route calls |
-| A12 | cua trial (at most one hour) | §11.1 | `act/_desktop.py`, decisions.md | A4 |
-| A13 | Integration, prompt tuning, and end-to-end acceptance | §11.2, §6.5 quality gate | any Lane A path | everything above |
+Lane B builds against the API from the start, so the first thing Lane A merges is the skeleton that both lanes share. It's shared-contract work, so it waits for review (CONTRIBUTING step 5). It contains:
 
-A1, A2, A3, A4, A5, A6, and A7 can all start as soon as C1 merges. A8 and A9 can start too, against `ScriptedGateway` and fakes, then integrate as A1–A3 land. "Needs first" only marks a real dependency. It doesn't order the rest.
+- **Project and checks.**
+  - `pyproject.toml`: Python 3.12 with `uv`, src layout, console script `daybook = "daybook.app:main"`.
+    - runtime dependencies: `fastapi`, `uvicorn`, `httpx`, `pydantic`, `pyyaml`, `mss`, `python-xlib`, `pillow`, `PySide6-Essentials`
+    - dev dependencies: `ruff`, `pyright`, `pytest`, `pytest-asyncio`
+  - `scripts/check_boundaries.py`, enforcing the rules in ARCHITECTURE §10, with a test per rule.
+  - `scripts/check.sh` runs green.
+- **Every package with its public interface** from §6. Signatures are typed, and their bodies may be stubs. The data types in §4 are real frozen dataclasses. `events.py` has every event and a working `Bus`. The action catalog lists every action in §6.7 with its real parameters. `skills/builtin/` holds the three built-in skills from [skills.md](../skills.md).
+- **`web/wire.py` and `--mock-api`, as working code.**
+  - `wire.py` has a pydantic model, with a realistic example, for every request, response, and SSE payload in §6.9.
+  - Every route is registered with the token and `Origin` checks.
+  - `daybook run --mock-api --port N` serves the examples, keeps edits in memory, answers chat with a canned recall answer or skill draft, and streams a scripted loop of events.
+- **The replay fixture format.** `fixtures/replay/README.md` defines it: per step, a frame PNG, `window.json` (active window, plus visible windows with geometry, stacking, and opacity), `locked`, and `idle_ms`. It also has `labels.json` and a 3-step hand-made example.
 
-## Test setup
+When it merges, post on the Tracker so Lane B can start. Everything after it is Lane A building the real thing behind those interfaces.
 
-- **Without the screen or the model:** `ReplayScreen` with the fixtures, `ScriptedGateway`, a temporary journal, and the fake `DesktopControl`, music, and overlay backends. Most tests run this way.
-- **Development instances:** `daybook run --replay fixtures/replay/<scenario> --port 877x` with `DAYBOOK_HOME=~/.daybook-a-<agent>`. They never touch the real screen or speakers.
-- **Real model:** Ollama `qwen3.6:35b` at `http://127.0.0.1:11434/v1` (already installed and verified with a real screenshot; see [gx10-unattended.md](../gx10-unattended.md)). Only one large model fits in memory, so don't start another.
-- **Real screen and effects** (A4 music, A7 X11 capture, A10, A12, A13): hold the capture lock, using the wrapper in [gx10-unattended.md](../gx10-unattended.md), and use `--real-effects`. `gx10 status` and `gx10 smoke` check the desktop first.
-- **Startup service:** once `app` runs, `gx10 enable-app /home/asus/auto-daybook` turns on the `daybook` user service (from #3).
+## Scope: what exists when Lane A is done
 
-## What to watch for
+Each item is complete when its ARCHITECTURE "Done when" checks pass. This is a checklist, not an order.
 
-- **Model budget.** A2, A7, A8, and A9 share one model. Keep within the call caps in §5, and report `calls_last_minute` in `GatewayStatus`.
-- **The quality gate (A8 and A13).** The tick's signal answers must match fixture labels on at least 80% of ticks. If they don't, raise the tick's effort to `low` before changing anything else.
-- **Wire shapes.** A11 must return exactly the `wire.py` models. If a real handler needs a different shape, change `wire.py` and its mock example together in a shared-contract PR, and post on the Tracker so Lane B sees it.
-- **Privacy behavior is product behavior.** The checks in §7 are acceptance items, not hardening. Apply the hackathon cost test from [review-triage.md](../agents/review-triage.md) only to findings about threats outside the product.
+- [ ] **Notes and events:** the journal with derived segment times, the forget epoch, `trim_after`, partial-forget clearing, FTS5 with `secure-delete`, and WAL truncation, plus the bus (§6.1, §6.2, §4).
+- [ ] **Model gateway:** one slot, priorities, the starvation guard, a single pending observe, structured output with one repair retry, timeouts, dialects, and live status (§6.3, §5).
+- [ ] **Screen capture and privacy gate:** X11 and replay screens; the lock, pause, away, overlay, and visible-exclusion gate, including the rerun after the grab; continuity rules; the consent generation (§6.4, §7).
+- [ ] **The tick:** schedule (including the 30 s demo interval), prompt, per-tick schema, `parse_tick`, readings on a still screen, and the quality gate on fixtures (§6.5).
+- [ ] **Skills:** the parser with `SkillSource`, the four-form evaluator, `SkillBook` with separate enablement and the cross-skill limit, `react` with firing claims, the generator, and built-in-only hooks (§6.6, [skills.md](../skills.md)).
+- [ ] **Actions:** the catalog; the music player with per-skill `min_dwell` and overlay ownership; overlay state; the xdotool desktop backend; fake backends for development instances (§6.7).
+- [ ] **Music library:** 20–30 CC-licensed tracks in mood folders with `library.toml`, and `daybook music check` passing ([setup.md](../setup.md) §5).
+- [ ] **Chat:** routing, recall with the epoch check and code-computed totals, and skill drafting (§6.8). *Lane B may take this one; check the Tracker first.*
+- [ ] **App:** config, wiring, the CLI, child processes, the capture lock, `--replay`, `--no-capture`, `--real-effects`, and the startup service through `gx10 enable-app` (§6.11, §9).
+- [ ] **Real API:** every route answering from the real modules with exactly the `wire.py` shapes, plus SSE from the bus (§6.9).
+- [ ] **Fixtures:** `scripts/record_fixture.py` and the four scenarios in §10, recorded on the GX10.
+- [ ] **cua trial:** at most an hour. Either a `CuaDesktop` that passes the desktop action tests, or a recorded "no" in decisions.md (§11.1).
+- [ ] **End to end:** ARCHITECTURE §11.2 items 1–8 pass live on the GX10, together with Lane B.
 
-## Handoffs to Lane B
+## Working setup
 
-| When | What Lane B gets |
-|---|---|
-| C1 merges | `--mock-api` with every route and a scripted event stream |
-| A11 lands for a route | that route answering from real data on a `--replay` instance |
-| A10 lands | `daybook run` with the shell spawned, so Lane B can test the overlay and tray end to end |
-| A Lane B request lands | the real handler behind a `wire.py` change Lane B asked for |
+- **Without the screen or the model.** Most work runs on `ReplayScreen`, `ScriptedGateway`, a temporary journal, and fake desktop, music, and overlay backends.
+- **Development instances:** `daybook run --replay fixtures/replay/<scenario> --port 8770–8779` with `DAYBOOK_HOME=~/.daybook-a-<agent>`. These never touch the real screen or speakers.
+- **Real model:** Ollama `qwen3.6:35b` at `http://127.0.0.1:11434/v1`. It was already verified on a real screenshot ([gx10-unattended.md](../gx10-unattended.md)). Don't start a second large model.
+- **Real screen and effects:** hold the capture lock with the wrapper in [gx10-unattended.md](../gx10-unattended.md), and use `--real-effects`. Run `gx10 status` first.
+
+## Watch for
+
+- **One model for everything.** Capture, the tick, and chat all share it; keep within the caps in §5.
+- **Quality gate.** If the tick's answers match fewer than 80% of fixture labels, raise the tick's effort to `low` before changing anything else.
+- **Wire changes.** Change `wire.py` and its mock example in the same shared-contract PR, and post on the Tracker so Lane B sees it.
+- **Privacy is product behavior.** The §7 checks are acceptance items. The hackathon cost test in [review-triage.md](../agents/review-triage.md) applies only to hardening against threats outside the product.

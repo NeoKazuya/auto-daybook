@@ -15,7 +15,7 @@ Status: **decided** (the user answered), **default** (proposed by the planner an
 | P5 | 2026-10-10 | Which engineering procedures? | Adopt PStack concepts from the canonical source (`cursor/plugins@e43c7ee2`), not inferred versions | decided | `docs/agents/*.md`, [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md) |
 | P6 | 2026-10-10 | How is the architecture planned? | With PStack `architect`: ground, then at least two structurally distinct candidates from different model families, then judge with a rubric and combine. Codex cross-checks the docs | decided | This folder; `docs/ARCHITECTURE.md` to follow |
 | P7 | 2026-10-10 | Credentials in the repo? | Yes. It's a hackathon machine, so the GX10 login goes in [docs/gx10.md](../gx10.md) | decided | — |
-| P9 | 2026-10-10 | How is the build split? | Contracts (one PR, first), then Lane A, the Codex wave (the core and everything but the UI), and Lane B, a frontend agent (the web UI and the shell). Lanes meet only through `web/wire.py`; `--mock-api` lets Lane B start immediately | decided | [lanes/](../lanes/README.md); ARCHITECTURE §6.9, §11.1 |
+| P9 | 2026-10-10 | How is the build split? | Two lanes, each building its part start to end: Lane A, the Codex wave (the complete backend; its first PR is the shared skeleton), and Lane B, a frontend agent (the web UI and the shell). One Tracker task per lane, no sequenced sub-tasks. Lanes meet only through `web/wire.py`; `--mock-api` lets Lane B start right after the skeleton | decided | [lanes/](../lanes/README.md); ARCHITECTURE §6.9, §11.1 |
 
 ## Product and system
 

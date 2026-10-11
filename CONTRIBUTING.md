@@ -206,7 +206,7 @@ Meanwhile: <what you're doing instead, or "idle">
 ## Reference docs
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the system design and the full build plan. Shared contracts are defined there and in [docs/skills.md](docs/skills.md)
-- [docs/lanes/](docs/lanes/README.md): who builds what. Contracts first, then Lane A (the core, the Codex wave) and Lane B (the web UI and shell), with path ownership and how the lanes meet
+- [docs/lanes/](docs/lanes/README.md): who builds what. Lane A (the complete backend, the Codex wave) and Lane B (the web UI and shell), with path ownership and how the lanes meet
 - [docs/setup.md](docs/setup.md): bringing the GX10 to a working state
 - [docs/agents/verification.md](docs/agents/verification.md): proving a change works, bug-fix tests, what goes in the Proof section
 - [docs/agents/review-triage.md](docs/agents/review-triage.md): sorting and answering review findings

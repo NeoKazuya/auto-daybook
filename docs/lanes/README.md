@@ -1,14 +1,13 @@
 # Work lanes
 
-The build is split into two lanes, so two groups of agents can work at the same time without editing the same files. [ARCHITECTURE.md](../ARCHITECTURE.md) is the spec for *what* each module does. These docs say *who* builds what, in what order, how to test without the other lane, and where the lanes meet.
+The build is split into two lanes. Each lane builds its whole part, start to end, to a finished, demoable state. The lanes run at the same time without editing the same files. [ARCHITECTURE.md](../ARCHITECTURE.md) is the spec for *what* each module does; these docs say *who* builds what, how to test without the other lane, and where the lanes meet.
 
-| Brief | Owner | What it covers |
+| Brief | Owner | Builds |
 |---|---|---|
-| [contracts.md](contracts.md) | One agent, before either lane starts | The shared skeleton: package layout, every public type and signature, `web/wire.py`, `--mock-api`, local checks. Everything else builds on it |
-| [lane-a.md](lane-a.md) | The Codex wave | The core: notes, model, screen capture, tick, skills, actions, music, chat, app wiring, web route handlers, fixtures, and integration |
-| [lane-b.md](lane-b.md) | The frontend agent | The web UI and the shell (tray and full-screen overlay), built first against `--mock-api`, then against the real backend |
+| [lane-a.md](lane-a.md) | The Codex wave | The complete backend: notes, model, screen capture, tick, skills, actions, music, chat, app, and the real API. Its first PR is the shared skeleton (types, `web/wire.py`, `--mock-api`) that Lane B builds on |
+| [lane-b.md](lane-b.md) | The frontend agent | The complete web UI and the shell (tray and full-screen overlay), against `--mock-api` first and then the real backend |
 
-Progress is tracked on the [Tracker](https://github.com/NeoKazuya/auto-daybook/issues/1): one `Task:` per item below, each naming its ID (for example `A3`). Claim a task before starting it, as described in [CONTRIBUTING.md](../../CONTRIBUTING.md).
+Each lane is one task on the [Tracker](https://github.com/NeoKazuya/auto-daybook/issues/1). How a lane divides its own work is up to whoever runs it. Each brief has a scope checklist and an acceptance, not a sequence of steps.
 
 ## Ownership by path
 
@@ -22,7 +21,7 @@ Only the owning lane edits a path. The import-boundary check (`scripts/check_bou
 | `src/daybook/mind/` | Lane A |
 | `src/daybook/skills/`, `skills/builtin/` | Lane A |
 | `src/daybook/act/` | Lane A |
-| `src/daybook/chat/` | Lane A (Lane B may pick up A9, see [lane-b.md](lane-b.md#optional-pickup)) |
+| `src/daybook/chat/` | Lane A (Lane B may take it instead, see [lane-b.md](lane-b.md#optional-chat)) |
 | `src/daybook/app.py` | Lane A |
 | `src/daybook/web/` route handlers and `_mock.py` | Lane A |
 | `src/daybook/web/static/` | **Lane B** |
@@ -41,9 +40,9 @@ Only the owning lane edits a path. The import-boundary check (`scripts/check_bou
 ## How the lanes meet
 
 - **Through `wire.py` only.** Lane B reads data only from HTTP routes and SSE, as defined in `wire.py`. It never imports backend modules. Lane A never edits static UI files.
-- **When Lane B needs something new** (a field, a route, an event), it opens a shared-contract PR that adds it to `wire.py` and to the mock examples, and posts `Task: (A) implement <route/field> for real — requested by Lane B` on the Tracker. Lane B keeps building against the mock, and Lane A wires the real handler.
+- **When Lane B needs something new** (a field, a route, an event), it opens a shared-contract PR that adds it to `wire.py` and to the mock examples, and posts `Task: (Lane A) implement <route/field> for real — requested by Lane B` on the Tracker. Lane B keeps building against the mock, and Lane A wires the real handler.
 - **When Lane A changes a wire shape,** the same PR updates the mock examples, so Lane B's mock keeps matching.
-- **Switching to the real backend** is Lane B task B7. The same UI runs against a `--replay` instance, then the real one.
+- **Switching to the real backend** happens route by route as Lane A's handlers go live. The same UI runs against a `--replay` instance, then the real one.
 
 ## Shared machine rules
 

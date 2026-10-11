@@ -608,7 +608,7 @@ The plan is the complete system above, built module by module. Every module's sc
 
 | Work item | Full scope | Depends on |
 |---|---|---|
-| **Contracts** | The package skeleton, `pyproject.toml`, `scripts/check.sh`, and `check_boundaries.py`. Every public type and signature from §6 as stubs. The events list, catalog action names and parameters, `web/wire.py`, `--mock-api`, and the three built-in skill files. This is a shared-contract PR: it waits for review. Full brief: [lanes/contracts.md](lanes/contracts.md) | — |
+| **Contracts** | The package skeleton, `pyproject.toml`, `scripts/check.sh`, and `check_boundaries.py`. Every public type and signature from §6 as stubs. The events list, catalog action names and parameters, `web/wire.py`, `--mock-api`, and the three built-in skill files. This is a shared-contract PR: it waits for review. It's Lane A's first PR: [lanes/lane-a.md](lanes/lane-a.md#the-first-pr-the-shared-skeleton) | — |
 | **GX10 setup** | Everything in [setup.md](setup.md): apt packages, the AppIndicator extension, `uv`, `gh`, the music library (20–30 CC-licensed tracks with `library.toml`), confirming model server logging is off | — |
 | **Replay fixtures** | `scripts/record_fixture.py` (standalone) and the four scenarios in §10, recorded on the GX10 with expected labels in the `ReplayScreen` folder format defined in Contracts | Contracts (folder format only), GX10 setup |
 | `journal` + `events` | §6.1, §6.2 | Contracts |
@@ -626,7 +626,7 @@ The plan is the complete system above, built module by module. Every module's sc
 
 Everything after Contracts can be built at the same time against fakes. The only real ordering is: Contracts first, then the end-to-end checks once the modules exist.
 
-The work is split into two lanes with separate owners: **Lane A** (the core and everything but the UI) and **Lane B** (the web UI and the shell). Ownership, task lists, and how the lanes coordinate are in [lanes/](lanes/README.md).
+The work is split into two lanes, each building its part start to end: **Lane A** (the complete backend, starting with Contracts) and **Lane B** (the web UI and the shell). Ownership and how the lanes coordinate are in [lanes/](lanes/README.md).
 
 ### 11.2 End-to-end acceptance
 

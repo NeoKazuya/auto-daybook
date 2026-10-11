@@ -23,7 +23,7 @@ async function render(root, params) {
   let notice = null;
   let getDraft = () => null;
   const count = h('span.counter', '…');
-  const newSkill = h('a.btn.ember', { href: '#/board?q=' + encodeURIComponent('/skill ') }, icon('plus'), 'New skill');
+  const newSkill = h('a.btn.ember.compact', { href: '#/board?q=' + encodeURIComponent('/skill ') }, icon('plus'), 'New skill');
   const list = h('div.rows.skill-scroll', skeletons(3));
   const detail = h('div');
 

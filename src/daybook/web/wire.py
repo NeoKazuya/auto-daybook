@@ -19,6 +19,9 @@ from daybook import events
 from daybook.journal import ActivityKind, CaptureState
 from daybook.skills import SkillEntry
 
+# A deliberate tray Quit stops the daemon; every other Shell exit is restarted.
+SHELL_QUIT_EXIT_CODE = 20
+
 
 class WireModel(BaseModel):
     model_config = ConfigDict(

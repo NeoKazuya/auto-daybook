@@ -227,6 +227,7 @@ async def test_failing_hook_cannot_escape_permission_and_next_step_runs(tmp_path
         portal,
         build_catalog(MOODS, {"notify.send": notify}),
         Bus(),
+        clear_readings=lambda skill: None,
     )
     assert book.entries()[0].status == "active"
     at = datetime.now(timezone.utc) + timedelta(seconds=1)
@@ -252,3 +253,30 @@ def test_user_hook_not_loaded_even_spoofed_provenance(setup_book, tmp_path):
     )
     assert entry.status == "invalid"
     assert any("hooks" in error.message for error in entry.errors)
+
+
+def test_restoring_old_bytes_requires_review_and_cannot_exceed_cap(setup_book):
+    book, *_ = setup_book
+    saved = book.save("demo", text(count=4))
+    book.approve("demo", saved.hash)
+    book.save("demo", text(count=4) + "edited")
+    for id in ("a", "b", "c"):
+        other = book.save(id, text(id=id, count=4))
+        book.approve(id, other.hash)
+    restored = book.save("demo", saved.text)
+    assert restored.status == "needs_review"
+    assert len(book.active_signals()) == 12
+    with pytest.raises(SignalLimit):
+        book.approve("demo", restored.hash)
+
+
+def test_cleanup_callback_is_required(tmp_path):
+    with pytest.raises(TypeError):
+        SkillBook(  # pyright: ignore[reportCallIssue]
+            tmp_path,
+            tmp_path / "builtin",
+            tmp_path / "db",
+            MemoryPortal(),
+            build_catalog(MOODS),
+            Bus(),
+        )

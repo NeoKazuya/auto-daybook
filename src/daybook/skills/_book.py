@@ -44,7 +44,7 @@ class Book:
         portal: Portal,
         catalog: Catalog,
         bus: Bus,
-        clear_readings: Callable[[str], None] | None,
+        clear_readings: Callable[[str], None],
     ) -> None:
         self.home, self.builtin = home / "skills", builtin
         self.home.mkdir(parents=True, exist_ok=True)
@@ -85,9 +85,20 @@ class Book:
                 approved_at=datetime.now(timezone.utc).isoformat()
                 if source.origin == "builtin"
                 else None,
+                observed_hash=hash,
             )
             state = self.ledger.state(id)
         assert state is not None
+        if source.origin == "user" and state["observed_hash"] != hash:
+            self.ledger.set_state(
+                id,
+                enabled=bool(state["enabled"]),
+                approved_hash=None,
+                approved_at=None,
+                observed_hash=hash,
+            )
+            state = self.ledger.state(id)
+            assert state is not None
         if source.origin == "builtin" and state["approved_hash"] != hash:
             self.replace_approval(id, hash, enabled=bool(state["enabled"]))
             state = self.ledger.state(id)
@@ -149,15 +160,17 @@ class Book:
             raise SignalLimit("at most 12 active signals")
 
     def replace_approval(self, id: str, hash: str, *, enabled: bool) -> None:
-        self.ledger.set_state(id, enabled=False, approved_hash=None, approved_at=None)
-        if self.clear_readings is not None:
-            self.clear_readings(id)
+        self.ledger.set_state(
+            id, enabled=False, approved_hash=None, approved_at=None, observed_hash=hash
+        )
+        self.clear_readings(id)
         self.ledger.clear(id)
         self.ledger.set_state(
             id,
             enabled=enabled,
             approved_hash=hash,
             approved_at=datetime.now(timezone.utc).isoformat(),
+            observed_hash=hash,
         )
 
     def approve(self, id: str, hash: str) -> SkillEntry:
@@ -180,6 +193,7 @@ class Book:
             enabled=enabled,
             approved_hash=cast(str | None, state["approved_hash"]),
             approved_at=cast(str | None, state["approved_at"]),
+            observed_hash=cast(str | None, state["observed_hash"]),
         )  # type: ignore[arg-type]
 
     def enable(self, id: str) -> SkillEntry:
@@ -203,8 +217,7 @@ class Book:
             self.disable(id)
             return
         self.toggle(id, False)
-        if self.clear_readings:
-            self.clear_readings(id)
+        self.clear_readings(id)
         entry.source.path.unlink()
         self.ledger.clear(id, state=True)
         self.bus.publish(SkillsChanged(id))

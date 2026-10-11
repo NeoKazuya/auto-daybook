@@ -142,7 +142,7 @@ class SkillBook:
         catalog: Catalog,
         bus: Bus,
         *,
-        clear_readings: Callable[[str], None] | None = None,
+        clear_readings: Callable[[str], None],
     ) -> None:
         from ._book import Book
 

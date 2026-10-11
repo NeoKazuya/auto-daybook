@@ -20,7 +20,7 @@ class Ledger:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS skill_state (
                   skill TEXT PRIMARY KEY, enabled INTEGER NOT NULL,
-                  approved_hash TEXT, at TEXT NOT NULL, approved_at TEXT
+                  approved_hash TEXT, at TEXT NOT NULL, approved_at TEXT, observed_hash TEXT
                 );
                 CREATE TABLE IF NOT EXISTS firings (
                   skill TEXT NOT NULL, rule INTEGER NOT NULL, key TEXT NOT NULL,
@@ -29,6 +29,12 @@ class Ledger:
                 );
                 CREATE INDEX IF NOT EXISTS firing_cooldown ON firings(skill, rule, at);
             """)
+
+        with self.connect() as db:
+            if "observed_hash" not in {
+                row[1] for row in db.execute("PRAGMA table_info(skill_state)")
+            }:
+                db.execute("ALTER TABLE skill_state ADD COLUMN observed_hash TEXT")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -55,16 +61,18 @@ class Ledger:
         enabled: bool,
         approved_hash: str | None,
         approved_at: str | None,
+        observed_hash: str | None,
     ) -> None:
         with self.connect() as db:
             db.execute(
-                "INSERT INTO skill_state VALUES(?,?,?,?,?) ON CONFLICT(skill) DO UPDATE SET enabled=excluded.enabled, approved_hash=excluded.approved_hash, at=excluded.at, approved_at=excluded.approved_at",
+                "INSERT INTO skill_state VALUES(?,?,?,?,?,?) ON CONFLICT(skill) DO UPDATE SET enabled=excluded.enabled, approved_hash=excluded.approved_hash, at=excluded.at, approved_at=excluded.approved_at, observed_hash=excluded.observed_hash",
                 (
                     skill,
                     enabled,
                     approved_hash,
                     datetime.now(timezone.utc).isoformat(),
                     approved_at,
+                    observed_hash,
                 ),
             )
 

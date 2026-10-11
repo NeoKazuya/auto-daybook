@@ -164,13 +164,18 @@ class LiveAPI:
     def upcoming(self) -> w.UpcomingResponse:
         # Items stay listed for an hour past due so a just-missed one is visible.
         items = self.services.journal.portal.upcoming(
-            datetime.now(timezone.utc), overdue=3600
+            datetime.now(timezone.utc), overdue=w.UPCOMING_OVERDUE_SECONDS
         )
         return w.UpcomingResponse(
             items=[w.UpcomingItem.model_validate(i) for i in items]
         )
 
     def add_upcoming(self, body: w.UpcomingPost) -> w.UpcomingItem:
+        # An item the list would hide at once is refused, not stored invisibly.
+        if (datetime.now(timezone.utc) - body.due_at).total_seconds() > (
+            w.UPCOMING_OVERDUE_SECONDS
+        ):
+            raise HTTPException(422, "invalid_request: due_at is in the past")
         journal = self.services.journal
         added = journal.add_upcoming(
             [UpcomingDraft(body.title, body.due_at, kind=body.kind)],

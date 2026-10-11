@@ -146,6 +146,10 @@ class UpcomingItem(WireModel):
     kind: Literal["deadline", "event"] = "deadline"
 
 
+# GET /api/upcoming lists items due from this long ago on; older ones are refused.
+UPCOMING_OVERDUE_SECONDS = 3600
+
+
 class UpcomingResponse(WireModel):
     items: list[UpcomingItem]
 

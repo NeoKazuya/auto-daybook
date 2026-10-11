@@ -366,7 +366,9 @@ class MockAPI:
         return w.MutationResponse()
 
     def upcoming(self) -> w.UpcomingResponse:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=w.UPCOMING_OVERDUE_SECONDS
+        )
         return w.UpcomingResponse(
             items=sorted(
                 (i for i in self.upcoming_items.values() if i.due_at >= cutoff),
@@ -379,6 +381,10 @@ class MockAPI:
         def key(title: str) -> str:
             return " ".join(re.findall(r"\w+", title.casefold()))
 
+        if (datetime.now(timezone.utc) - body.due_at).total_seconds() > (
+            w.UPCOMING_OVERDUE_SECONDS
+        ):
+            raise HTTPException(422, "invalid_request: due_at is in the past")
         if any(
             key(i.title) == key(body.title) and i.due_at == body.due_at
             for i in self.upcoming_items.values()

@@ -469,7 +469,7 @@ Then `journal.record_tick(...)` runs, followed by `skills.react(recorded)`.
 | `PATCH/DELETE /api/observations/{id}` | `edit_observation`, `forget_observation` |
 | `POST /api/forget {from,to}`, `POST /api/forget-all` | `forget_range`, `forget_all` |
 | `POST /api/chat {message}` | `chat.respond` |
-| `GET /api/upcoming` (items due from an hour ago on), `POST /api/upcoming {title, due_at}` (409 if already listed), `DELETE /api/upcoming/{id}` | `portal.upcoming`, `add_upcoming`, `dismiss_upcoming` |
+| `GET /api/upcoming` (items due from an hour ago on), `POST /api/upcoming {title, due_at, kind}` (409 if already listed, 422 if due more than an hour ago), `DELETE /api/upcoming/{id}` | `portal.upcoming`, `add_upcoming`, `dismiss_upcoming` |
 | `GET /api/skills`, `PUT /api/skills/{id}`, `POST /api/skills/{id}/approve {hash}` (409 if stale), `POST /api/skills/{id}/enable` (409 if needs review), `POST /api/skills/{id}/disable`, `DELETE /api/skills/{id}`, `POST /api/skills/parse {id, text}` (checked through `SkillBook`, so the file name and origin are known) | `SkillBook` methods and `parse_skill` |
 | `GET/PUT /api/privacy` | `sense.privacy`, `set_privacy` |
 | `POST /api/music/play {mood}` (`MusicStatus` on success, 409 if unavailable) | `music.play_mood` through the daemon (CLI) |

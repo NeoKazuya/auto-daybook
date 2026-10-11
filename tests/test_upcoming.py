@@ -617,6 +617,15 @@ def test_live_and_mock_upcoming_routes(journal):
                 headers=headers,
             )
             assert duplicate.status_code == 409
+            stale = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+            assert (
+                client.post(
+                    "/api/upcoming",
+                    json={"title": "Old quiz", "due_at": stale},
+                    headers=headers,
+                ).status_code
+                == 422
+            )
             listed = client.get("/api/upcoming").json()["items"]
             assert len(listed) == len(before) + 1
             assert (

@@ -86,7 +86,7 @@ const db = {
   privacy: {
     paused: false,
     exclude_apps: ['KeePassXC', '1Password', 'Bitwarden'],
-    exclude_titles: ['Private Browsing', 'Incognito', 'Daybook ·'],
+    exclude_titles: ['*Private Browsing*', '*Incognito*', '*Daybook ·*'],
     schedule: { enabled: false, days: [1, 2, 3, 4, 5], start: '09:00', end: '18:00' },
     apps_mode: 'all',
     allowed_apps: ['Code', 'Firefox', 'Terminal'],

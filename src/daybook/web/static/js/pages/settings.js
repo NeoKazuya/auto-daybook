@@ -115,13 +115,15 @@ async function render(root) {
   function appsPanel() {
     const rules = supports.monitoringRules;
     const only = rules && privacy.apps_mode === 'only';
+    // Capture matches each pattern against the whole app name or window title
+    // (case-insensitive glob), so "Title has X" is stored as *X* and shown as X.
     const exclusions = [
-      ...privacy.exclude_apps.map((value) => ({ match: 'app', value })),
-      ...privacy.exclude_titles.map((value) => ({ match: 'title', value })),
+      ...privacy.exclude_apps.map((raw) => ({ match: 'app', raw, value: raw })),
+      ...privacy.exclude_titles.map((raw) => ({ match: 'title', raw, value: raw.replace(/^\*|\*$/g, '') })),
     ];
     const without = (x) => (p) => x.match === 'app'
-      ? { exclude_apps: p.exclude_apps.filter((v) => v !== x.value) }
-      : { exclude_titles: p.exclude_titles.filter((v) => v !== x.value) };
+      ? { exclude_apps: p.exclude_apps.filter((v) => v !== x.raw) }
+      : { exclude_titles: p.exclude_titles.filter((v) => v !== x.raw) };
     const mode = rules && h('div.segmented', { role: 'group', 'aria-label': 'Which apps to monitor' },
       [['all', 'All apps except blocked'], ['only', 'Only allowed apps']].map(([v, label]) =>
         h('button', { type: 'button', 'aria-pressed': String(privacy.apps_mode === v),
@@ -147,8 +149,9 @@ async function render(root) {
         (b) => busy(b, () => save(without(x), `${x.value} is no longer blocked.`))))),
       addForm('blocked', 'App name, or text in a window title', true, (match, value) => {
         const key = match === 'app' ? 'exclude_apps' : 'exclude_titles';
-        if (privacy[key].includes(value)) return toast(`${value} is already blocked.`);
-        return save((p) => ({ [key]: [...new Set([...p[key], value])] }), `${value} will never be monitored.`);
+        const pattern = match === 'title' && !/[*?[]/.test(value) ? `*${value}*` : value;
+        if (privacy[key].includes(pattern)) return toast(`${value} is already blocked.`);
+        return save((p) => ({ [key]: [...new Set([...p[key], pattern])] }), `${value} will never be monitored.`);
       }));
 
     return panel('Apps', 'layers', h('span.counter', only ? `${privacy.allowed_apps.length} allowed` : `${exclusions.length} blocked`),

@@ -249,13 +249,6 @@ class NoCaptureScreen:
         raise RuntimeError("screen capture is disabled")
 
 
-class DevelopmentOverlay(Overlay):
-    """Simulate a connected view without ever starting Qt."""
-
-    def shell_connected(self, connected: bool) -> None:
-        super().shell_connected(True)
-
-
 class OverlayScreen:
     def __init__(self, screen: Screen, overlay: Overlay) -> None:
         self.screen, self.overlay = screen, overlay
@@ -287,6 +280,7 @@ async def open_runtime(
 ):
     from daybook.act import (
         FakeDesktop,
+        FakeOverlay,
         MusicLibrary,
         MusicPlayer,
         XdoDesktop,
@@ -311,11 +305,7 @@ async def open_runtime(
         gateway = ModelGateway(config.model)
         stack.push_async_callback(gateway.close)
         library = MusicLibrary.load(config.music_dir)
-        overlay = (
-            Overlay(bus, home=config.home) if real_effects else DevelopmentOverlay(bus)
-        )
-        if not real_effects:
-            overlay.shell_connected(True)
+        overlay = (Overlay if real_effects else FakeOverlay)(bus, home=config.home)
         stack.push_async_callback(overlay.close)
         music = MusicPlayer(
             library, config.home, bus, overlay, real_effects=real_effects

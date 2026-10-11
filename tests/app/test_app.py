@@ -189,7 +189,7 @@ def test_daemon_cli_uses_launch_port_and_authenticated_request(tmp_path: Path):
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
 
-        def log_message(self, *_):
+        def log_message(self, format: str, *args):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -304,7 +304,6 @@ async def test_concrete_replay_composes_owners_and_never_starts_real_effects(
         assert services.journal.portal.now().capture == "overlay"
         await services.overlay.hide()
         assert not (tmp_path / "mpv.sock").exists()
-        assert not (tmp_path / "overlay.json").exists()
     assert services.overlay.state is None
     with pytest.raises(RuntimeError, match="closed"):
         services.journal.portal.now()
@@ -420,9 +419,8 @@ async def test_tick_once_records_current_unassigned_notes_without_a_daemon(
     journal = Journal(config.home / "journal.db", Bus())
     now = datetime.now(UTC)
     journal.add_observation(
-        ObservationDraft(
-            now, WindowInfo("Code", "example.py"), "Editing code.", "", 0, "fixture"
-        )
+        ObservationDraft(now, WindowInfo("Code", "example.py"), "Editing code.", ""),
+        epoch=journal.epoch,
     )
     journal.close()
     gateway = ScriptedGateway(

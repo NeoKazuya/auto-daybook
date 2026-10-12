@@ -2,6 +2,8 @@
 
 Daybook watches your screen, keeps text notes on what you're working on, and runs skills: small rule files that act on those notes. It comes with a few default skills. One plays focus music while you code and calmer music when you switch to a PDF. Another covers the screen with a break reminder after 50 minutes of focused work. You can turn these off, edit them, or write your own. To add one, type a request like "remind me to stand up every time I finish a meeting" and Daybook drafts the skill for you to approve. You can also ask it what you did this afternoon.
 
+Daybook is a hackathon project built for the [UCSC AI Hackathon](https://hackdev.org/) (Local AI track), October 10–11, 2026.
+
 Runs locally on an ASUS GX10 (NVIDIA GB10, 128 GB) with [`nvidia/Qwen3.8-Flash-Next-NVFP4`](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-NVFP4) on vLLM. NVFP4 cuts the 125B model from about 360 GB in BF16 to 133 GB. Combined with reading its n-gram table from SSD, that gets it running in about 104 GB.
 
 ## How it works
